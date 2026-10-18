@@ -1,0 +1,3 @@
+# Simulation scripts and their results to copy into sim/, one path per line
+# (absolute, or relative to the source root, "D:\Spellshot - Atharv" by default).
+# Empty for now: no balance or team sims exist under D:\Spellshot - Atharv yet.
