@@ -60,7 +60,8 @@
 	  ZephyrUpdraft.Clearance(character, depth?) -> clearance, groundPos?, feetY   studs of air under the feet (or depth)
 	  ZephyrUpdraft.Airborne(character, useFloor?) -> bool, clearance
 	  ZephyrUpdraft.NoteAirborne(player, now?)             the server's Heartbeat memory (AirGrace)
-	  ZephyrUpdraft.IsAirborne(player) -> bool             airborne now, or within AirGrace of it
+	  ZephyrUpdraft.IsAirborne(player) -> bool             airborne now, or within AirGrace of it -- never while thrown
+	                                                       (RX_Entombed, or before KnockedUntil: 2026-10-19, audit P4-04)
 	  ZephyrUpdraft.KnockbackScale(player) -> number       KnockbackMult while a holder is airborne, else 1
 	  ZephyrUpdraft.DamageScale(player) -> number          DamageMult while a holder is airborne, else 1 (readouts only)
 	  ZephyrUpdraft.Handlers = { UpdraftHit = fn(d) }      client
@@ -414,6 +415,13 @@ end
 function ZephyrUpdraft.IsAirborne(player)
 	local character = player and player.Character
 	if not character then return false end
+	-- (2026-10-19, audit P4-04) thrown is not Updraft's air: held by an Earthen Tomb, or still carried by someone else's
+	-- knock / launch / Cyclone (KnockedUntil, server time) -- ZephyrUpdraftServer's `thrown` rule, so the client's tell
+	-- and KnockbackScale agree with the server's modifier
+	if character:GetAttribute("RX_Entombed") == true
+		or workspace:GetServerTimeNow() < (character:GetAttribute("KnockedUntil") or 0) then
+		return false
+	end
 	local at = lastAir[player]
 	if at and os.clock() - at <= T.AirGrace then return true end
 	local air = ZephyrUpdraft.Airborne(character, IS_CLIENT and player == Players.LocalPlayer)
@@ -980,6 +988,11 @@ local function suppressed(c)
 	for _, name in ipairs(TL.SuppressWhile) do
 		if c:GetAttribute(name) then return true end
 	end
+	-- (2026-10-19, audit P4-04) a thrown body (Tomb-held, or before KnockedUntil) gets no Updraft bonus on the server
+	-- (IsAirborne's rule), so its tell thins away too
+	if c:GetAttribute("RX_Entombed") == true or workspace:GetServerTimeNow() < (c:GetAttribute("KnockedUntil") or 0) then
+		return true
+	end
 	if not TL.InHub then
 		local p = Players:GetPlayerFromCharacter(c)
 		if p and p:GetAttribute("Zone") == "Hub" then return true end
@@ -1086,7 +1099,8 @@ local function startEpisode(w, lead)
 	local lp = Players.LocalPlayer
 	local ok, handle = pcall(Z.Play, "Updraft", liveFrameFn(ep), {
 		Clock = ep.Clock, MaxLife = math.huge, Budget = "Updraft",
-		Own = lp ~= nil and w.Character == lp.Character,      -- your own tell is never thinned by Reduce Enemy VFX
+		-- your own tell is never thinned by Reduce Enemy VFX, nor (2026-10-19, audit P5F-06) a teammate's
+		Own = (lp ~= nil and w.Character == lp.Character) or (type(Z.Friendly) == "function" and Z.Friendly(w.Character) == true),
 		OnEnd = function()
 			ep.Done = true
 			if w.Ep == ep then w.Ep = nil end
@@ -1281,7 +1295,9 @@ ZephyrUpdraft.Handlers.UpdraftHit = function(d)
 	local victim = d.Victim
 	if typeof(d.At) == "Vector3" and not (typeof(victim) == "Instance" and ownView(victim)) then
 		local lp = Players.LocalPlayer
-		playHitMark(d.At, lp ~= nil and c ~= nil and c == lp.Character)
+		local Z = zd()                                    -- (2026-10-19, audit P5F-06) a teammate's mark is not thinned
+		playHitMark(d.At, (lp ~= nil and c ~= nil and c == lp.Character)
+			or (Z ~= nil and type(Z.Friendly) == "function" and Z.Friendly(c) == true))
 	end
 end
 

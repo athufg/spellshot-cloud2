@@ -34,16 +34,20 @@
 	                            first re-forms, so a double tap with both charges ready is two blinks; a third press in that
 	                            window is given back whole (2026-10-18, umbra review; until then every such press was given
 	                            back whole).
+	                            (2026-10-19, audit GC-07, an audit call the owner may reverse: roots WIN) a rooted, caged, Deep-Frozen or
+	                            Entombed body cannot start a step: Precheck_ShadowStep refuses the press before it is paid
+	                            (once its VFXLibrary row has Precheck = true), and castShadowStep refuses it again, given back.
 	  TECHNIQUE MARK            the enemy nearest the aim line (Earthen Tomb's lock rule). Stacks ripen one per StackEvery
 	                            to MaxStacks; full and left alone for ExpireAfterFull, it goes. The MARKER's next real hit on
-	                            it spends it (a CombatCore modifier, before any shield): HeadBonus[stacks] on a headshot,
-	                            BodyBonus[stacks] otherwise. Self-only -- a teammate's hit neither spends nor gains it.
-	                            Kit-owned status "Marked" (Chill's arrangement): this script writes RX_Marked and its
+	                            it (never a DoT tick, reaction bonus, discharge or chain leg) spends it (a CombatCore
+	                            modifier, before any shield): HeadBonus[stacks] on a headshot, BodyBonus[stacks] otherwise.
+	                            Self-only -- a teammate's hit neither spends nor gains it. Kit-owned status "Marked" (Chill's arrangement): this script writes RX_Marked and its
 	                            suffixes, so the victim's BarFX look and the HUD read it as before. HUNTED! pops over them.
 	                            Precheck: a press with nobody to mark costs nothing.
 	  TECHNIQUE DECOY DOUBLE    a stationary copy of the caster peels off to the side (DecoyOwner = the caster's UserId;
 	                            friendly to them as a Bulwark Wall is). It breaks on the first damage it takes -- the Tell --
-	                            or at Duration. Deals nothing.
+	                            or at Duration, or when an enemy's Position Trade reaches it (DecoyTraded, 2026-10-19).
+	                            Deals nothing.
 	  ULTIMATE  ECLIPSE         the charge is spent on the cast (SpellshotService). First the WINDUP (Phase 4, WindupTime):
 	                            the caster is held in place (SpeedCapUlt 0) pressing the mass -- the Ultimate's telegraph,
 	                            EclipseCharge to everyone; dying or being cleared in it cancels it (EclipseCancel). Then,
@@ -138,8 +142,8 @@ local function eyeOf(character, root)
 end
 
 local function eyeNear(player, character, humanoid, root, origin)
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	local allowance = T.ShadowDart.OriginSlack + speed * (0.35 + pingOf(player))
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	local allowance = T.ShadowDart.OriginSlack + speed * (0.35 + Core.Lag(pingOf(player)))
 	return (origin - eyeOf(character, root)).Magnitude <= allowance
 end
 
@@ -361,6 +365,7 @@ local function publishMark(rec)
 	model:SetAttribute("RX_Marked_Stacks", rec.Stacks)
 	model:SetAttribute("RX_Marked_Expires", rec.Expires)
 	model:SetAttribute("RX_Marked_Total", rec.Total)
+	model:SetAttribute("RX_Marked_Paid", false)       -- (2026-10-19, audit GA-06) not paid off (yet): BarFX believes this
 	model:SetAttribute("RX_Marked", true)
 end
 
@@ -375,6 +380,11 @@ local function clearMark(humanoid, reason)
 	if not rec then return end
 	marks[humanoid] = nil
 	if markOf[rec.Marker] == humanoid then markOf[rec.Marker] = nil end
+	-- (2026-10-19, audit GA-06) the real payoff says so before the flag falls (BarFX: RIPPED!, not a plain fade); every
+	-- other end (expiry, a reset, death, a replaced mark) leaves it false. It stays set after the flag drops, for BarFX
+	if (reason == "Headshot" or reason == "Body") and rec.Model and rec.Model.Parent then
+		rec.Model:SetAttribute("RX_Marked_Paid", true)
+	end
 	unpublishMark(rec.Model)
 	broadcast("MarkEnd", { Victim = rec.Model, Marker = rec.Marker.UserId, Reason = reason, Stacks = rec.Stacks })
 end
@@ -454,11 +464,14 @@ do
 	end
 end
 
--- THE PAYOFF: the MARKER's next real hit on the marked body (not a DoT tick, not anyone else's). -10 runs before every
--- soak, so a shield in front of a marked target loses its share of the bonus too. info.Head is set only by Shadow Dart.
+-- THE PAYOFF: the MARKER's next real hit on the marked body (not a DoT tick, not anyone else's, and not damage derived
+-- from another hit -- a reaction's bonus, a Charged discharge, a chain leg: (2026-10-19, audit P3-17) those are dealt in
+-- the marker's name but were never aimed, and used to spend the Mark for a body bonus). -10 runs before every soak, so a
+-- shield in front of a marked target loses its share of the bonus too. info.Head is set only by Shadow Dart.
 Core.AddModifier(-10, function(victim, amount, info, caster)
 	local rec = marks[victim]
-	if not rec or amount <= 0 or (info and info.DoT) or caster ~= rec.Marker then return amount end
+	if not rec or amount <= 0 or caster ~= rec.Marker then return amount end
+	if info and (info.DoT or info.Reaction or info.Chain or info.Status) then return amount end   -- (2026-10-19, audit P3-17)
 	local head = info and info.Head == true
 	local bonus = (head and T.Mark.HeadBonus or T.Mark.BodyBonus)[rec.Stacks] or 0
 	if info then
@@ -527,7 +540,7 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local character, humanoid, root = Core.CanAct(player)
 	if not character then return end
 	local origin, target, id = a.Origin, a.Target, a.Id
-	if not (Core.ValidVector(origin) and Core.ValidVector(target)) or type(id) ~= "number" then return end
+	if not (Core.ValidVector(origin) and Core.ValidVector(target)) or type(id) ~= "number" or id ~= id then return end   -- (2026-10-19, audit P1-11) NaN is no table key
 	-- THE CHARGE: a release ends a charge this server saw start, and comes no sooner than it could have been gathered
 	local c = charges[player]
 	if not (c and c.Character == character) then
@@ -740,6 +753,15 @@ Core.OnHitLanded(function(caster, humanoid, amount, info)
 	end
 end)
 
+--- (2026-10-19, audit GC-07, an audit call the owner may reverse: roots WIN over the blink) held fast: a root or cage or Deep Freeze prison
+--- (a slow cap of 0), Frozen, or an Earthen Tomb. Such a body cannot START a step (the Tomb used to pull the blink straight
+--- back and keep the charge). The Ultimate's own hold (SpeedCapUlt: Eclipse's windup) is not a root and is not asked.
+local function heldFast(character)
+	return (character:GetAttribute("SpeedCapSlow") or math.huge) <= 0
+		or character:FindFirstChild("IceFrozenState") ~= nil
+		or character:GetAttribute("RX_Entombed") == true
+end
+
 local function castShadowStep(player, character, humanoid, root, payload, role)
 	local S = T.ShadowStep
 	-- THE ESCAPE (2026-10-18, umbra): payload.Escape is SpellshotService's word, never the client's -- this press spent the
@@ -757,6 +779,10 @@ local function castShadowStep(player, character, humanoid, root, payload, role)
 			busy.Queued = { Payload = payload, Role = role, Escape = escape }
 		end
 		--[[giveBack:Fire(player, role, true, escape) for every such press   until 2026-10-18]]
+		return
+	end
+	if heldFast(character) then
+		giveBack:Fire(player, role, true, escape)                        -- (2026-10-19, audit GC-07) held fast: nothing spent
 		return
 	end
 	local dest, dir = stepDestination(character, humanoid, root, payload.Target)
@@ -795,12 +821,20 @@ local function castShadowStep(player, character, humanoid, root, payload, role)
 		local before = root.Position
 		local face = flat(root.CFrame.LookVector)
 		if face.Magnitude < 1e-3 then face = dir end
+		Core.AllowMove(character, 1)                                   -- (2026-10-19, audit P1-03) a server move: the movement guard lets it be
 		character:PivotTo(CFrame.lookAt(dest, dest + face.Unit))
 		root.AssemblyLinearVelocity = Vector3.zero
 		broadcast("ShadowStepIn", { Character = character, At = dest, T0 = serverNow(), VeiledUntil = veiled })
 		-- THE QUEUED PRESS (2026-10-18, umbra review) steps now, from here. Its aim point moves with the body, so it keeps the
 		-- direction and reach it was aimed with (a point aimed 15 studs ahead is not suddenly underfoot). Nowhere to go gives
 		-- back its own charge through castShadowStep's escape-aware path. Its own pcall: this delay is outside performCast's.
+		-- (2026-10-19, audit P6A-16 / GC-06) the queued press steps only if a fresh press now would be let through: an
+		-- interrupt (Undertow, Aftershock: InterruptedUntil) that landed during the dissolve refuses it, as SpellshotService
+		-- refuses a new press, and its charge is given back. (Zone, CastLocked and the round reset already move the epoch.)
+		if q and Core.CanAct(player) ~= character then
+			dropQueued()
+			q = nil
+		end
 		if q then
 			if Core.ValidVector(q.Payload.Target) then q.Payload.Target += root.Position - before end
 			local ok, err = pcall(castShadowStep, player, character, humanoid, root, q.Payload, q.Role)
@@ -810,6 +844,22 @@ local function castShadowStep(player, character, humanoid, root, payload, role)
 			end
 		end
 	end)
+end
+
+-- (2026-10-19, audit GC-07) Shadow Step's check, answered BEFORE SpellshotService charges the press (its Precheck path,
+-- once the ShadowStep row carries Precheck = true): a body held fast is refused at no cost, either charge.
+do
+	local check = spellFolder:FindFirstChild("Precheck_ShadowStep")
+	if not check then
+		check = Instance.new("BindableFunction")
+		check.Name = "Precheck_ShadowStep"
+		check.Parent = spellFolder
+	end
+	check.OnInvoke = function(player, role, payload)
+		local character = Core.CanAct(player)
+		if not character then return false end
+		return not heldFast(character)
+	end
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -862,6 +912,9 @@ local function castDecoy(player, character, humanoid, root, payload, role)
 	end
 	copy.Name = character.Name
 	copy:SetAttribute("DecoyOwner", player.UserId)
+	-- (2026-10-19, audit P4-18 / P5C-14) whose Element the copy wears, for RadiantAnim / UmbraDecoyPoser to dress and pose a
+	-- borrowed Decoy Double (only reachable with Config.TechniquesOwnElementOnly off; read by no client yet)
+	copy:SetAttribute("DecoyElement", player:GetAttribute("Element"))
 	chum.MaxHealth = Config.MaxHealth
 	chum.Health = Config.MaxHealth
 	chum.BreakJointsOnDeath = false
@@ -879,6 +932,11 @@ local function castDecoy(player, character, humanoid, root, payload, role)
 	local full = chum.Health
 	d.Conns[#d.Conns + 1] = chum.HealthChanged:Connect(function(h)
 		if h < full - 0.01 and decoys[player] == d then removeDecoy(player, "Hit") end
+	end)
+	-- (2026-10-19, audit P5C-05) an enemy's Position Trade reaching it (RadiantHandler sets DecoyTraded): the illusion
+	-- fails as a hit fails it -- it breaks and the Tell lights
+	d.Conns[#d.Conns + 1] = copy:GetAttributeChangedSignal("DecoyTraded"):Connect(function()
+		if copy:GetAttribute("DecoyTraded") and decoys[player] == d then removeDecoy(player, "Hit") end
 	end)
 	broadcast("DecoySpawn", { Owner = character, Decoy = copy, At = base, T0 = serverNow() })
 end

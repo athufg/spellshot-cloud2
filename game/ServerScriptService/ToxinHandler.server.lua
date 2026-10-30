@@ -145,10 +145,56 @@ local function groundBelow(point, reach)
 	return hit and hit.Position or nil
 end
 
+--- (2026-10-19, audit P1-09) LINE OF SIGHT for an aimed spot (ZephyrGustPadServer's sightPoint, copied): the honest client
+--- can only pick a spot its camera sees, so the server asks the same -- from the caster's eye to the spot, or to a point a
+--- few studs over it (low cover in front of the spot does not hide it), nothing solid in between. Bodies never count; a
+--- Bulwark Wall does (Core.Blocked's rule). Returns the spot when seen, else the point just short of the first thing in the way.
+local SIGHT_RISES = { 0.5, 3, 5 }
+local function sightPoint(character, root, spot)
+	local head = character:FindFirstChild("Head")
+	local eye = head and head.Position or (root.Position + Vector3.new(0, 1.5, 0))
+	local list = { character }
+	local fx = Core.FxFolder()
+	if fx then list[#list + 1] = fx end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.RespectCanCollide = true
+	local stop
+	for _, rise in ipairs(SIGHT_RISES) do
+		local d = spot + Vector3.new(0, rise, 0) - eye
+		local len = d.Magnitude
+		if len < 0.5 then return spot end
+		local dir = d / len
+		stop = nil
+		for _ = 1, 8 do
+			params.FilterDescendantsInstances = list
+			local hit = workspace:Raycast(eye, d, params)
+			if not hit then break end
+			local depth = (hit.Position - eye):Dot(dir)
+			if depth >= len - Core.SameSurface then break end
+			local model = hit.Instance:FindFirstAncestorOfClass("Model")
+			if not (model and model:FindFirstChildOfClass("Humanoid")) or model:GetAttribute("WallOwner") then
+				stop = eye + dir * math.max(0, depth - 1)
+				break
+			end
+			list[#list + 1] = model
+		end
+		if not stop then return spot end
+	end
+	return stop
+end
+
 --- A spot the caster aimed at, held to `range` and put down on the floor.
+--- (2026-10-19, audit P1-09) ...and in the caster's sight: a floor behind a wall, or on the storey above or below, comes
+--- back to this side -- the floor under where the sight line stops (or that point itself, as an unfloored aim always was).
 local function aimedGround(root, target, range)
 	local spot = Core.ClampTarget(root, target, range)
-	return groundBelow(spot + Vector3.new(0, 5, 0), 60) or spot
+	local ground = groundBelow(spot + Vector3.new(0, 5, 0), 60) or spot
+	local seen = sightPoint(root.Parent, root, ground)
+	if seen ~= ground then
+		ground = groundBelow(seen, 60) or seen                     -- groundBelow starts 1 over the point it is given
+	end
+	return ground
 end
 
 --- The body nearest the aim line out of the eye (Mark's lock rule, RadiantHandler's pickOnAim): in front, within
@@ -389,8 +435,8 @@ local function castBubble(player, character, humanoid, root, payload)
 	local B = T.Bubble
 	local eye = eyeOf(character, root)
 	local origin = payload.Origin
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	if not (Core.ValidVector(origin) and (origin - eye).Magnitude <= B.OriginSlack + speed * (0.35 + pingOf(player))) then
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	if not (Core.ValidVector(origin) and (origin - eye).Magnitude <= B.OriginSlack + speed * (0.35 + Core.Lag(pingOf(player)))) then
 		origin = eye
 	end
 	local dir = payload.Dir
@@ -462,6 +508,8 @@ local function stepBubble(player, b, now)
 			return
 		end
 		-- a miss: it rests where it lands; off a wall or a ceiling it drops to the floor below first
+		-- (2026-10-20) the world hit's announcement, as every other M1 makes it: the Training Ground's TargetBoards score it
+		Core.ShotImpact:Fire(hit.Instance, hit.Position, player)
 		local at = hit.Position + hit.Normal * (B.Radius * 0.8)
 		if hit.Normal.Y < 0.55 then
 			local floor = groundBelow(at, 40)
@@ -561,6 +609,9 @@ end
 
 local function castPatientZero(player, character, humanoid, root, payload)
 	local P = T.PatientZero
+	-- (2026-10-19, audit P1-08) one Patient Zero at a time (Mirror Cage's cages[player]): a second press -- in flight in the
+	-- same frame, or the dev free Ultimate -- neither replaces the live mark nor spends anything
+	if marks[player] then return end
 	local target = pickOnAim(character, root, payload.Target, P.Range, P.LockRadius, function(model, hum)
 		return hurtable(player, model, hum)
 	end)
@@ -575,8 +626,10 @@ local function castPatientZero(player, character, humanoid, root, payload)
 	target:SetAttribute("ToxinPZUntil", m.Until)
 	broadcast("ToxinPZMark", { Character = character, Target = target, T0 = t0, Telegraph = P.Telegraph, Fuse = P.Fuse })
 	task.delay(P.Telegraph, function()
-		if marks[player] == m then marks[player] = nil end
-		if Core.Epoch(player) ~= m.Epoch or player.Character ~= character then
+		-- (2026-10-19, audit P1-08) only the live mark detonates: one cleared (forget) or replaced since is cancelled
+		local live = marks[player] == m
+		if live then marks[player] = nil end
+		if not live or Core.Epoch(player) ~= m.Epoch or player.Character ~= character then
 			if target.Parent and target:GetAttribute("ToxinPZUntil") == m.Until then target:SetAttribute("ToxinPZUntil", nil) end
 			broadcast("ToxinPZCancel", { Character = character, Target = target })
 			return

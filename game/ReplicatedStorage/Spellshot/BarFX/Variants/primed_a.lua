@@ -134,7 +134,7 @@ function V.mount(fx)
 			local d = EMB[i]
 			local ph = math.floor(((fx.clock + d[3]) % 0.3) / 0.3 * 3) / 3
 			local k = 1 - 0.7 * ph
-			e.Position = UDim2.fromScale((17 + d[1] * ph) / sp.size, (17 + d[2] * ph) / sp.size)
+			e.Position = UDim2.fromScale((sp.size / 2 + d[1] * ph) / sp.size, (sp.size / 2 + d[2] * ph) / sp.size)   -- (2026-10-19, audit GA-17) the spark's centre, as primed_f
 			e.Size = UDim2.fromScale(4 * k / sp.size, 4 * k / sp.size)
 		end
 	end
@@ -261,7 +261,8 @@ function V.mount(fx)
 		for _, b in ipairs(booms) do b.img.Visible = false end
 
 		-- the fill throbs dark red in the last seconds; the bar jitters
-		local throb = urg and (fx.clock % 0.4) >= 0.2
+		-- (2026-10-19, audit P5F-04) Reduce Flashing: no throb, and the urgent LED stays lit (both toggle at 2.5 Hz)
+		local throb = urg and not fx.calm() and (fx.clock % 0.4) >= 0.2
 		fx.restyle("fill", { BackgroundColor3 = throb and C.redD or C.red })
 		if urg then fx.shake(1.5, 0.05) end
 
@@ -281,7 +282,7 @@ function V.mount(fx)
 
 		-- the LED: 1 Hz red, then 2.5 Hz yellow
 		local period = urg and 0.4 or 1
-		led.Visible = (fx.clock % period) < period / 2
+		led.Visible = (urg and fx.calm()) or (fx.clock % period) < period / 2
 		led.BackgroundColor3 = urg and C.pyroY or C.red
 
 		-- the bombs: wicks shorten, sparks ride the tips, red and throbbing at the end
@@ -311,7 +312,7 @@ function V.mount(fx)
 		end
 
 		-- TIK! TOK! then 3! 2! 1!
-		local s = math.max(1, math.ceil(st.t * 6 - 1e-6))
+		local s = math.max(1, math.ceil(st.t * (st.total or 6) - 1e-6))   -- (2026-10-19, audit GA-04) real seconds left: st.total is the fuse (Detonate 1.5 s), 6 only on the bench
 		if s ~= lastSec then
 			lastSec = s
 			local hot = s <= 3

@@ -237,6 +237,12 @@ end
 local function staffPalette(c)
 	if not skinCatalog() then return nil end
 	local plr = game:GetService("Players"):GetPlayerFromCharacter(c)
+	-- (2026-10-26) the showcase convention: a model no player owns with ShowcaseSkin = a Radiant skin ("Devil") wears it,
+	-- live and in Studio (the Devil skin's gate is its palette: Resolve's, as a player's)
+	if not plr and typeof(c) == "Instance" then
+		local sk = c:GetAttribute("ShowcaseSkin")
+		return type(sk) == "string" and SkinCatalog.Resolve("Radiant", "LightLance", sk) or nil
+	end
 	return plr and SkinCatalog.Resolve("Radiant", "LightLance", SkinCatalog.Chosen(plr, "LightLance")) or nil
 end
 
@@ -600,8 +606,9 @@ local function lanceFrame(h, cv, t, dt)
 	-- the beam: core in its sleeve, rails, travelling ring glyphs (Devil: devil_chain -- a taut barbed chain from the
 	-- tip gaining links with the ramp, its spade hook at the target; a beam into the air has no target, so no hook)
 	cv:Tag("lance")
-	if dv then
-		Forge.DevilChain(dv, tip, d, a, b, h.Kind and L or L + 1, r, t)
+	if dv and Forge.Drawn(Forge.DevilChain, dv, tip, d, a, b, h.Kind and L or L + 1, r, t) then
+		-- the chain is up (2026-10-19, audit P5C-02: while its mesh is still building, or failed, the Default beam below
+		-- is drawn instead -- the victim of a first Devil lance must still see the beam back to its caster)
 	elseif b - a > 1e-3 then
 		local tail = (a > 0) and min(0.9, (b - a) * 0.35) or 0
 		local head, loH = 0, 0.3
@@ -785,6 +792,7 @@ function Staff.LanceBeam(character, own, opts)
 		return devilFrame(h, lanceFrame, cv, t, dt)
 	end, {
 		Clock = clock, MaxLife = HUGE, Prewarm = nil,
+		Owner = character,                                     -- (2026-10-19, audit P5F-05) thinned as an enemy's
 		OnEnd = function(e)
 			live[e] = nil
 			Staff.SetGlow(character, h, nil)
@@ -1287,10 +1295,13 @@ local function haloFrame(h, cv, t, dt)
 		h.HeadUp = headTop.Y - rp.Y
 		local hg = ease("Back", up01(t, H_LOCK + 0.04, H_LOCK + 0.46))
 			* (1 - (ended and ease("Quad", up01(tb, H_DROP0, H_DROP1)) or 0))
-		if head and not (fp and not Config.Halo.HornsFirstPerson) then Forge.Horns(dv, head.CFrame, hg) end
+		-- (2026-10-19, audit P5C-02) horns not built yet (or failed): the Default ring below as well, read off h.HornsOut
+		h.HornsOut = not head or (fp and not Config.Halo.HornsFirstPerson)
+			or Forge.Drawn(Forge.Horns, dv, head.CFrame, hg)
 		HO.DHSPARK.t1 = ended and (h.EndT + (H_DROP0 - H_END)) or HUGE
 		cv:Sparkles(h.HeadTop, 0.55, t, HO.DHSPARK)
-	else
+	end
+	if not (dv and h.HornsOut) then
 		if uo > 0.005 then
 			HO.RING1.a0, HO.RING1.u, HO.RING1.rigid = A + w_, uo, uo >= 0.999
 			cv:Ring(center, R, UP, lv, HO.RING1)                                    -- Phase 5: seen from head height it must not vanish edge-on
@@ -1444,6 +1455,7 @@ local function newHalo(c)
 		return devilFrame(h, haloFrame, cv, t, dt)
 	end, {
 		Clock = function() return haloClock(h) end, MaxLife = HUGE,
+		Owner = c,                                             -- (2026-10-19, audit P5F-05) thinned as an enemy's
 		OnEnd = function(e)
 			live[e] = nil
 			h.Dead = true
@@ -1815,6 +1827,10 @@ local function beneFrame(h, cv, t, dt)
 			pullEnv = max(pullEnv, env(t, tp - 0.05, tp + 0.3, 0.05, 0.25))
 		end
 	end
+	-- (2026-10-19, audit P5C-07) Reduce Flashing: the 2 Hz pulse becomes a faint breath (a quarter of its swing), and
+	-- the per-pulse flare at the staff head and the pulse ring below are dropped / dimmed
+	local calm = cv.Calm == true
+	if calm then pulseEnv, pullEnv = pulseEnv * 0.25, pullEnv * 0.25 end
 
 	-- the staff head (the anim's tip; else the planted staff, pulled out, back to the carry)
 	local plantTip = P3 + UP * (Config.StaffTipZ - Config.StaffButtZ - SINK)
@@ -1846,7 +1862,7 @@ local function beneFrame(h, cv, t, dt)
 		if ta <= OFF + 0.05 then
 			cv:Glint(tip + camDir(tip) * 0.05, 0.55 * env(t, ta - B_TRAVEL - 0.04, ta - B_TRAVEL + 0.22, 0.05, 0.16), 1.0,
 				0.4 * t, nil, 0.45, "staff")
-			cv:Flare(tip + camDir(tip) * 0.1, (t - (ta - B_TRAVEL - 0.02)) / 0.35, BO.SFL)
+			if not calm then cv:Flare(tip + camDir(tip) * 0.1, (t - (ta - B_TRAVEL - 0.02)) / 0.35, BO.SFL) end
 		end
 	end
 	if B_PRESS < t and t < B_PLANT + 0.1 then
@@ -1875,8 +1891,9 @@ local function beneFrame(h, cv, t, dt)
 	local us = ramp(t, skyOpen, 0.22, "Linear")
 	local uc = 1 - ramp(t, OFF + 0.28, 0.26, "Linear")
 	local pc, pn = palmOf(c)
-	if dv then
-		if us > 0 and uc > 0 then devilHeaven(h, cv, dv, t, us, uc, OFF, K0, K1) end
+	if dv and (us <= 0 or uc <= 0 or Forge.Drawn(devilHeaven, h, cv, dv, t, us, uc, OFF, K0, K1)) then
+		-- the Devil heaven is up (2026-10-19, audit P5C-02: while one of its forms is still building, or failed, the
+		-- Default heaven below is drawn as well, so the map-wide column is never missing)
 	elseif us > 0 and uc > 0 then
 		local ph = 0.22 * t
 		local skLv = min(1, 0.85 + 0.15 * pullEnv)
@@ -2084,7 +2101,7 @@ local function beneFrame(h, cv, t, dt)
 		local ur = up01(t, ta - B_TRAVEL, ta - B_TRAVEL + 0.3)
 		if ta <= OFF + 0.05 and ur > 0 and ur < 1 then
 			BO.PRING.w = 0.07 * (1 - ur) + 0.01
-			cv:Ring(P3 + floorLift * 1.3, 0.5 + (SIG_R - 0.5) * ease("Quad", ur), UP, 1 - 0.3 * ur,
+			cv:Ring(P3 + floorLift * 1.3, 0.5 + (SIG_R - 0.5) * ease("Quad", ur), UP, (1 - 0.3 * ur) * (calm and 0.5 or 1),
 				BO.PRING)
 		end
 	end
@@ -2290,6 +2307,7 @@ function Staff.BenedictionStart(d, resume)
 	end, {
 		Clock = clock,
 		MaxLife = HUGE,                                          -- open-ended: beneFrame ends it (the End, or the timeout)
+		Owner = c,                                               -- (2026-10-19, audit P5F-05) thinned as an enemy's
 		OnEnd = function(e)
 			live[e] = nil
 			h.Dead = true

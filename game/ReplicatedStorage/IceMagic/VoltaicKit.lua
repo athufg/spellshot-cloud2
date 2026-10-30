@@ -342,12 +342,26 @@ function Kit.isOwn(character)
 	return character ~= nil and lp ~= nil and lp.Character == character
 end
 
---- Draw this cast thin? Another player's cast with Reduce Enemy VFX on, or Graphics Quality's density under 0.6.
+--- (2026-10-19, audit P5F-06) An ENEMY's cast -- what Reduce Enemy VFX thins: VFXLibrary.IsEnemy (not yours, not a
+--- teammate's in your match, not an ally dummy's), or "not yours" when VFXLibrary cannot be read.
+function Kit.isEnemy(character)
+	local V = Kit.libs()
+	if V and type(V.IsEnemy) == "function" then
+		local ok, v = pcall(V.IsEnemy, character)
+		if ok then return v == true end
+	end
+	return not Kit.isOwn(character)
+end
+
+--- Draw this cast thin? An enemy's cast with Reduce Enemy VFX on, or Graphics Quality's density under 0.6.
+--- (2026-10-19, audit P5D-07) For a module's OWN geometry tiers only: VFXLibrary's `thin` argument means "an enemy's
+--- cast" (it applies both settings itself), so pass it `Kit.isEnemy(character)`, never this.
 function Kit.thin(character)
 	local _, _, S = Kit.libs()
 	if not S then return false end
 	if (tonumber(S.EffectDensity) or 1) < 0.6 then return true end
-	return S.ThinEnemyVFX == true and not Kit.isOwn(character)
+	-- (2026-10-19, audit P5F-06) was `not Kit.isOwn(character)`: a teammate's cast thinned as an enemy's
+	return S.ThinEnemyVFX == true and Kit.isEnemy(character)
 end
 
 --- The Reduce Flashing setting (false when Settings cannot be read).

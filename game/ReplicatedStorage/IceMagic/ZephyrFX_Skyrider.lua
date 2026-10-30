@@ -183,7 +183,9 @@ FX.Tuning = {
 		Light = { Watts = 280, Gust = 900, Hit = 1500, Range = 12, Flicker = 0.15, Below = 1.0 },
 		Cam = { GustFov = 0.13, GustRoll = 0.03, GustDecay = 0.12, HitRoll = 0.04, HitShake = 0.05, HitDecay = 0.2 },
 		Gust = {
-			Half = 21,              -- degrees: the drawn cone (skyrider_bl HALF; the server's hit cone is 28)
+			Half = 21,              -- degrees: the drawn cone with no live number (skyrider_bl HALF). (2026-10-19, audit
+			                        -- P5E-09) Start is passed ZephyrSkyrider.Tuning.Gust.HalfAngle (28, the server's hit
+			                        -- cone) as opts.GustHalfAngle, and draws that: the cone drawn is the cone that hits
 			Reach = 27, Tau = 0.24, -- cone_front: RF (1 - exp(-tau / TAU_F)) (= ZephyrSkyrider.Tuning.Gust)
 			Launch = 0.04,          -- the cone leaves the wings this long after the stroke (T_LAUNCH - T_STROKE)
 			Apex = V3(0, 6.0, 0.9), -- chest_w: the cone's apex, bird-local, scaled WITH the bird (skyrider_bl took it
@@ -1305,10 +1307,13 @@ local function drawBird(B, cv, t)
 	local D = B.D
 
 	local thin = B.thin
-	local flk = B.Demo and BL.flick(t) or flickLive(B, t)
-	local flicker = 1 - thin * (0.15 + 0.35 * max(0, sin(37 * t) * sin(23 * t + 1.0)))
+	-- (2026-10-19, audit P5E-03) Reduce Flashing (ZD.Calm): no low-mana strobe -- no 28 ms flicks, no 6-9 Hz alpha
+	-- flicker, a steady dimming as the tell instead -- and the hit's 14 Hz stutter becomes a slow ~2 Hz wobble
+	local calm = zdCall("Calm") == true
+	local flk = calm and 1 or (B.Demo and BL.flick(t) or flickLive(B, t))
+	local flicker = calm and (1 - 0.25 * thin) or (1 - thin * (0.15 + 0.35 * max(0, sin(37 * t) * sin(23 * t + 1.0))))
 	local tell = (1 - 0.5 * thin) * flk * flicker
-	local stut = (1.0 + 0.3 * D.hitw * sin(t * 90)) * flicker
+	local stut = (calm and (1.0 + 0.1 * D.hitw * sin(t * 12)) or (1.0 + 0.3 * D.hitw * sin(t * 90))) * flicker
 	local fray = 0.6 * thin + 0.4 * D.hitw
 	local k = B.KB * RIG.KS                                          -- bird units -> studs for lengths and widths
 	local SP = LOOK.Spans
@@ -1786,7 +1791,7 @@ function FX._gust(B, cv, t, g)
 	local GL = LOOK.Gust
 	local SP = LOOK.Spans
 	local AX = g.Dir
-	local H = math.rad(GL.Half)
+	local H = math.rad(B.Half or GL.Half)                          -- (2026-10-19, audit P5E-09) the server's cone
 	local e1 = AX:Cross(UP)
 	e1 = e1.Magnitude > 1e-3 and e1.Unit or B.CF.RightVector
 	local e2 = AX:Cross(e1)
@@ -2037,6 +2042,7 @@ local function newBird(character, opts)
 		Character = character, Own = opts.Own == true, Demo = opts.Demo == true, Freeze = opts.Freeze,
 		T0 = opts.T0, SummonTime = S, WindUp = tonumber(opts.WindUp) or DRV.WindUp,
 		SeatBelow = tonumber(opts.SeatBelowRoot) or LOOK.SeatBelowRoot,
+		Half = tonumber(opts.GustHalfAngle) or LOOK.Gust.Half,     -- (2026-10-19, audit P5E-09) the server's hit cone
 		Scale = scale, KB = RIG.BS * scale,
 		Seed = keyOf(character and character.Name or "demo") * 13.7 + 1.3,
 		Gusts = {}, Hits = {}, Wisps = {}, DemoHits = {},
@@ -2070,6 +2076,8 @@ local function play(B, name, clockOpts)
 		ok, handle = pcall(ZD.Demo, name, fn, { Freeze = B.Freeze, Budget = "Skyrider", Own = B.Own })
 	else
 		clockOpts.Budget, clockOpts.Own = "Skyrider", B.Own          -- the plan's 420 Beams / 1 light; your own density
+		-- (2026-10-19, audit P5F-06) a teammate's bird is not thinned by Reduce Enemy VFX either (Own: density only here)
+		if not B.Own and type(ZD.Friendly) == "function" and ZD.Friendly(B.Character) == true then clockOpts.Own = true end
 		ok, handle = pcall(ZD.Play, name, fn, clockOpts)
 	end
 	if not ok then

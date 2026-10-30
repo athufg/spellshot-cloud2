@@ -47,7 +47,8 @@
 	  TOP        Flares (8) glow ribbons swinging out past the top, Streaks (8) core + glow streaks shooting up diagonally
 	             (v5 + v6 had 10 / 12), and Streamers (5) vapor streamers shed off the rim
 	  FLOOR      the spinning base disc (6 flat glow arms, 4 -> 13 studs), the ground ring (3 -> 18 studs while it rises),
-	             4 dark scuff spirals from touchdown
+	             4 dark scuff spirals from touchdown; (2026-10-19, audit P5E-01) while ACTIVE, a faint edge ring at the
+	             server's catch Radius (26), never thinned
 	  PULSES     a ring climbs the funnel on every juggle tick that lands (see THE JUGGLE)
 	  PILLAR     the release: 10 tall narrow streaks while the funnel pulls in to a column, then the slow thinning
 	  ARMS       the caster's arm wind: a glow + core trail behind each hand while the arms circle (v4 hands(), caster_wind):
@@ -663,9 +664,10 @@ end
 local function newLook(character, center, start, own, demo)
 	scatter()
 	nextId += 1
-	local thin = (not demo) and not own
-	-- the single-particle debris events thin by this (ZephyrDraw thins every burst's count by the same density itself)
 	local zd = engine()
+	-- (2026-10-19, audit P5F-06) Reduce Enemy VFX thins an ENEMY's funnel only: a teammate's is drawn as your own
+	local thin = (not demo) and not own and not (zd and type(zd.Friendly) == "function" and zd.Friendly(character) == true)
+	-- the single-particle debris events thin by this (ZephyrDraw thins every burst's count by the same density itself)
 	local d = (zd and type(zd.Density) == "function") and zd.Density(not thin) or density(thin)
 	local s = settings()
 	local share = clamp(density(false), 0.5, 1) * ((thin and s and s.ThinEnemyVFX) and T.ThinShare or 1)   -- the blades
@@ -1459,6 +1461,21 @@ local function drawFunnel(look, cv, camPos)
 		cv:RingK(W(look, 0, 0, 0.15), (3 + 15 * easeOut(k)) * S, UP, (1.4 * (1 - k) + 0.2) * S, "vapor", o)
 	end
 
+	-- (2026-10-19, audit P5E-01) THE PULL'S EDGE: while the Cyclone is ACTIVE (touched down, not ended), a faint ring on
+	-- the ground at the server's catch Radius (ZephyrFX.Tuning.Cyclone.Radius, 26 -- gameplay studs, not the look's
+	-- Scale): nothing else at ground level reaches past ~13 studs, so without it a body caught at 20 sees no edge. It is
+	-- the hazard's telegraph, so Reduce Enemy VFX never thins it (RingK is not density-scaled).
+	if look.ActiveAt and F.now >= look.ActiveAt and not F.rel then
+		local edgeIn = clamp01((F.now - look.ActiveAt) / 0.3)
+		local o = look.EdgeO
+		if not o then
+			o = { maxSpans = T.RingSpans, tag = "rings" }
+			look.EdgeO = o
+		end
+		o.fade, o.alpha, o.glow = 0.55 * edgeIn * min(1, F.f * 2), 0.5 * AK, 0.8
+		cv:RingK(W(look, 0, 0, 0.12), shared().Radius or 26, UP, 0.45, "vapor", o)
+	end
+
 	-- THE PULSES: a ring climbs the funnel on every juggle tick
 	for _, t0 in ipairs(look.Pulses) do
 		local u = (F.now - t0) / T.PulseTime
@@ -1467,6 +1484,7 @@ local function drawFunnel(look, cv, camPos)
 			local ox, oy = axisAt(z)
 			local o = look.RingO
 			o.fade, o.alpha, o.glow = (1 - u) * 0.9, 0.7 * AK, 1.5
+			if F.rf then o.fade, o.glow = (1 - u) * 0.6, 0.75 end   -- (2026-10-19, audit P5E-11) Reduce Flashing
 			cv:RingK(W(look, ox, oy, z), radiusAt(z) * 1.02 * S, UP, (0.6 * (1 - u) + 0.15) * S, "glow", o)
 		end
 	end
@@ -1620,6 +1638,10 @@ local function frame(look, cv, now, dt)
 	local cam = workspace.CurrentCamera
 	local camPos = cam and cam.CFrame.Position or look.Center + Vector3.new(0, 1000, 0)
 	local rf = reduceFlashing()
+	-- (2026-10-19, audit P5E-11) Reduce Flashing: the touchdown surge's lift on the glow, the glare and the light at half
+	-- (the shape's own swell, F.sc, keeps the full surge); the juggle pulses dimmed in drawFunnel (F.rf)
+	F.rf = rf
+	if rf then F.su = su * 0.5 end
 
 	-- touchdown, once (a look that heard it late, past 0.4 s, does not throw it)
 	if look.ActiveAt and not look.Touched and now >= look.ActiveAt and not (look.EndAt and now >= look.EndAt) then
@@ -1727,6 +1749,7 @@ local function play(look, name, opts)
 	if not zd then return nil end
 	opts.OnEnd = function() finish(look) end
 	opts.Own = look.Character == localCharacter()        -- ZephyrDraw's density: yours is never Reduce-Enemy-thinned
+		or (type(zd.Friendly) == "function" and zd.Friendly(look.Character) == true)   -- nor a teammate's (audit P5F-06)
 	opts.Budget = "Cyclone"                               -- ZD.Budgets.Cyclone: 380 Beams, 1 light (End() warns past it)
 	local fn = function(cv, t, dt) return frame(look, cv, t, dt) end
 	local ok, handle
@@ -1790,7 +1813,8 @@ function Cyclone.CycloneActive(character, center, late)
 	late = clamp(late or 0, 0, C.LateMax)
 	local look = looks[character]
 	if not look or look.EndAt then
-		Cyclone.Cyclone(character, center, { Late = 0 })
+		-- (2026-10-19, audit P5E-21) Own as the broadcast's path sets it: your own funnel is never cut as an enemy's
+		Cyclone.Cyclone(character, center, { Late = 0, Own = character == localCharacter() })
 		look = looks[character]
 		if not look then return end
 		look.Start = os.clock() - C.FormTime - late

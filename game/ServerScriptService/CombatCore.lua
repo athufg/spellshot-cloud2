@@ -4,8 +4,8 @@
 	The server's shared combat plumbing. Every ability script uses it -- AbilityHandler for the Cryo kit,
 	PyroHandler for the Pyro kit -- so a hit is a hit whoever threw it:
 
-	  DealDamage   the ONE way ability damage lands. Modifiers run first, lowest priority first (Heat Rush
-	               thins a ranged hit, then Cinder Shield soaks what is left), the Humanoid takes the rest,
+	  DealDamage   the ONE way ability damage lands. Modifiers run first, lowest priority first (armour thins
+	               a hit, then a shield soaks what is left), the Humanoid takes the rest,
 	               and then the hit and kill listeners hear about it (Cold Momentum, Ember Refund). A shield
 	               has to soak an Icicle Shard as surely as a Fireball, which is why this is not per kit.
 	  shot checks  where every character and dummy has stood over the last second, whether something solid
@@ -13,10 +13,11 @@
 	               against, whichever Element fired it.
 	  ClearPlayer  ends everything a player has running, and takes off what is on them, when they leave the arena
 	               (and before every duel round). Each ability script says what that means for it with OnClear.
-	  DeathTime    the instant a hit took a humanoid to 0 -- how DuelMatch orders two deaths. DealDamage also
-	               charges the caster's Ultimate by the health it removed.
-	  TryParry     a Deflect Gust press's catch claim, asked of whatever can be parried (OnParry). Today that is only
-	               TrainingGround's practice shots; the cast's cooldown is already spent before this is asked.
+	  DeathTime    the FRAME in which a hit took a humanoid to 0 (FrameClock) -- how DuelMatch orders two deaths; two in
+	               the same frame are simultaneous. DealDamage also charges the caster's Ultimate by the health it removed.
+	  TryParry     a parry's catch claim, asked of whatever can be parried (OnParry: TrainingGround's practice shots).
+	               Nothing calls it today -- Deflect Gust, the parry, was retired on 2026-10-06 -- and the hook stays for
+	               whatever parries next. (2026-10-19, audit P3-24: this read as if Deflect Gust were live.)
 
 	Moved out of AbilityHandler on 2026-09-14, unchanged in behaviour, when the Pyro kit needed the same
 	checks. Server only.
@@ -147,6 +148,9 @@ function Core.IsFriendly(caster, victimCharacter)
 		return true
 	end
 	if Core.FriendlyFire or not isPlayer then return false end
+	-- (2026-10-19, audit P3-09) the caster's own body before the Team clause: a Toxin's self-damage rules (its own cloud
+	-- and Patient Zero burst) must not stop working the day anyone assigns Player.Team
+	if victim == caster then return false end
 	return victim.Team ~= nil and victim.Team == caster.Team
 end
 
@@ -270,14 +274,29 @@ local function tell(list, ...)
 	end
 end
 
--- When a hit took each humanoid to 0, stamped right here as it lands (os.clock()): DuelMatch puts two deaths in order by
--- these, not by when something next looked.
+-- When a hit took each humanoid to 0, stamped right here as it lands: DuelMatch puts two deaths in order by these, not by
+-- when something next looked.
+-- (2026-10-19, audit P3-15) stamped with the FRAME (FrameClock: os.clock() at the last Heartbeat), not os.clock() itself.
+-- One AoE killing the last player of both teams ran its DealDamage calls in pairs() order, with listeners in between,
+-- so "who died first" came down to hash order and listener cost against DuelMatch's 1 ms DRAW_WINDOW. Every death in one
+-- frame now has the same stamp (a draw); deaths in different frames keep their order.
 local deathTimes = setmetatable({}, { __mode = "k" })
+-- (2026-10-19, audit GA-08) and WHO took it there, with the killing hit's Element: { caster, element } (DuelMatch's kill feed)
+local killers = setmetatable({}, { __mode = "k" })
+local frameStamp = os.clock()
+RunService.Heartbeat:Connect(function() frameStamp = os.clock() end)
+
+--- The stamp a death in this frame gets (see deathTimes): DuelMatch stamps the deaths it sees itself with the same clock.
+function Core.FrameClock()
+	return frameStamp
+end
 
 -- WHICH ELEMENT A HIT IS (2026-10-17, for the reactions). A kit may say so in info.Element; otherwise it is the Element of
--- the kit script that dealt it, read off the call stack. A Technique lives in its own Element's script, so a Pyro running a
--- Zephyr Technique lands Zephyr hits, as the manual's cross-Element mixing intends. A script not listed (the dev panel, the
--- range's practice shots, StatusEffects' ticks) deals hits of no Element, which react with nothing.
+-- the kit script that dealt it, read off the call stack. A Technique lives in its own Element's script, so a hit is its
+-- Technique's Element. (2026-10-19, audit P3-24) While Config.TechniquesOwnElementOnly is on (P31, 2026-10-18) that is
+-- always the player's own Element; with it off, a Pyro running a Zephyr Technique would land Zephyr hits, as the old
+-- shared pool intended. A script not listed (the dev panel, the range's practice shots, StatusEffects' ticks) deals hits
+-- of no Element, which react with nothing.
 local SCRIPT_ELEMENT = {
 	AbilityHandler = "Cryo", PyroHandler = "Pyro", VoltaicHandler = "Voltaic", TerraHandler = "Terra", TerraTestServer = "Terra",
 	ZephyrHandler = "Zephyr", ZephyrSkyriderServer = "Zephyr", ZephyrUpdraftServer = "Zephyr", ZephyrGustPadServer = "Zephyr",
@@ -308,7 +327,14 @@ function Core.DealDamage(caster, humanoid, amount, info)
 	local before = humanoid.Health
 	if left > 0 then humanoid:TakeDamage(left) end
 	local removed = before - math.max(humanoid.Health, 0)
-	if humanoid.Health <= 0 then deathTimes[humanoid] = os.clock() end
+	-- (2026-10-19, audit P3-01) whether THIS call took it to 0, decided now: a hit listener below may deal damage of its own
+	-- (a reaction's bonus) that kills, and that inner call tells the kill listeners itself -- asking Health after the
+	-- listeners told them a second time, with this hit's info, for one death
+	local killed = before > 0 and humanoid.Health <= 0
+	if killed then
+		deathTimes[humanoid] = frameStamp                           -- (2026-10-19, audit P3-15) the frame, see deathTimes
+		killers[humanoid] = { caster, info.Element }                -- (2026-10-19, audit GA-08) see Core.Killer
+	end
 	-- The Ultimate charges from damage DEALT as well as taken (manual, Section 3; SpellshotService counts the taking).
 	-- By the health actually removed, so a hit a shield soaked whole charges nothing.
 	if removed > 0 and typeof(caster) == "Instance" and caster:IsA("Player") and caster.Character ~= humanoid.Parent then
@@ -316,8 +342,11 @@ function Core.DealDamage(caster, humanoid, amount, info)
 	end
 	-- the health this hit actually removed (0 when a shield soaked it whole): Halo converts it (RadiantHandler, 2026-09-29)
 	info.Removed = removed
+	-- (2026-10-19, audit P3-01) the health this hit left, before any listener deals more: a listener comparing health before
+	-- and after the hit (Ember Refund's LowHealth) reads this, not humanoid.Health, which a reaction bonus may have moved
+	info.HealthAfter = math.max(humanoid.Health, 0)
 	tell(hitListeners, caster, humanoid, amount, info)
-	if humanoid.Health <= 0 then tell(killListeners, caster, humanoid, info) end
+	if killed then tell(killListeners, caster, humanoid, info) end
 	return true
 end
 
@@ -345,10 +374,160 @@ function Core.OnHeal(fn)
 	table.insert(healListeners, fn)
 end
 
---- The os.clock() at which a hit through DealDamage took `humanoid` to 0, or nil.
+--- The frame (FrameClock) in which a hit through DealDamage took `humanoid` to 0, or nil.
 function Core.DeathTime(humanoid)
 	return deathTimes[humanoid]
 end
+
+--- (2026-10-19, audit GA-08) Who dealt the hit that took `humanoid` to 0 through DealDamage (a Player, or nil for the world
+--- and the dev panel), and that hit's Element (nil: none) -- or nil when no DealDamage killed it.
+function Core.Killer(humanoid)
+	local k = killers[humanoid]
+	if not k then return nil end
+	return k[1], k[2]
+end
+
+----------------------------------------------------------------------------------------------------
+-- movement: the server's check on where a player's body goes (2026-10-19, audit P1-03)
+----------------------------------------------------------------------------------------------------
+-- A player's body is moved by its own client, so the server took any position a client sent: a modified client could
+-- teleport, out-run every legal speed, or walk out of a root, a Mirror Cage, a Deep Freeze prison or an Earthen Tomb.
+-- Three pieces (numbers: Config.MovementGuard):
+--   THE GUARD   every Heartbeat, each living PLAYER's body (never a dummy) has its flat (XZ) speed measured from where it
+--               stood at least Window seconds ago -- each distinct position timed from when the server FIRST saw it, so
+--               replication arriving in a burst after a stall is not read as a sprint -- against BaseSpeed, or FastSpeed
+--               while it is in a fast state (fastNow) at any time since that position. A move of more than MinStep studs
+--               over the limit counts ShotStats "move_snap" and, while Enforce is on, is put back where the body last
+--               stood (rotation kept). Vertical is never judged: falls and launches are not the guard's.
+--   ALLOWMOVE   every SERVER move of a player's body (PivotTo, a teleport, a swap) opens a grace window first, in which
+--               the guard leaves that body alone and after which it starts fresh.
+--   HOLDBODY    while any kit holds a body (a root, the Tomb; Cyclone moves only anchored dummies, so it takes no hold), the server owns its physics -- network
+--               ownership -- so a client has nothing to walk it out with; the guard does not judge a held body.
+-- A new body (a respawn, a round) starts fresh: the state is per model.
+local MG = Config.MovementGuard or {}
+local graceUntil = setmetatable({}, { __mode = "k" })    -- [model] = os.clock() until which the guard leaves it alone
+local moveSeen = setmetatable({}, { __mode = "k" })      -- [model] = { Hist = { { firstSeen, position }, ... }, FastAt }
+local holds = setmetatable({}, { __mode = "k" })         -- [model] = { Keys = { [key] = true }, Count, Player, Conn }
+
+--- A server move of `model` is coming (call it right BEFORE the PivotTo / CFrame write): the movement guard leaves the body
+--- alone for `seconds` (default Config.MovementGuard.Grace), then judges it from wherever it is by then.
+function Core.AllowMove(model, seconds)
+	if typeof(model) ~= "Instance" then return end
+	local s = (type(seconds) == "number" and seconds == seconds and seconds > 0) and math.min(seconds, 30) or (MG.Grace or 1)
+	local untilT = os.clock() + s
+	if untilT > (graceUntil[model] or 0) then graceUntil[model] = untilT end
+	moveSeen[model] = nil
+end
+
+local function setOwner(model, player)                   -- player nil: the server
+	local root = model:FindFirstChild("HumanoidRootPart")
+	if root then pcall(function() root:SetNetworkOwner(player) end) end
+end
+
+local function dropHolds(model)
+	local h = holds[model]
+	if not h then return end
+	holds[model] = nil
+	if h.Conn then h.Conn:Disconnect() end
+	if h.Player and h.Player.Parent and model:IsDescendantOf(workspace) then setOwner(model, h.Player) end
+	Core.AllowMove(model)                                -- the body is the client's again: a moment to settle
+end
+
+--- `key` holds `model` (on = true) or lets it go (on = false). One hold per (model, key): a second `on` for the same key is
+--- the same hold, and one `off` ends it; the body is held while ANY key holds it. While held, a PLAYER's body is the
+--- server's to simulate (its root's network owner is the server); when the last hold ends it goes back to its player,
+--- and Core.AllowMove gives it a grace window. Holds go with the model, and Core.ClearPlayer drops a player's.
+function Core.HoldBody(model, key, on)
+	if typeof(model) ~= "Instance" or not model:IsA("Model") or key == nil then return end
+	local h = holds[model]
+	if on then
+		if not model:IsDescendantOf(workspace) then return end
+		if not h then
+			h = { Keys = {}, Count = 0, Player = Players:GetPlayerFromCharacter(model) }
+			holds[model] = h
+			h.Conn = model.AncestryChanged:Connect(function()
+				if not model:IsDescendantOf(workspace) then dropHolds(model) end
+			end)
+		end
+		if not h.Keys[key] then
+			h.Keys[key] = true
+			h.Count += 1
+			if h.Player then setOwner(model, nil) end
+		end
+	elseif h and h.Keys[key] then
+		h.Keys[key] = nil
+		h.Count -= 1
+		if h.Count <= 0 then dropHolds(model) end
+	end
+end
+
+--- Whether any kit holds `model` (Core.HoldBody).
+function Core.IsHeld(model)
+	return holds[model] ~= nil
+end
+
+-- a body that may move fast right now: a Skyrider ride, a knock or a pull (KnockedUntil), a held Technique, or a cast in
+-- the last FastAfterCast seconds (CastAt, SpellshotService) -- every dash, glide and blink starts with one
+local function fastNow(character, serverNow)
+	local ride = character:GetAttribute("SkyriderT0")
+	if ride ~= nil and ride ~= false then return true end
+	if serverNow < (tonumber(character:GetAttribute("KnockedUntil")) or 0) then return true end
+	local castAt = tonumber(character:GetAttribute("CastAt"))
+	if castAt and serverNow - castAt < (MG.FastAfterCast or 1.5) then return true end
+	for _, role in ipairs(Config.Roles) do
+		if character:GetAttribute("Holding_" .. role) then return true end
+	end
+	return false
+end
+
+local function guardBody(model, root, now, serverNow)
+	local st = moveSeen[model]
+	local pos = root.Position
+	local fast = fastNow(model, serverNow)
+	if not st then
+		moveSeen[model] = { Hist = { { now, pos } }, FastAt = fast and now or -math.huge }
+		return
+	end
+	if fast then st.FastAt = now end
+	local hist = st.Hist
+	local last = hist[#hist]
+	if (pos - last[2]).Magnitude < 0.05 then return end  -- the same position: the time it was first seen stands
+	-- the reference: the newest position first seen at least Window ago (or the oldest kept, early on)
+	local window = MG.Window or 0.5
+	while hist[2] and now - hist[2][1] >= window do table.remove(hist, 1) end
+	local ref = hist[1]
+	local t = math.clamp(now - ref[1], 1 / 60, MG.MaxGap or 3)
+	local dx, dz = pos.X - ref[2].X, pos.Z - ref[2].Z
+	local d = math.sqrt(dx * dx + dz * dz)
+	local ceiling = (st.FastAt >= ref[1]) and (MG.FastSpeed or 170) or (MG.BaseSpeed or 90)
+	if d > (MG.MinStep or 10) and d / t > ceiling then
+		Core.CountShot("move_snap")
+		if MG.Enforce then
+			local back = last[2]
+			pcall(function() model:PivotTo(model:GetPivot() + (back - pos)) end)
+			return                                       -- where it last stood stays the last position
+		end
+	end
+	hist[#hist + 1] = { now, pos }
+end
+
+RunService.Heartbeat:Connect(function()
+	if MG.Enabled ~= true then return end
+	local now = os.clock()
+	local serverNow = workspace:GetServerTimeNow()
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if humanoid and root and humanoid.Health > 0 then
+			if holds[character] or root.Anchored or now < (graceUntil[character] or 0) then
+				moveSeen[character] = nil                -- held, anchored or just moved by the server: fresh once let go
+			else
+				guardBody(character, root, now, serverNow)
+			end
+		end
+	end
+end)
 
 ----------------------------------------------------------------------------------------------------
 -- clearing a player's fight
@@ -371,11 +550,23 @@ function Core.Epoch(player)
 	return epochs[player] or 0
 end
 
---- reason: "zone" (left the arena) | "round" (a duel round is being reset)
+--- reason: "zone" (left the arena) | "round" (a duel round is being reset) | "left" (left the game)
 function Core.ClearPlayer(player, reason)
 	epochs[player] = (epochs[player] or 0) + 1
 	tell(clearListeners, player, reason)
+	-- (2026-10-19, audit P1-03) and any hold still on their body (Core.HoldBody): what held it was just cleared
+	for model, h in pairs(holds) do
+		if h.Player == player then dropHolds(model) end
+	end
 end
+
+-- (2026-10-19, audit P3-07) LEAVING THE GAME IS A CLEAR. It moved no epoch, so whatever a leaver had running went on
+-- landing in their name in some kits (Ring of Fire, Immolate burns, Flash Freeze, Twin Tide, Maw, Acid Rain, Storm
+-- Surge...) but not in others (Detonate, Volt Orb, Cascade, clouds, Deep Freeze...), and could still kill and decide a
+-- team match's round. Every kit's OnClear runs and every epoch check stops, as for a player leaving the arena.
+Players.PlayerRemoving:Connect(function(player)
+	Core.ClearPlayer(player, "left")
+end)
 
 local function watchZone(player)
 	local zone = player:GetAttribute("Zone")
@@ -388,6 +579,33 @@ end
 Players.PlayerAdded:Connect(watchZone)
 for _, player in ipairs(Players:GetPlayers()) do
 	watchZone(player)
+end
+
+----------------------------------------------------------------------------------------------------
+-- rate limits
+----------------------------------------------------------------------------------------------------
+-- (2026-10-19, audit P1-07) A per-player token bucket for the client remotes no other gate limits: `perSecond` tokens come
+-- back each second, up to `burst`, and each call that answers true spends one. `key` names the bucket (one per action), so
+-- a kit asks Core.Allow(player, "BoulderCharge", 4, 6) before doing a press's work or re-broadcasting it, and drops the
+-- message (answers nothing) when it is false. An honest client never comes near a limit set above its own send rate.
+local buckets = setmetatable({}, { __mode = "k" })     -- [player] = { [key] = { Tokens, At } }
+function Core.Allow(player, key, perSecond, burst)
+	local mine = buckets[player]
+	if not mine then
+		mine = {}
+		buckets[player] = mine
+	end
+	local now = os.clock()
+	local b = mine[key]
+	if not b then
+		b = { Tokens = burst, At = now }
+		mine[key] = b
+	end
+	b.Tokens = math.min(burst, b.Tokens + (now - b.At) * perSecond)
+	b.At = now
+	if b.Tokens < 1 then return false end
+	b.Tokens -= 1
+	return true
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -510,6 +728,42 @@ function Core.WasThere(model, position, window)
 	return false
 end
 
+--- (2026-10-19, audit P1-01) The speed a caster's ORIGIN slack may allow for: how far the server's copy of a moving body
+--- trails the real one. It used to be the root's AssemblyLinearVelocity, uncapped -- a value the owning client writes,
+--- so one frame of 10,000 studs/s let a shot "leave" from anywhere and its cover check run from there (Scorching Lash
+--- was the one release that capped it, review r1). Now the client's velocity counts only up to what the server has SEEN
+--- this body cover over the last quarter second (its own samples above, with margin for replication arriving in
+--- bursts), never under `floor` (a kit's own dash speed) and never over TRAIL_MAX.
+local TRAIL_MAX = 150           -- studs/s: faster than any ride, dash or throw in the game (Skyrider boost ~75, knocks ~55)
+local TRAIL_WINDOW = 0.25
+function Core.TrailSpeed(root, floor)
+	floor = floor or 0
+	local claimed = root.AssemblyLinearVelocity.Magnitude
+	local seen = 0
+	local samples = tracks[root.Parent]
+	if samples and #samples >= 2 then
+		local last = samples[#samples]
+		for i = #samples - 1, 1, -1 do
+			local s = samples[i]
+			if last[1] - s[1] >= TRAIL_WINDOW or i == 1 then
+				local dt = last[1] - s[1]
+				if dt > 1e-3 then seen = (last[2] - s[2]).Magnitude / dt end
+				break
+			end
+		end
+	end
+	local speed = math.min(claimed, seen * 1.5 + 10)
+	return math.min(math.max(speed, floor), math.max(TRAIL_MAX, floor))
+end
+
+--- (2026-10-19, audit P1-01) A ping as an origin allowance may use it: a lagging client raises its own ping, so it is
+--- capped (Scorching Lash's LASH_MAX_LAG is 0.25 s; this is a little kinder to a long route).
+function Core.Lag(ping)
+	ping = tonumber(ping) or 0
+	if ping ~= ping then return 0 end
+	return math.clamp(ping, 0, 0.3)
+end
+
 --- True if something solid (a wall, a board) stands on the shot's line short of `along` studs, on the
 --- server's copy of the world. Characters never count: where they stand is exactly what the two views
 --- disagree about. `shot` carries Origin, Dir (unit) and Character.
@@ -541,6 +795,44 @@ function Core.Blocked(shot, along, skip)
 		list[#list + 1] = model
 	end
 	return false
+end
+
+--- (2026-10-19, audit P1-12 / GC-14) One PAID M1 for a shot about to deal damage: true and spent, or false. SpellshotService
+--- counts every M1 CastRequest it accepts (and charges) in the player's "M1Paid" / "M1PaidAt" attributes; each kit's hit
+--- path asks here once per shot, on the shot's first damaging hit (by then its cast, sent with or just after the release,
+--- has arrived). A shot that never hits spends nothing, so a few paid shots may be banked -- at most M1_BANK, and none
+--- once M1_STALE seconds have passed since the last one was paid. Damage can therefore never outrun what was paid for,
+--- and a shot that hurts someone always had its relay sent to every other client.
+local M1_BANK = 3
+local M1_STALE = 6               -- longer than any M1's flight, slow motion included (a Boulder lives 2.4 s / ShotTimeScale)
+local m1Used = setmetatable({}, { __mode = "k" })     -- [player] = how many of its paid shots are spent
+function Core.TakePaidM1(player)
+	local paid = player:GetAttribute("M1Paid") or 0
+	local used = m1Used[player] or 0
+	if workspace:GetServerTimeNow() - (player:GetAttribute("M1PaidAt") or -math.huge) > M1_STALE then used = paid end
+	used = math.max(used, paid - M1_BANK)
+	if used >= paid then
+		m1Used[player] = used
+		return false
+	end
+	m1Used[player] = used + 1
+	return true
+end
+
+--- (2026-10-19, audit GC-02) Whether a Bulwark Wall stands on the line from `a` to `b` -- walls only, so a dash's own
+--- line up a ramp or a stair is never refused by the floor. The wall is a model with a Humanoid, so every "through
+--- characters" dash took it for a body and went through it (DashMotor, now fixed on the client); the server re-checks
+--- here what a dash's damage may reach. Walls are parented straight to workspace (TerraHandler), so the list is short.
+function Core.WallBetween(a, b)
+	local walls = {}
+	for _, m in ipairs(workspace:GetChildren()) do
+		if m:IsA("Model") and m:GetAttribute("WallOwner") then walls[#walls + 1] = m end
+	end
+	if #walls == 0 or not (Core.ValidVector(a) and Core.ValidVector(b)) then return false end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = walls
+	return workspace:Raycast(a, b - a, params) ~= nil
 end
 
 --- The claimed point checked against the thing claimed: a character has to have stood near it in the last

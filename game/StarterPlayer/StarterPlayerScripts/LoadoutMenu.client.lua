@@ -4,17 +4,17 @@
 	PLACEHOLDER. A small panel for the two choices the manual separates:
 
 	  YOUR ELEMENT      what your M1, your Primary, your Passive and (v0.7, 2026-09-24) your Ultimate
-	                    are. One of eight.
-	  YOUR TECHNIQUES   the two you carry (Technique 1 and 2, Q and E by default), BOTH drawn from ONE
-	                    pool that every Element contributes to -- so a Cryo player can run Pyro's
-	                    Scorching Lash. That is why this is two choices and not one.
+	                    are. One of nine.
+	  YOUR TECHNIQUES   the two you carry (Technique 1 and 2, Q and E by default), both browsed from ONE
+	                    pool. (2026-10-19, audit GA-13) Since P31 (Config.TechniquesOwnElementOnly) an
+	                    Element holds only its OWN Techniques, so the pool each row shows is the
+	                    equipped Element's: every Element but Pyro has exactly two, both equipped, and
+	                    their rows are fixed (dimmed arrows, nothing sent).
 
-	ALL EIGHT ELEMENTS ARE LISTED; NOT ALL ARE BUILT. Config.BuiltElements says which may be picked
-	(Cryo and Pyro in full, Zephyr in part); the rest are drawn dimmed and marked SOON: they are designed
-	in SpellshotConfig -- name, archetype, colours, M1, Primary, Passive, and one Technique each in the
-	three pools -- and nothing is built. A partly built Element (Config.PartialKits) can be picked and is
-	tagged with what is live; its unbuilt Techniques stay locked like an unbuilt Element's. Picking
-	anything with no cast path is refused here and again by the server.
+	ALL NINE ELEMENTS ARE LISTED AND BUILT (Config.BuiltElements). The SOON state is kept for an Element
+	added later without a cast path: it is drawn dimmed and marked SOON, and picking it is refused here
+	and again by the server. A partly built Element (Config.PartialKits) can be picked; the footer says
+	what is live only while some part of it is not.
 
 	THE v0.7 LOADOUT (2026-09-24; it replaces the 2026-09-23 Element-fixed slots): the ULTIMATE row shows
 	the Element's own, and its arrows are dimmed and only say why. The two TECHNIQUE rows browse the same
@@ -28,7 +28,8 @@
 	newsprint kit as the settings panel because it costs nothing to match.
 
 	For tools: the ScreenGui carries a BindableEvent "Command" -- Fire("open"), Fire("close"),
-	Fire("element", name), Fire("technique", role, key), Fire("skin", skinId), Fire("view", "Techniques" | "Skins"
+	Fire("element", name), Fire("technique", role, key), Fire("skin", skinId) (the Element's SKIN), Fire("wrap",
+	wrapId) (the Element's WRAP), Fire("view", "Techniques" | "Skins"
 	(the wraps) | "ElementSkins"), and (2026-10-18, economy) Fire("unlock", name) (the UNLOCK confirm for a locked
 	Element) and Fire("confirm") (that confirm's UNLOCK / GET SPARKS button).
 
@@ -399,17 +400,6 @@ local elSkinsFace = nil        -- the SKINS card
 local setView                  -- (below)
 local openUnlock               -- (below, 2026-10-18, economy): a locked Element's UNLOCK confirm
 
---- For a partly built Element, what is live, as a short tag ("M1 ONLY"); nil for a whole kit.
-local function partialTag(name)
-	local partial = Config.PartialKits[name]
-	if not partial then return nil end
-	local live = {}
-	for _, role in ipairs({ "M1", "Primary", "Passive" }) do
-		if partial[role] then live[#live + 1] = role:upper() end
-	end
-	return (#live > 0 and table.concat(live, " + ") or "NOTHING") .. " ONLY"
-end
-
 local function refreshElements()
 	local chosen = currentElement()
 	local owned = ownedSet()
@@ -430,7 +420,7 @@ local function refreshElements()
 		chip.unlockHit.Visible = locked and chip.forSale
 		if locked then chip.icon.ImageTransparency = 0.4 end
 		-- 2026-10-10: no "M1 + PRIMARY + PASSIVE ONLY" under a card any more (it was clipped at the card's edge); the
-		-- header's BUILT note still says how much of a partly built kit is live
+		-- pick's footer says how much of a partly built kit is live
 		chip.tag.Text = locked and "" or (built and (on and "EQUIPPED" or "") or "SOON")   -- (a locked card's line is its price)
 		chip.tag.TextColor3 = on and C.Green or C.Grey
 	end
@@ -504,12 +494,16 @@ do
 				return
 			end
 			loadoutRemote:FireServer("Element", item.Name)
+			-- (2026-10-19, audit GA-12) the partial line only while something IS unbuilt: Zephyr, Terra and Voltaic keep
+			-- all-true PartialKits rows, which printed "... live;  not built yet." and skipped the full kit's line
+			local live, soon = {}, {}
 			if Config.PartialKits[item.Name] then
-				local live, soon = {}, {}
 				for _, role in ipairs({ "M1", "Primary", "Passive" }) do
 					local list = Config.IsPartBuilt(item.Name, role) and live or soon
 					list[#list + 1] = item.Def[role].Name
 				end
+			end
+			if #soon > 0 then
 				say(string.format("%s: %s live; %s not built yet.", item.Def.Display or item.Name,
 					table.concat(live, ", "), table.concat(soon, ", ")))
 			else
@@ -543,7 +537,9 @@ do
 	local mark = make("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 10, 0.5, 0), Size = UDim2.fromOffset(24, 20), ZIndex = 14 }, face)
 	-- THE MARK FOLLOWS THE EQUIPPED ELEMENT (2026-10-10; SkinCatalog.WrapIcon): Radiant's rainbow stripes, Pyro's azure
-	-- flame-drop, and a neutral cream palette for every Element with no wraps of its own. Flat, ink outline, no gradients.
+	-- flame-drop, and a cream palette for the rest. Flat, ink outline, no gradients. (2026-10-19, audit GA-14) the
+	-- palette's wells are ink only for an Element with NO wraps; one that has wraps (SkinCatalog.WrapsOf: Cryo, Toxin,
+	-- Terra, Umbra) wears its wraps' colours in them, so the card no longer says "none" for a page with content.
 	local marks = {}
 	marks.Stripes = make("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 14 }, mark)
 	local stops = (Skins.Skins.Rainbow and Skins.Skins.Rainbow.Stops) or {}
@@ -569,14 +565,25 @@ do
 		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(22, 17), ZIndex = 15 }, mark)
 	make("UICorner", { CornerRadius = UDim.new(0.5, 0) }, marks.Palette)
 	make("UIStroke", { Color = C.Ink, Thickness = 1.5 }, marks.Palette)
+	local wells = {}
 	for _, xy in ipairs({ { 0.3, 0.38 }, { 0.55, 0.3 }, { 0.72, 0.55 } }) do
-		make("UICorner", { CornerRadius = UDim.new(0.5, 0) }, make("Frame", { BackgroundColor3 = C.Ink, BorderSizePixel = 0,
+		local well = make("Frame", { BackgroundColor3 = C.Ink, BorderSizePixel = 0,
 			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(xy[1], xy[2]), Size = UDim2.fromOffset(4, 4),
-			ZIndex = 16 }, marks.Palette))
+			ZIndex = 16 }, marks.Palette)
+		make("UICorner", { CornerRadius = UDim.new(0.5, 0) }, well)
+		wells[#wells + 1] = well
 	end
 	local function showMark()
-		local want = (Skins.WrapIcon or {})[player:GetAttribute("Element")] or "Palette"
+		local element = player:GetAttribute("Element")
+		local want = (Skins.WrapIcon or {})[element] or "Palette"
 		for k, f in pairs(marks) do f.Visible = (k == want) end
+		local ids = Skins.WrapsOf and Skins.WrapsOf(element) or {}
+		for i, well in ipairs(wells) do
+			local w = #ids > 0 and Skins.Skins[ids[(i - 1) % #ids + 1]] or nil
+			local col = w and ((w.Label and w.Label[1]) or (w.Palette and w.Palette.Main)) or nil
+			well.BackgroundColor3 = col or C.Ink
+			well.Size = UDim2.fromOffset(col and 6 or 4, col and 6 or 4)
+		end
 	end
 	player:GetAttributeChangedSignal("Element"):Connect(showMark)
 	showMark()
@@ -667,7 +674,9 @@ local function fillUnlock()
 	if not name then return end
 	-- (2026-10-18 review) no balance to judge the price against yet: the save is still loading, or it could not load on
 	-- this server (DataError). The placeholder 0 is not "short", so nothing here points at the Sparks packs.
-	if player:GetAttribute("DataLoaded") ~= true then
+	-- (2026-10-19, audit P2-14) DataError with DataLoaded: the save loaded but this server lost its lock, so nothing
+	-- spent or earned here is saved any more; it reads as SAVE UNAVAILABLE too
+	if player:GetAttribute("DataLoaded") ~= true or player:GetAttribute("DataError") == true then
 		local failed = player:GetAttribute("DataError") == true
 		mTitle.Text = failed and "SAVE UNAVAILABLE" or "LOADING YOUR SAVE"
 		mIcon.Image = Icons.Element[name] or ""
@@ -718,7 +727,7 @@ end
 local function confirmUnlock()
 	local name = unlockFor
 	if not name or unlockBusy then return end
-	if player:GetAttribute("DataLoaded") ~= true then return end     -- WAIT (fillUnlock): nothing loaded to spend yet
+	if player:GetAttribute("DataLoaded") ~= true or player:GetAttribute("DataError") == true then return end   -- WAIT (fillUnlock)
 	if sparks() < (Economy.PriceOf(name) or 0) then
 		-- GET SPARKS: the shop, on its packs (opening, it closes this menu through our Command)
 		closeUnlock()
@@ -761,7 +770,10 @@ local roleRows = {}
 local function refreshRoles(snap)
 	for role, row in pairs(roleRows) do
 		local locked = (role == "Ultimate")
-		if locked then
+		-- (2026-10-19, audit P4-10) a Technique row with nothing to change to: the Element has no Technique beyond the
+		-- two already equipped (every Element but Pyro), so its arrows dim like the Ultimate's
+		if not locked and #techniqueList() <= 2 then locked = true end
+		if role == "Ultimate" then
 			-- the Element's own (v0.7, 2026-09-24): shown as equipped, nothing to browse -- the arrows dim and explain
 			local own = ownUltimate(currentElement())
 			row.value.Text = own and string.upper(own.Name) or "NONE"
@@ -838,6 +850,15 @@ do
 				if row.list[row.index].Key ~= taken then break end
 			end
 			local browsed = row.list[row.index]
+			if not browsed then return end
+			if browsed.Key == currentTechnique(role) or browsed.Key == taken then
+				-- (2026-10-19, audit P4-10) the step came back round to what is already equipped: nothing to send, and
+				-- nothing announced as if it had been chosen
+				say(string.format("%s's Techniques are both equipped -- there is no other to pick.",
+					elementDisplay(currentElement())), true)
+				refreshRoles()
+				return
+			end
 			if Config.IsTechniqueBuilt(role, browsed.Key) then
 				loadoutRemote:FireServer("Technique", role, browsed.Key)
 				say(browsed.Entry.Name .. ": " .. browsed.Entry.Desc)
@@ -872,9 +893,11 @@ end
 ----------------------------------------------------------------------------------------------------
 -- the SKINS page (2026-10-10): one row per ability slot of the equipped Element -- M1, Primary, Passive (when it draws
 -- anything), Ultimate and the two Techniques -- each a Technique row: the slot and ability, a < > stepper round the skin
--- name, EQUIPPED. A slot with Default alone (every Element but Radiant for now, and a Technique borrowed from another
--- Element: FLAGGED) shows greyed arrows, as the Ultimate's. A step equips at once (LoadoutRequest "Skin"); the next cast
--- draws it. The rows scroll inside the column: six do not fit its height, and the panel keeps its size.
+-- name, EQUIPPED. A slot with Default alone (every ability with no per-ability wrap -- only Radiant and Terra have them
+-- (SkinCatalog.Offer); Cryo's, Toxin's, Aqua's, Umbra's and (2026-10-24) Pyro's are Element-wide, on the WRAPS page -- and a Technique
+-- borrowed from another Element: FLAGGED) shows greyed arrows, as the Ultimate's (2026-10-19, audit GA-13). A step
+-- equips at once (LoadoutRequest "Skin"); the next cast draws it. The rows scroll inside the column: six do not fit its
+-- height, and the panel keeps its size.
 ----------------------------------------------------------------------------------------------------
 local skinsTitle, skinsScroll
 local skinRows = {}
@@ -1261,7 +1284,8 @@ local function setOpen(v)
 		refreshElements()
 		refreshRoles(true)
 		setView("Techniques")
-		say("Pick an Element: its M1, Primary, Passive and Ultimate come with it. Techniques: any two, from every Element.")
+		-- (2026-10-19, audit GA-13) Techniques are the Element's own since P31, not "any two, from every Element"
+		say("Pick an Element: its M1, Primary, Passive, Ultimate and Techniques come with it.")
 		backdrop.Visible = true
 		backdrop.BackgroundTransparency = 1
 		popScale.Scale = 0.94
@@ -1279,7 +1303,16 @@ local function setOpen(v)
 	end
 end
 
-chipHit.Activated:Connect(function() setOpen(not open) end)
+chipHit.Activated:Connect(function()
+	-- (2026-10-27, the owner) out of a match, the button takes you into the Loadout Altar's showcase chamber
+	local sc = playerGui:FindFirstChild("AltarShowcase")
+	local cmd = sc and sc:GetAttribute("Ready") and sc:FindFirstChild("Command")
+	if cmd and not open and player:GetAttribute("DuelMatch") == nil then
+		cmd:Fire("open")
+		return
+	end
+	setOpen(not open)
+end)
 chipHit.MouseEnter:Connect(function()
 	TweenService:Create(chipIcon, TweenInfo.new(0.2), { Rotation = -12 }):Play()
 end)
@@ -1328,18 +1361,10 @@ for _, name in ipairs({ "OwnedElements", "Sparks", "DataLoaded", "DataError" }) 
 end
 
 -- fit the panel to the screen, off the ScreenGui (Camera.ViewportSize misreports in Studio)
--- the header's note: which kits are built, and how much of a partly built one
-do
-	local names = {}
-	for _, item in ipairs(elementsInOrder()) do
-		if Config.IsBuilt(item.Name) then
-			local partial = partialTag(item.Name)
-			names[#names + 1] = string.upper(item.Def.Display or item.Name) .. (partial and (" (" .. partial .. ")") or "")
-		end
-	end
-	headNote.Text = ""   -- the BUILT list is gone from the header (owner, 2026-10-10); `names` is kept for a debug readout
-	headNote.Visible = false
-end
+-- the header's note: the BUILT list is gone from the header (owner, 2026-10-10). (2026-10-19, audit GA-12) the list it
+-- still computed and never showed is gone too.
+headNote.Text = ""
+headNote.Visible = false
 
 local function fit()
 	local s = gui.AbsoluteSize

@@ -2,8 +2,10 @@
 	ZephyrGustPad  (ModuleScript)  ->  ReplicatedStorage/IceMagic/ZephyrGustPad          Zephyr v6 import, 2026-10-06
 
 	GUST PAD, the Technique pool's Defense half (it REPLACES Deflect Gust: the owner's decision, ROBLOX_IMPORT_PLAN §0).
-	Press it and a flat open spiral of air is pressed into the ground at your crosshair; whoever steps on it -- friend or
-	foe, the caster too, training dummies too -- is coiled, then launched straight up a column of wind.
+	Press it and a flat open spiral of air is pressed into the ground at your crosshair; the caster and enemies who step on
+	it (training dummies too; teammates are spared in team modes, as is anyone the caster may not hurt: 2026-10-19, audit
+	P5E-04 -- ZephyrGustPadServer's `eligible`) are coiled, then launched straight up a column of wind. An enemy's pad --
+	one that would launch YOU -- shows its rim ticks as 8 inward chevrons instead of 16 dashes (not colour alone).
 
 	ONE SHARED MODULE, TWO SIDES (the plan's client contract, §5):
 	  .Tuning      every number, gameplay and look. ServerScriptService.ZephyrGustPadServer requires this module for it
@@ -12,7 +14,9 @@
 	  .Handlers    the broadcasts this piece receives, ("VFX", kind, data) on IceAbilityRemote via AbilityFX (which copies
 	               the table once, at load -- it is filled synchronously below):
 	                 GustPad       { Caster (character), Position (the pad's floor point), T0 (server time of the press),
-	                                 Life, Pad (id), Radius }            the pad: its look starts, the body's press plays
+	                                 Life, Pad (id), Radius, Resync? }   the pad: its look starts, the body's press plays
+	                                                                     (not with Resync = true: a late joiner's replay
+	                                                                     of a live pad, 2026-10-19, audit P5E-19)
 	                 GustPadStep   { Pad, Character, T0, At }            something stepped on: the ripple and the coil
 	                                                                     (At = the launch it is coiled toward)
 	                 GustPadLaunch { Pad, Character, T0 }                the column, to everyone
@@ -646,6 +650,10 @@ end
 
 local function drawPad(pad, cv, t)
 	local C, RP = pad.C, pad.Radius
+	-- (2026-10-19, audit P5E-11) Reduce Flashing, as Wind Blade and Cross-Slash halve theirs: the launch's and a step's
+	-- light spike and the launch column's white-hot core line at half (ZephyrDraw already drops flicker, lights x0.6)
+	local ZDm = need("ZephyrDraw")
+	local calmK = (ZDm and type(ZDm.Calm) == "function" and ZDm.Calm()) and 0.5 or 1
 	advance(pad, t)
 	local th = pad.ThNow
 	local fRaw = form(t)
@@ -699,7 +707,28 @@ local function drawPad(pad, cv, t)
 
 		------------------------------------------------------------------ v5 pad(): the ticks
 		local th2 = 0.35 * t
-		for i = 0, 15 do
+		-- (2026-10-19, audit P5E-04) an enemy's pad (pad.Hostile): 8 chevrons pointing in at the eye instead of the 16
+		-- dashes -- the same 16 spans -- so "this one launches me" reads without colour
+		if pad.Hostile then
+			local half = TAU / 40
+			for i = 0, 7 do
+				local b = buf(pad, TICK_KEYS[i], 3)
+				local P, S, o = b.P, b.S, b.O
+				local a = th2 + i * TAU / 8
+				P[1] = at(C, RP * 1.2, a - half, 0.05)
+				P[2] = at(C, RP * 1.02, a, 0.05)
+				P[3] = at(C, RP * 1.2, a + half, 0.05)
+				for j = 1, 3 do                             -- flat on the floor, the width across each arm
+					local dv = P[min(j + 1, 3)] - P[max(j - 1, 1)]
+					local fl = Vector3.new(dv.X, 0, dv.Z)
+					S[j] = fl.Magnitude > 1e-4 and Vector3.new(-fl.Z, 0, fl.X).Unit or Vector3.new(1, 0, 0)
+				end
+				o.side = S
+				o.fade, o.alpha, o.glow, o.tail, o.maxSpans = f * 0.85, 0.75, 1.15, 0.3, 2
+				cv:Ribbon(P, 0.16, "glow", o)
+			end
+		end
+		for i = 0, (pad.Hostile and -1 or 15) do
 			local b = buf(pad, TICK_KEYS[i], 2)
 			local P, o = b.P, b.O
 			local a = th2 + i * TAU / 16
@@ -778,7 +807,7 @@ local function drawPad(pad, cv, t)
 				if camFlat > LK.OwnClearR then
 					local b = buf(pad, "colc", 2)
 					b.P[1], b.P[2] = C + UP * top, C + UP * 0.1
-					b.O.fade, b.O.glow, b.O.tail, b.O.maxSpans = fd, 1.3, 0.4, 1
+					b.O.fade, b.O.glow, b.O.tail, b.O.maxSpans = fd, 1.3 * calmK, 0.4, 1
 					cv:Ribbon(b.P, 0.22, "core", b.O)
 				end
 				-- 4 streaks spiralling up it
@@ -916,10 +945,10 @@ local function drawPad(pad, cv, t)
 		local u = (t % LK.Pulse) / LK.Pulse
 		local e = idleK(pad, t) * endK * (LT.Idle + LT.Breath * sin(pi * u) ^ 2)
 		for _, L in ipairs(pad.Launches) do
-			if t >= L - 0.01 then e += LT.Launch * exp(-max(0, t - L) / LT.LaunchTau) end
+			if t >= L - 0.01 then e += LT.Launch * calmK * exp(-max(0, t - L) / LT.LaunchTau) end
 		end
 		for _, st in ipairs(pad.Steps) do
-			if t >= st[1] then e += LT.Step * exp(-(t - st[1]) / LT.StepTau) end
+			if t >= st[1] then e += LT.Step * calmK * exp(-(t - st[1]) / LT.StepTau) end
 		end
 		if e > 1 then
 			local o = pad.LO
@@ -998,9 +1027,11 @@ local function startPad(pad, clock, freeze)
 				OnEnd = onEnd, Budget = "GustPad", Own = pad.Own })
 		end
 	else
-		-- Budget: ZD.Budgets.GustPad (220 Beams, 1 light); Own: your own pad keeps full density under Reduce Enemy VFX
+		-- Budget: ZD.Budgets.GustPad (220 Beams, 1 light). Own = true for EVERY pad (2026-10-19, audit P5F-07): a pad
+		-- launches anyone who steps on it -- a shared hazard, not "enemy VFX" -- so Reduce Enemy VFX never thins it
+		-- (Graphics Quality's density still applies); pad.Own keeps its own-view meaning in drawPad
 		ok, handle = pcall(ZD.Play, "GustPad", frameFn, { Clock = clock, MaxLife = pad.EndT + 8, OnEnd = onEnd,
-			Budget = "GustPad", Own = pad.Own })
+			Budget = "GustPad", Own = true })
 	end
 	if ok then
 		pad.Handle = handle
@@ -1080,9 +1111,12 @@ H.GustPad = function(d)
 	local caster = typeof(d.Caster) == "Instance" and d.Caster or nil
 	local player = localPlayer()
 	local own = caster ~= nil and player ~= nil and caster == player.Character
-	if own then heardSeq = pressSeq end                   -- the server took this client's press
+	-- (2026-10-19, audit P5E-19) Resync = true: a live pad replayed to a late joiner (ZephyrGustPadServer's PlayerAdded),
+	-- not a new press -- no press answer, and the caster's body does not play the press again
+	local resync = d.Resync == true
+	if own and not resync then heardSeq = pressSeq end    -- the server took this client's press
 	-- the body's press, for everyone (the caster's own client too: nobody sees their own body in first person)
-	if caster and caster.Parent then call("CastPose", "Play", caster, "GustPad") end
+	if caster and caster.Parent and not resync then call("CastPose", "Play", caster, "GustPad") end
 	local id = validNumber(d.Pad) and d.Pad or d.T0
 	if pads[id] then return end
 	-- one pad per caster: the old one unwinds (the server also says so, GustPadEnd)
@@ -1092,6 +1126,16 @@ H.GustPad = function(d)
 	local radius = validNumber(d.Radius) and d.Radius or T.Radius
 	local pad = newPad(id, d.Position, radius, life, floor(id) % 9973)
 	pad.T0, pad.Caster, pad.Own = d.T0, caster, own
+	-- (2026-10-19, audit P5E-04) an enemy's pad -- one that would launch this viewer: the server's rule, Config.MayHurt
+	-- (caster, me), never the viewer's own -- draws its rim ticks as chevrons (drawPad), a cue that is not colour alone
+	if not own and caster and player then
+		local casterPlayer = Players:GetPlayerFromCharacter(caster)
+		local Cfg = need("SpellshotConfig")
+		if casterPlayer and Cfg and type(Cfg.MayHurt) == "function" then
+			local ok, hurts = pcall(Cfg.MayHurt, casterPlayer, player)
+			pad.Hostile = ok and hurts == true
+		end
+	end
 	pads[id] = pad
 	if caster then byCaster[caster] = pad end
 	local t0 = d.T0

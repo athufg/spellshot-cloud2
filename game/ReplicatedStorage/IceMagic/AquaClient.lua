@@ -8,7 +8,10 @@
 	                  SpellshotInput's own LOCAL_CAST), ReleasePayload (Sidearm's key coming up stops its rapid fire),
 	                  SetReleaser (so a Sidearm out of mana lets go by itself through SpellshotInput's releaseHeld).
 	  AbilityFX       Handlers: every Aqua* broadcast, drawn for every character (the caster's own arms and shots were
-	                  already drawn on the keypress, so those skip the local body).
+	                  already drawn on the keypress, so those skip the local body). AquaMawEnd / AquaTwinTideEnd (the
+	                  server ended a cast early: a round reset, the caster gone) drop that cast's colliders and look at
+	                  once (2026-10-19, audit P5D-09); the walls' colliders are built from the broadcast whatever is
+	                  drawn (AquaFX, audit P5D-08).
 
 	YOUR OWN BODY. Movement is client-owned, so everything that moves a player happens on that player's own client:
 	  AquaPull   Undertow caught you: straight to the vortex's centre in PullTime, a little lift (Cyclone's mover).
@@ -68,6 +71,12 @@ local function shotExclude(c)
 	return shooter and Config.AddUnhurtable({ c }, shooter) or { c }
 end
 
+--- (2026-10-19, audit P5F-06) Another player's cast that Reduce Enemy VFX leaves whole: not an ENEMY's (VFXLibrary.IsEnemy:
+--- a teammate's in your match, an ally dummy's). AquaFX's `own` for thinning; false when VFXLibrary cannot say.
+local function friendly(c)
+	return typeof(c) == "Instance" and type(VFXLibrary.IsEnemy) == "function" and not VFXLibrary.IsEnemy(c)
+end
+
 --- A held viewmodel clip let go of `seconds` later, if it is still the one playing (a refused cast never lets go).
 local function stopClipLater(name, seconds)
 	task.delay(seconds, function()
@@ -98,6 +107,11 @@ function AquaClient.FireRiptide(character, side)
 		AquaFX.Riptide({
 			Origin = origin, Dir = dir, Own = true, Exclude = ownExclude(character),
 			OnHit = function(part, position)
+				iceRemote:FireServer("RiptideHit", { Id = id, Part = part, Position = position })
+			end,
+			-- (2026-10-21) the wall it breaks on, claimed the same way: the server's world branch announces it on
+			-- ShotImpact (a Training Ground TargetBoard scores it), as Wind Blade's world hit is announced
+			OnWorld = function(part, position)
 				iceRemote:FireServer("RiptideHit", { Id = id, Part = part, Position = position })
 			end,
 		})
@@ -628,8 +642,8 @@ local function fireSidearm(s)
 end
 
 -- the press (tryCast's generic HELD path has already checked the cooldown and the mana, and sends the press). No arm
--- clip: the right arm's idle pose already holds the gun where the eye expects it (Cinder Shield's hold, borrowed at
--- first, swung the arm out of view and left the gun hanging at the lens)
+-- clip: the right arm's idle pose already holds the gun where the eye expects it (an arm hold borrowed at
+-- first swung the arm out of view and left the gun hanging at the lens)
 AquaClient.LocalCast.Sidearm = function(character, role)
 	dropSidearm()
 	local head = character:FindFirstChild("Head")
@@ -869,7 +883,8 @@ H.AquaRiptide = function(d)
 	CastPose.Play(c, "IcicleShard" .. ((d.Side == "L") and "L" or "R"))
 	if c == player.Character then return end
 	if typeof(d.Origin) ~= "Vector3" or typeof(d.Dir) ~= "Vector3" then return end
-	AquaFX.Riptide({ Origin = d.Origin, Dir = d.Dir, T0 = d.T0, Exclude = shotExclude(c) })
+	AquaFX.Riptide({ Origin = d.Origin, Dir = d.Dir, T0 = d.T0, Exclude = shotExclude(c),
+		Friendly = friendly(c) })                            -- (2026-10-19, audit P5F-06) a teammate's: not thinned
 end
 
 -- Undertow: the body's arms circling as the disc is drawn in front of it; the caster's own disc was drawn on the keypress
@@ -878,7 +893,8 @@ H.AquaUndertow = function(d)
 	if typeof(d.Center) ~= "Vector3" then return end
 	if c then CastPose.Play(c, "CycloneForm") end
 	if c == player.Character then return end
-	AquaFX.Undertow(d.Center, typeof(d.Look) == "Vector3" and d.Look or nil, d.T0)
+	-- (2026-10-19, audit P5D-02) not ours; (P5F-06) a teammate's counts as ours for Reduce Enemy VFX
+	AquaFX.Undertow(d.Center, typeof(d.Look) == "Vector3" and d.Look or nil, d.T0, friendly(c))
 end
 
 H.AquaUndertowSnap = function(d)
@@ -886,6 +902,20 @@ H.AquaUndertowSnap = function(d)
 	if not c then return end
 	CastPose.Play(c, "CycloneRelease")
 	if c == player.Character then Viewmodel.Punch(0.1) end         -- the yank, felt
+end
+
+-- (2026-10-19, audit P5D-09) each caster's live Twin Tide, so the server's AquaTwinTideEnd can drop it
+local tides = setmetatable({}, { __mode = "k" })     -- [character] = { Handle, T0 }
+
+--- The server's end for a cast (AquaMawEnd / AquaTwinTideEnd { Character, T0 }): the entry for that character, if its
+--- T0 is the ended cast's (an older cast's end never drops a newer one).
+local function endedEntry(list, d)
+	local c = d.Character
+	local entry = c and list[c]
+	if not entry then return nil end
+	if type(d.T0) == "number" and type(entry.T0) == "number" and math.abs(d.T0 - entry.T0) > 1e-3 then return nil end
+	list[c] = nil
+	return entry
 end
 
 H.AquaTwinTide = function(d)
@@ -897,7 +927,23 @@ H.AquaTwinTide = function(d)
 			if CastPose.CurrentClip(c) == "BulwarkWallRaise" then CastPose.Stop(c) end
 		end)
 	end
-	AquaFX.TwinTide(d.Center, d.Axis, d.T0)
+	-- (2026-10-19, audit P5D-02) own / not; (P5F-06) a teammate's is not thinned either
+	local handle = AquaFX.TwinTide(d.Center, d.Axis, d.T0, c and (c == player.Character or friendly(c)))
+	if c and type(handle) == "table" then
+		local entry = { Handle = handle, T0 = d.T0 }
+		tides[c] = entry
+		local W = A.TwinTide
+		task.delay(W.CloseTime + W.HoldTime + W.SinkTime + 4, function()   -- past the look's flipbook: nothing left to end
+			if tides[c] == entry then tides[c] = nil end
+		end)
+	end
+end
+
+-- (2026-10-19, audit P5D-09) the server ended a Twin Tide whose walls were still up (a round reset, the caster left):
+-- its colliders and its look go at once, so nobody is blocked by a cast the server no longer runs
+H.AquaTwinTideEnd = function(d)
+	local entry = endedEntry(tides, d)
+	if entry and type(entry.Handle.Cancel) == "function" then entry.Handle.Cancel() end
 end
 
 -- Sidearm: another player's gun -- drawn when they press, kicked by each of their shots, put away Linger after their
@@ -908,7 +954,7 @@ local function putAwayGun(c)
 	local g = guns[c]
 	guns[c] = nil
 	if g then g.Gun.Holster() end
-	if CastPose.CurrentClip(c) == "CinderShieldCast" then CastPose.Stop(c) end
+	if CastPose.CurrentClip(c) == "SidearmDraw" then CastPose.Stop(c) end
 end
 
 H.AquaSidearmHold = function(d)
@@ -922,14 +968,14 @@ H.AquaSidearmHold = function(d)
 	end
 	if d.On then
 		putAwayGun(c)
-		CastPose.Play(c, "CinderShieldCast")
+		CastPose.Play(c, "SidearmDraw")
 		guns[c] = {
 			Gun = AquaFX.SidearmGun(function()
 				local hand = c:FindFirstChild("RightHand") or c:FindFirstChild("Right Arm")
 				local root = c:FindFirstChild("HumanoidRootPart")
 				if not (hand and root and c.Parent) then return nil end
 				return CFrame.lookAt(hand.Position, hand.Position + root.CFrame.LookVector)
-			end),
+			end, nil, friendly(c)),                              -- (2026-10-19, audit P5D-02 / P5F-06) an enemy's gun: thinned
 			LastShot = 0, Shots = 0,
 		}
 	else
@@ -970,14 +1016,22 @@ H.AquaMaw = function(d)
 	local c = d.Character
 	if typeof(d.Center) ~= "Vector3" then return end
 	if c then CastPose.Play(c, "FlashFreeze") end
-	local handle = AquaFX.Maw(d.Center, d.T0)
+	-- (2026-10-19, audit P5D-02) own / not; (P5F-06) a teammate's is not thinned either
+	local handle = AquaFX.Maw(d.Center, d.T0, c and (c == player.Character or friendly(c)))
 	if c then
-		local entry = { Handle = handle }
+		local entry = { Handle = handle, T0 = d.T0 }
 		maws[c] = entry
 		task.delay(A.Maw.EndTime + 0.5, function()
 			if maws[c] == entry then maws[c] = nil end
 		end)
 	end
+end
+
+-- (2026-10-19, audit P5D-09) the server ended the Maw early (a round reset, the caster left): the tank's colliders and
+-- ceiling go at once and it drains from there (AquaFX's Cancel), so nobody respawns trapped in it
+H.AquaMawEnd = function(d)
+	local entry = endedEntry(maws, d)
+	if entry and type(entry.Handle.Cancel) == "function" then entry.Handle.Cancel() end
 end
 
 -- one shark circling for every enemy the tank closed on, each lunging at and biting its own (the owner, 2026-09-25)
@@ -1005,5 +1059,9 @@ H.AquaMawBite = function(d)
 		entry.Handle.Bite(d.Target)
 	end
 end
+
+-- COLOUR WRAPS (2026-10-19): every handler and keypress cast above, the foam at a rider's feet and the local body's own
+-- shots draw in their caster's wrap (AquaWrap.Install); with no wrap each is called exactly as before
+pcall(function() require(iceFolder:WaitForChild("AquaWrap", 5)).Install(AquaClient, AquaFX) end)
 
 return AquaClient

@@ -81,8 +81,9 @@ local STYLES = {
 	-- (Cryo's FROZENOUT, Terra's GROUNDED, Zephyr's BLOWNAWAY). That set is art that no code reads yet, so
 	-- this style reuses the WORD, not the image -- a callout is kit lettering, not a picture.
 	-- THE COLOURS ARE THE WHOLE POINT. Voltaic's Base #F5C70F sits within a few points of Radiant's
-	-- #F5C230 and of the "Ultimate ready" UI gold #F5B800, and Voltaic is one of two Elements that do NOT
-	-- change under Colourblind-Safe (SpellshotSettings.ElementColors), so a gold-tinted burst with gold
+	-- #F5C230 and of the "Ultimate ready" UI gold #F5B800, and Voltaic is one of the seven Elements that do NOT
+	-- change under Colourblind-Safe (only Terra and Toxin move: SpellshotSettings.ElementColors; 2026-10-19, audit
+	-- P5F-20 -- callouts do not read that palette anyway), so a gold-tinted burst with gold
 	-- lettering would read as "somebody's ult is up" rather than as Voltaic. The word is therefore set in
 	-- the VIOLET Dark #4A1A8C, which nothing else in the game uses, on a near-white burst tinted a hair
 	-- toward lilac -- the same trick the built Voltaic comic burst plays with its dots.

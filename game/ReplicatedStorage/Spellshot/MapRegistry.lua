@@ -17,8 +17,11 @@
 	             white, which is the one thing a map whose look is made of light cannot survive.
 	  Sky        the six skybox faces, swapped in on the client while the player is on the map
 	  Vote       false keeps a map out of the vote (the Training Grounds: its Hub gate is the way in)
+	  Practice   true: offered to a Solo Test only, never to a Duel or team match (2026-10-19, audit P1-04: the
+	             range's refilling dummies fed Ultimate charge and passives mid-match, and its thrower hit duellists)
 
-	HubSky is the Open Academy Hub's own sky, applied by HubClient while the player is in the Hub.
+	HubSky is the sky HubClient applies while the player is in the Hub (UNIVERSAL_SKY, the arenas' shared sky).
+	(2026-10-19, audit P6A-20)
 
 	A map whose Model is missing from workspace is left out of the vote.
 ]]
@@ -121,7 +124,7 @@ MapRegistry.Universal = { Sky = UNIVERSAL_SKY, Light = UNIVERSAL_LIGHT }
 MapRegistry.List = {
 	{
 		Id = "TrainingGround", Name = "TRAINING GROUND", Sub = "THE RANGE · DUMMIES · TARGET BOARDS",
-		Image = "rbxassetid://119978552509610", Accent = "Gold",
+		Image = "rbxassetid://119978552509610", Accent = "Gold", Practice = true,
 	},
 	{
 		Id = "ShatteredNeonCity", Name = "SHATTERED NEON CITY", Sub = "ROOFTOPS · TWO LANES · STAIRWELLS",
@@ -221,8 +224,8 @@ local SAKURA_SUNSET_LIGHT = {
 	},
 }
 -- NIGHT (2026-10-16, the owner: "Keep it night time like the concept img"). Blue hour just after dusk, the sun 11 deg below
--- the horizon: Roblox's own sky (Sky = false: HubClient parks the painted skybox while you are on this map) goes deep
--- indigo with faint stars; a cool moonlit fill keeps the plaza readable for a fight, and the warmth comes from the map's
+-- the horizon: its painted night sky (SAKURA_NIGHT_SKY below, the moon painted in) goes deep indigo with faint stars
+-- (2026-10-19, audit P6A-20: it was Roblox's own sky, Sky = false, before SAKURA_NIGHT_SKY); a cool moonlit fill keeps the plaza readable for a fight, and the warmth comes from the map's
 -- own lanterns (146 PointLights, warm Neon glow, softly lit shoji paper). The sunset rig above is kept, unused.
 local SAKURA_NIGHT_LIGHT = {
 	Props = {
@@ -270,6 +273,52 @@ table.insert(MapRegistry.List, {
 	Accent = "Gold", Model = "Map_SakuraRow", Light = SAKURA_NIGHT_LIGHT, Sky = SAKURA_NIGHT_SKY,   -- sunset: Light = SAKURA_SUNSET_LIGHT, Sky = SAKURA_SKY
 })
 
+table.insert(MapRegistry.List, {
+	Id = "MarketHall", Name = "MARKET HALL", Sub = "IRON HALL · CUSTOMS POSTS · SERVICE ALLEYS",
+	-- 2026-10-21: F7 inside-out team map, a 19th-century port market at midday, parked at (-8000, 0, 0). No Image yet:
+	-- MapVote draws the card without a picture. Midday = the universal daytime rig and painted sky.
+	Accent = "Gold", Model = "Map_MarketHall", Light = UNIVERSAL_LIGHT, Sky = UNIVERSAL_SKY,
+})
+
+table.insert(MapRegistry.List, {
+	Id = "JungleRuins", Name = "JUNGLE RUINS", Sub = "BUDDHA PLAZA · JUNGLE TRAILS · CREEK",
+	-- 2026-10-22: F8 open-arena team map (built for 5v5, plays at the current team size), curved jungle trails into a ruin
+	-- plaza with the Buddha and waterfall, parked at (0, 0, 8000). Vegetation is cloned per instance (coarse leaf clumps on
+	-- every tier, owner's pick); Vegetation/Detail and Visual/Detail carry QualityLayer = "detail" for HIGH/ULTRA gating
+	-- (MapQualityGate). Card: the plaza render, uploaded 2026-10-22. Midday = the universal daytime rig.
+	Image = "rbxassetid://131756816686209", Accent = "Gold", Model = "Map_JungleRuins", Light = UNIVERSAL_LIGHT, Sky = UNIVERSAL_SKY,
+})
+
+-- Alpine Monastery (2026-10-28): the snow map, a 3v3 two-layer team map (a courtyard round the bell tower; timber walkways
+-- and rope bridges above it, reached only by the one stair at the tower), parked at (16000, 0, 0). No Image yet: MapVote
+-- draws the card without a picture. Its own painted DAY skybox, made the way SAKURA_NIGHT_SKY was
+-- (vmarm/alpine/v1/art/sky/paint_alpine_sky.py; backup SPELLSHOT_Backup/maps/alpine_monastery/sky_v1): a spire to the
+-- north (+Z, team A's view), an Everest-like wall to the south (-Z, team B's), a sea of cloud east and west, and the sun
+-- glow painted at Roblox (0.369, 0.766, -0.527).
+local ALPINE_SKY = {
+	Lf = "rbxassetid://78956404398235", Rt = "rbxassetid://73959757354485", Ft = "rbxassetid://105908798236979",
+	Bk = "rbxassetid://75273860887178", Up = "rbxassetid://89203194486396", Dn = "rbxassetid://129818625212726",
+}
+-- the universal afternoon rig with two changes: the sun solved onto the painted glow (0.00 deg off), and a distance fade
+-- coloured like the painted horizon band. Offset 0.15 (universal 0.3) lets the painted ranges and cloud sea show at the
+-- horizon; Density stays the universal 0.22 (the sky recipe's 0.28 is close to the 0.3 that read dull in game).
+local ALPINE_LIGHT = table.clone(UNIVERSAL_LIGHT)
+ALPINE_LIGHT.Props = table.clone(UNIVERSAL_LIGHT.Props)
+ALPINE_LIGHT.Props.ClockTime = 10.284
+ALPINE_LIGHT.Props.GeographicLatitude = -8.30
+ALPINE_LIGHT.Atmosphere = { Density = 0.22, Offset = 0.15, Haze = 0, Glare = 0,
+	Color = Color3.fromRGB(184, 204, 220), Decay = Color3.fromRGB(148, 172, 206) }
+table.insert(MapRegistry.List, {
+	Id = "AlpineMonastery", Name = "ALPINE MONASTERY", Sub = "BELL TOWER · WALKWAYS · ROPE BRIDGES",
+	Accent = "Cyan", Model = "Map_AlpineMonastery", Light = ALPINE_LIGHT, Sky = ALPINE_SKY,
+})
+-- (2026-10-28) Skyline v2: the 3v3 team rework of Skyline (towers rev C, dressed in the SKYLINE · RIVALS look),
+-- built headless in vmarm\skyline_v2 and imported at (-16000, 0, 0). Practice until the owner has played it, so
+-- Solo Test only. The Spire terrace's south edge is the wind edge (StarterPlayerScripts.WindEdgeBoost).
+table.insert(MapRegistry.List, {
+	Id = "SkylineV2", Name = "SKYLINE · V2", Sub = "TOWERS · BRIDGES · THE WIND EDGE",
+	Accent = "Cyan", Model = "Map_SkylineV2", Practice = true, Light = UNIVERSAL_LIGHT, Sky = UNIVERSAL_SKY,
+})
 local byId = {}
 for _, m in ipairs(MapRegistry.List) do
 	byId[m.Id] = m

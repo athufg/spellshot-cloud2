@@ -4,10 +4,12 @@
 	SPELLSHOT Cryo kit -- the finalized kit from design manual v0.2, Section 2.
 
 	  Primary Ability   Flash Freeze   CastFlashFreeze(originPart, seed, caster)
-	  Mobility          Frost Slide    FrostSlideDashFX (the dash) / FrostSlidePatch (the frozen patch)
-	  Defense           Chill Aura     CastChillAura / StopChillAura
-	  Ultimate          Cryo Beam      CryoBeamWindup, then CastCryoBeam / Update / Stop
 	  M1                Icicle Shard   FireIcicleShard (Build Prompt #20 crystal cluster)
+	  Mobility / Defense / Ultimate: Blizzard, Deep Freeze and Mirror Cage since 2026-09-24 (the Abilities rows below; drawn
+	  by CryoFX). (2026-10-19, audit GB-04) Frost Slide (FrostSlideDashFX / FrostSlidePatch), Chill Aura (CastChillAura /
+	  StopChillAura) and Cryo Beam (CryoBeamWindup, CastCryoBeam / Update / Stop) are RETIRED: no row casts them, and the
+	  last two sit in do-blocks so their locals stay out of the main chunk's count. Tuning.CryoBeam / Tuning.FrostSlide are
+	  still read (CastPose, Viewmodel, DashMotor) -- keep them.
 
 	Glacial Spikes and Diamond Skin were cut with the v0.2 kit and their code is gone rather
 	than commented out -- a retired ability that still has a live cast path is exactly the
@@ -216,7 +218,8 @@ VFXLibrary.Tuning = {
 --   Element     on an M1 or Primary Ability: the Element bundle it comes with
 --   no Element  a Technique: its Id is its key in the SpellshotConfig pool, which is what the player's
 --               Mobility / Defense / Ultimate attribute holds
--- What a PLAYER holds in a slot is VFXLibrary.AbilityFor(player, role): a Cryo player may run Heat Rush.
+-- What a PLAYER holds in a slot is VFXLibrary.AbilityFor(player, role): a Cryo player may run Detonate (with
+-- Config.TechniquesOwnElementOnly off; P31, 2026-10-18, keeps each Element to its own). (2026-10-19, audit P4-14)
 -- the rebuilt Cryo Techniques' and Ultimate's numbers (2026-09-24): CryoTuning, pure data, no requires
 local CRYO = require(script.Parent:WaitForChild("CryoTuning"))
 -- ...and Aqua's (2026-09-24): AquaTuning, pure data, no requires
@@ -260,11 +263,6 @@ VFXLibrary.Abilities = {
 	  Cooldown = 0, FireInterval = 0.6, ManaCost = 3, Range = 110, Targeted = true, Implemented = true },
 	{ Id = "Immolate",    Element = "Pyro", Role = "Primary", Name = "Immolate",
 	  Cooldown = 12, ManaCost = 25, Implemented = true },
-	-- HELD: the key going down starts it and coming up ends it, and the cooldown runs from the release
-	{ Id = "HeatRush",    Role = "Mobility", Name = "Heat Rush",
-	  Cooldown = 8, ManaCost = 12, Held = true, Implemented = true },
-	{ Id = "CinderShield", Role = "Defense", Name = "Cinder Shield",
-	  Cooldown = 15, ManaCost = 22, Duration = 5, Implemented = true },
 	-- CIRCLE: pointed -- the cast carries the ground spot under the crosshair (pulled in to Range), and the hand
 	-- draws the circle round it by itself
 	{ Id = "RingOfFire",  Role = "Ultimate", Name = "Ring of Fire",
@@ -274,7 +272,8 @@ VFXLibrary.Abilities = {
 	-- when there is no target.
 	{ Id = "Detonate", Role = "Mobility", Name = "Detonate",
 	  Cooldown = 14, ManaCost = 20, Precheck = true, Implemented = true },
-	-- SCORCHING LASH (2026-09-23; any Element's Technique, Pyro's default in E, since 2026-09-24): HELD since 2026-09-24 --
+	-- SCORCHING LASH (2026-09-23; any Element's Technique with Config.TechniquesOwnElementOnly off -- P31: Pyro's only;
+	-- audit P4-14, 2026-10-19 -- Pyro's default in E, since 2026-09-24): HELD since 2026-09-24 --
 	-- the key going down puts a burning whip in the hand, coming up cracks it where you aim (35 studs); the cooldown runs
 	-- from the release. HoldMax: seconds before a hold lets go by itself. Stacking burn.
 	{ Id = "ScorchingLash", Role = "Defense", Name = "Scorching Lash",
@@ -310,8 +309,10 @@ VFXLibrary.Abilities = {
 	-- Jump's arrangement: the press pays and starts the ride (ZephyrSkyrider's LocalCast, through ZephyrClient), and the
 	-- RELEASE -- sent when the ride ends, not when the key comes up -- starts the cooldown; the ride drains mana as it
 	-- goes (ZephyrSkyriderServer). -- PROVISIONAL (v6 import): Cooldown 12, ManaCost 15.
+	-- Precheck (2026-10-19, audit P4-01): a press the server would refuse (Stunned, Entombed, Hub) is refused before it
+	-- is paid. Refused after paying, it was given back without its +6% Ultimate and still broke an Earthen Tomb.
 	{ Id = "Skyrider", Role = "Mobility", Name = "Skyrider",
-	  Cooldown = 12, ManaCost = 15, Held = true, Implemented = true },
+	  Cooldown = 12, ManaCost = 15, Held = true, Precheck = true, Implemented = true },
 
 	-- Terra (2026-09-17): TerraFX draws it, TerraHandler handles the casts. EVERY NUMBER IN THESE ROWS IS NEW --
 	-- the manual gives Terra behaviour and no figures, and SpellshotConfig had none for it either (only
@@ -333,12 +334,12 @@ VFXLibrary.Abilities = {
 	-- resolves it and TerraHandler can tell a Terra apart from anyone else wearing the kit's Techniques.
 	{ Id = "Bedrock", Element = "Terra", Role = "Passive", Name = "Bedrock", Implemented = true },
 	-- Bulwark Wall (2026-09-19; ON MANA, NOT A COOLDOWN, since 2026-09-20 on request), Terra's Defense Technique -- the one
-	-- wall in the game. HELD, on SpellshotService's held path (Heat Rush's): the key going down raises it and pays; it
+	-- wall in the game. HELD, on SpellshotService's held path: the key going down raises it and pays; it
 	-- stands until the key comes up, until the BAR RUNS DRY (TerraFX.Tuning.BulwarkWall.ManaPerSecond drains while it is
 	-- up), or until it has absorbed its WallHP. Cooldown 0: there is none -- mana is the whole limit, so a wall costs what
 	-- it is worth rather than locking the slot for 16 s. That SUPERSEDES the manual's 16 s
 	-- (SpellshotConfig.Defense.BulwarkWall). ManaCost 10 to raise is PROPOSED (it was 25 when the raise was the whole
-	-- cost); Cinder Shield, the other Defense held up, is 22 for its whole duration.
+	-- cost).
 	{ Id = "BulwarkWall", Role = "Defense", Name = "Bulwark Wall",
 	  Cooldown = 0, ManaCost = 10, Held = true, Implemented = true },
 	-- Aftershock (2026-09-25, on request: "import it in roblox for terra replacing mobility of it"), Terra's Mobility
@@ -413,7 +414,9 @@ VFXLibrary.Abilities = {
 	{ Id = "ShadowStep", Element = "Umbra", Role = "Primary", Name = "Shadow Step",
 	  Cooldown = UMBRA.ShadowStep.Cooldown, ManaCost = UMBRA.ShadowStep.ManaCost, Range = UMBRA.ShadowStep.AimRange,
 	  EscapeCooldown = UMBRA.ShadowStep.EscapeCooldown,   -- the escape charge on the same key (2026-10-18, umbra)
-	  Targeted = true, Implemented = true },
+	  -- (2026-10-19, audit GC-07: roots WIN) Precheck: UmbraHandler's Precheck_ShadowStep refuses a rooted, caged,
+	  -- Deep-Frozen, Frozen or Entombed body at no cost, either charge
+	  Targeted = true, Precheck = true, Implemented = true },
 	{ Id = "Unseen", Element = "Umbra", Role = "Passive", Name = "Unseen", Implemented = true },
 	{ Id = "Mark", Role = "Mobility", Name = "Mark",
 	  Cooldown = UMBRA.Mark.Cooldown, ManaCost = UMBRA.Mark.ManaCost, Range = UMBRA.Mark.Range, Targeted = true,
@@ -948,11 +951,35 @@ end
 --- with a Humanoid: an aura, a status treatment or a hand-welded effect on another player answers
 --- yes, a projectile flying loose in the workspace answers no, because at that point there is
 --- nothing in the instance tree that says whose it was.
+--- (2026-10-19, audit P5F-06) THE ENEMY for Reduce Enemy VFX: a body that is not mine, not a TEAMMATE's (same DuelMatch
+--- and MatchTeam, the replicated player attributes Config.MayHurt reads) and not an ally dummy (AllyDummy). Mine is
+--- LocalCharacter, or LocalPlayer.Character in the moment before FirstPersonController sets it; nil is nobody's. A Hub
+--- player and a training dummy count as before (CryoFX's FBX.Enemy draws the same line). It used to be "anything that
+--- is not LocalCharacter", which thinned teammates' heals and zones. Every module that thins "somebody else's" effects
+--- should ask this.
+function VFXLibrary.IsEnemy(model)
+	if typeof(model) ~= "Instance" then return false end
+	local players = game:GetService("Players")
+	local me = players.LocalPlayer
+	if model == VFXLibrary.LocalCharacter or (me ~= nil and model == me.Character) then return false end
+	if model:GetAttribute("AllyDummy") then return false end
+	local owner = players:GetPlayerFromCharacter(model)
+	if not owner then return true end
+	if me then
+		local match, team = me:GetAttribute("DuelMatch"), me:GetAttribute("MatchTeam")
+		if match ~= nil and team ~= nil and owner:GetAttribute("DuelMatch") == match
+			and owner:GetAttribute("MatchTeam") == team then
+			return false
+		end
+	end
+	return true
+end
+
 local function onAnotherPlayer(parent)
 	local model = parent and parent:FindFirstAncestorWhichIsA("Model")
 	while model do
 		if model:FindFirstChildOfClass("Humanoid") then
-			return model ~= VFXLibrary.LocalCharacter
+			return VFXLibrary.IsEnemy(model)   -- (2026-10-19, audit P5F-06) was: model ~= VFXLibrary.LocalCharacter
 		end
 		model = model:FindFirstAncestorWhichIsA("Model")
 	end
@@ -979,6 +1006,9 @@ VFXLibrary.FlatLit = flatLit
 local function burstLight(parent, props, fadeTime)
 	if flatLit() then return nil end
 	props.Shadows = false
+	-- (2026-10-19, audit P5F-03) Reduce Flashing halves every burst light (Flash Freeze's break / rim wave / press,
+	-- the shatter's PointLight)
+	if Settings.Get and Settings.Get("ReduceFlashing") and props.Brightness then props.Brightness *= 0.5 end
 	local light = new("PointLight", props, parent)
 	tween(light, fadeTime, { Brightness = 0 })
 	return light
@@ -1069,6 +1099,30 @@ end
 local EARTH = { Base = Color3.fromRGB(130, 107, 36), Light = Color3.fromRGB(204, 186, 92),
 	Dark = Color3.fromRGB(51, 33, 13) }
 
+-- (2026-10-25) A TERRA WRAP'S PALETTE (the wrap ladder: SkinCatalog's Burst and Dust fields). Every Terra toon piece
+-- below -- TerraRockDebris, TerraBurst, TerraSpark, TerraDustKick -- takes an optional trailing `palette`:
+--   { Burst = { Fill = Color3, Edge = Color3 }, Dust = { Light = Color3, Dark = Color3, Pale = Color3 } }
+-- i.e. a wrap skin's own two fields (TerraFX passes the wrap's skin table itself: only .Burst and .Dust are read). Each
+-- preset keeps its shape -- sprite, sizes, timing and its colour sequence's keys -- and only its EARTH roles are swapped,
+-- light for light, for the Dust roles: EARTH.Light -> Dust.Pale, EARTH.Base -> Dust.Light, EARTH.Dark -> Dust.Dark (the
+-- burst's body, EARTH.Light, -> Burst.Fill: TerraBurst below). A role the palette leaves out keeps EARTH's. No palette,
+-- or one with neither field (Default, anything unwrapped), is exactly as before. An explicit `tint` (a wrap's Chunks /
+-- Grit / Chips extras, TerraWrap.Particles) is laid OVER the palette, so where a caller gives one it still wins.
+local function terraTint(palette, roles, extra)
+	local d = type(palette) == "table" and type(palette.Dust) == "table" and palette.Dust or nil
+	if not d then return extra end
+	local cols = {}
+	for i, r in ipairs(roles) do
+		local c = d[(r == "Light" and "Pale") or (r == "Base" and "Light") or "Dark"]
+		cols[i] = typeof(c) == "Color3" and c or EARTH[r]
+	end
+	local merged = { Color = CS(table.unpack(cols)) }
+	if extra then
+		for k, v in pairs(extra) do merged[k] = v end
+	end
+	return merged
+end
+
 function E.TerraChunks()
 	return {
 		Texture = C.Textures.Shard, Color = CS(EARTH.Base, EARTH.Dark), LightEmission = 0, LightInfluence = 0,
@@ -1093,7 +1147,9 @@ end
 --- debris leaves the wall rather than the floor). `thin` is true for somebody else's cast (Reduce Enemy VFX halves
 --- it); Graphics Quality scales both counts. The host cleans itself up.
 --- `tint` (a Terra wrap, optional): { Chunks = extra, Grit = extra } for the two emitters.
-function VFXLibrary.TerraRockDebris(position, thin, chunks, grit, normal, tint)
+--- (2026-10-25) `palette` (a Terra wrap's, optional -- see terraTint above): the chunks' Base -> Dark and the grit's
+--- Light -> Base in its Dust colours; a `tint` given for either emitter is laid over it.
+function VFXLibrary.TerraRockDebris(position, thin, chunks, grit, normal, tint, palette)
 	if typeof(position) ~= "Vector3" then return end
 	local up = (typeof(normal) == "Vector3" and normal.Magnitude > 0.1) and normal.Unit or Vector3.yAxis
 	local host = new("Part", {
@@ -1104,8 +1160,8 @@ function VFXLibrary.TerraRockDebris(position, thin, chunks, grit, normal, tint)
 	local att = new("Attachment", nil, host)
 	local density = Settings.EffectDensity or 1
 	if thin and Settings.ThinEnemyVFX then density *= 0.5 end
-	local chunk = emitter(att, E.TerraChunks(), tint and tint.Chunks)
-	local fine = emitter(att, E.TerraGrit(), tint and tint.Grit)
+	local chunk = emitter(att, E.TerraChunks(), terraTint(palette, { "Base", "Dark" }, tint and tint.Chunks))
+	local fine = emitter(att, E.TerraGrit(), terraTint(palette, { "Light", "Base" }, tint and tint.Grit))
 	chunk:Emit(math.max(1, math.floor((chunks or 14) * density + 0.5)))
 	fine:Emit(math.max(1, math.floor((grit or 10) * density + 0.5)))
 	Debris:AddItem(host, 1.2)
@@ -1165,32 +1221,52 @@ local function terraUp(v)
 end
 
 --- One flat comic burst at `position`, `size` studs across at its peak. Reduce Flashing draws it smaller.
-function VFXLibrary.TerraBurst(position, size, thin)
+--- (2026-10-25) `palette` (a Terra wrap's, optional -- see terraTint): its Burst.Fill is the burst's body in place of
+--- EARTH.Light, and its Burst.Edge, when given, a second burst a fifth larger right behind it at the same turn, so the
+--- body reads ringed in the edge colour inside the ink (the comic double rim; two particles instead of one, same life).
+--- No Burst in it: exactly as before.
+function VFXLibrary.TerraBurst(position, size, thin, palette)
 	if typeof(position) ~= "Vector3" then return end
 	size = size or 2.4
 	if thin and Settings.ThinEnemyVFX then size *= 0.8 end
 	if Settings.Get and Settings.Get("ReduceFlashing") then size *= 0.75 end
-	emitter(terraHost("TerraBurst", position, Vector3.yAxis, 0.5), E.TerraBurst(size)):Emit(1)
+	local att = terraHost("TerraBurst", position, Vector3.yAxis, 0.5)
+	local b = type(palette) == "table" and type(palette.Burst) == "table" and palette.Burst or nil
+	if not b then
+		emitter(att, E.TerraBurst(size)):Emit(1)
+		return
+	end
+	local turn = NR(math.random() * 48 - 24)      -- one turn for both (the preset's own -24..24), so the rim rings the body
+	if typeof(b.Edge) == "Color3" then
+		emitter(att, E.TerraBurst(size * 1.22), { Color = CS(b.Edge), Rotation = turn, ZOffset = 0.7 }):Emit(1)
+	end
+	emitter(att, E.TerraBurst(size), { Color = CS(typeof(b.Fill) == "Color3" and b.Fill or EARTH.Light), Rotation = turn })
+		:Emit(1)
 end
 
 --- The clink: a small burst and a spray of Light chips off `normal`.
-function VFXLibrary.TerraSpark(position, normal, size, thin, tint)
+--- (2026-10-25) `palette` (a Terra wrap's, optional): the burst's (TerraBurst) and the chips' Light -> Dust.Pale -- under
+--- a `tint` (the wrap's Chips), which still wins for the chips.
+function VFXLibrary.TerraSpark(position, normal, size, thin, tint, palette)
 	if typeof(position) ~= "Vector3" then return end
-	VFXLibrary.TerraBurst(position, size or 1.1, thin)
+	VFXLibrary.TerraBurst(position, size or 1.1, thin, palette)
 	local density = Settings.EffectDensity or 1
 	if thin and Settings.ThinEnemyVFX then density *= 0.5 end
-	emitter(terraHost("TerraSpark", position, terraUp(normal), 0.5), E.TerraSparkChips(), tint):Emit(math.max(1, math.floor(5 * density + 0.5)))
+	emitter(terraHost("TerraSpark", position, terraUp(normal), 0.5), E.TerraSparkChips(), terraTint(palette, { "Light" }, tint))
+		:Emit(math.max(1, math.floor(5 * density + 0.5)))
 end
 
 --- A footfall's dust and rubble, kicked low and back along `back` off the floor at `position`.
-function VFXLibrary.TerraDustKick(position, back, thin)
+--- (2026-10-25) `palette` (a Terra wrap's, optional): the dust's and the rubble's Base -> Dark in its Dust colours.
+function VFXLibrary.TerraDustKick(position, back, thin, palette)
 	if typeof(position) ~= "Vector3" then return end
 	local density = Settings.EffectDensity or 1
 	if thin and Settings.ThinEnemyVFX then density *= 0.5 end
 	local dir = terraUp(back) * 0.8 + Vector3.yAxis * 0.6
 	local att = terraHost("TerraDustKick", position, dir, 0.6)
-	emitter(att, E.TerraDust()):Emit(math.max(1, math.floor(6 * density + 0.5)))
-	emitter(att, E.TerraChunks(), { Speed = NR(8, 16), Size = NS({ 0, 0.45 }, { 1, 0.16 }) }):Emit(math.max(1, math.floor(2 * density + 0.5)))
+	emitter(att, E.TerraDust(), terraTint(palette, { "Base", "Dark" })):Emit(math.max(1, math.floor(6 * density + 0.5)))
+	emitter(att, E.TerraChunks(), terraTint(palette, { "Base", "Dark" }, { Speed = NR(8, 16), Size = NS({ 0, 0.45 }, { 1, 0.16 }) }))
+		:Emit(math.max(1, math.floor(2 * density + 0.5)))
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -1393,6 +1469,8 @@ function VFXLibrary.BoulderBurst(parent, kind, count, thin, extra)
 	local pe = emitter(parent, boulderPreset(kind), extra)
 	pe.Rate = 0
 	local n = math.floor((count or 1) * boulderDensity(thin) + 0.5)
+	-- (2026-10-19, audit P5F-03) Reduce Flashing skips the gold break flash (the emitter is still handed back)
+	if kind == "Flash" and Settings.Get and Settings.Get("ReduceFlashing") then n = 0 end
 	if n > 0 then pe:Emit(n) end
 	return pe
 end
@@ -1758,7 +1836,10 @@ function VFXLibrary.GroundSurgeBurst(parent, kind, count, thin, extra)
 	assert(preset, "[VFXLibrary] no Ground Surge emitter '" .. tostring(kind) .. "'")
 	local pe = emitter(parent, preset(), extra)
 	pe.Rate = 0
-	pe:Emit(math.max(1, math.floor((count or 1) * surgeDensity(thin) + 0.5)))
+	-- (2026-10-19, audit P5F-03) Reduce Flashing skips the landing's flash disc (the emitter is still handed back)
+	if not (kind == "Flash" and Settings.Get and Settings.Get("ReduceFlashing")) then
+		pe:Emit(math.max(1, math.floor((count or 1) * surgeDensity(thin) + 0.5)))
+	end
 	return pe
 end
 
@@ -2708,7 +2789,9 @@ local function ffLights(folder, ground, D)
 	local light = FF2.Light            -- (read now: the delays below run outside a Cryo wrap's palette)
 	local zone = new("PointLight", { Color = light, Brightness = 0, Range = D.Radius + 4, Shadows = false }, host)
 	task.delay(math.max(0, D.LeadIn + D.ExpandTime - 0.2), function()
-		if zone.Parent then tween(zone, 0.5, { Brightness = FF2.ZoneLight }) end
+		-- (2026-10-19, audit P5F-03) Reduce Flashing: the zone's calm light at half
+		local rf = Settings.Get and Settings.Get("ReduceFlashing")
+		if zone.Parent then tween(zone, 0.5, { Brightness = FF2.ZoneLight * (rf and 0.5 or 1) }) end
 	end)
 	task.delay(D.BreakTime, function()
 		if not host.Parent then return end
@@ -2789,7 +2872,7 @@ function VFXLibrary.CastFlashFreeze(originPart, seed, casterCharacter, centerAt)
 	-- VFX on, each cluster keeps two spikes and the small ones settle at the break instead of flying;
 	-- an enemy's zone under Reduce Enemy VFX keeps only its Frost Line, its floor and its rim (the edge).
 	local root = ground * CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
-	local bare = Settings.ThinEnemyVFX and casterCharacter ~= nil and casterCharacter ~= VFXLibrary.LocalCharacter
+	local bare = Settings.ThinEnemyVFX and VFXLibrary.IsEnemy(casterCharacter)   -- (2026-10-19, audit P5F-06) an ENEMY's cast
 	local thin = (Settings.EffectDensity or 1) < 0.75 or bare
 	-- FROSTBLADE (2026-10-14): the zone keeps its floor and its Frost Line, its crystals give way to a few short kunai
 	-- planted on the rim (CryoFX.FrostbladeEdge: up as the front reaches the rim, broken on the rim's wave)
@@ -3028,7 +3111,7 @@ function VFXLibrary.FrostSlideDashFX(character, startPos, dir, dist, seed)
 	local gp, gn, hit = groundBelow(startPos, exclude, 18)          -- 12 under the start, as the server's patch probe
 	-- GRAPHICS QUALITY / REDUCE ENEMY VFX: the spray is skipped; the lines are the read and always draw
 	local thin = (Settings.EffectDensity or 1) < 0.75
-		or (Settings.ThinEnemyVFX and character ~= VFXLibrary.LocalCharacter)
+		or (Settings.ThinEnemyVFX and VFXLibrary.IsEnemy(character))   -- (2026-10-19, audit P5F-06)
 
 	local spray = ghostPart({ Name = "FrostSlideSpray", CFrame = CFrame.new((hit and gp or startPos) + Vector3.new(0, 0.25, 0)) })
 	if not thin then
@@ -3120,7 +3203,7 @@ function VFXLibrary.FrostSlidePatch(center, normal, dir, seed, t0, caster)
 	local ground = surfaceFrame(center, normal, dir) * CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
 	local folder = new("Folder", { Name = "FrostSlidePatch" }, fxFolder())
 	local thin = (Settings.EffectDensity or 1) < 0.75
-		or (Settings.ThinEnemyVFX and caster ~= nil and caster ~= VFXLibrary.LocalCharacter)
+		or (Settings.ThinEnemyVFX and VFXLibrary.IsEnemy(caster))   -- (2026-10-19, audit P5F-06)
 
 	-- the kit's sheet and rim crystals, cloned; without the kit, a plain frozen disc
 	local D = ffData()
@@ -3314,6 +3397,9 @@ end
 
 VFXLibrary.ActiveAuras = {}
 
+-- (2026-10-19, audit GB-04) RETIRED: no Abilities row casts Chill Aura; its 9 locals are scoped to this do-block so
+-- they no longer count against the main chunk's 200 (otherwise unchanged).
+do
 local CA = { DataName = "ChillAuraData", MeshFolder = "ChillAuraV2", Pool = {}, PoolMax = 10 }
 local CA_GROUPS = { "Edge", "Orbit", "Vortex" }
 
@@ -3737,6 +3823,7 @@ function VFXLibrary.StopChillAura(character, immediate)
 	end
 	h.StopAt = math.min(h.StopAt or math.huge, math.max(0, caClock() - h.T0))
 end
+end   -- (2026-10-19, audit GB-04) the Chill Aura do-block
 
 ----------------------------------------------------------------------------------------------------
 -- ULTIMATE: CRYO BEAM v2
@@ -3785,6 +3872,10 @@ VFXLibrary.LocalCharacter = nil
 --- pulled back behind the body. nil means "first person, use the camera" and is the normal state.
 VFXLibrary.LocalAimCFrame = nil
 
+-- (2026-10-19, audit GB-04) RETIRED: no Abilities row casts Cryo Beam (Blizzard, Deep Freeze and Mirror Cage replaced
+-- it), and its 37 locals are scoped to this do-block so they no longer count against the main chunk's 200 (otherwise
+-- unchanged; the VFXLibrary.* fields it defines stay). Moving it out, as Glacial Spikes was, is the fuller fix.
+do
 local CB = { DataName = "CryoBeamData", MeshFolder = "CryoBeamV2", Pool = {}, PoolMax = 4 }
 local CB_BLOCKS = { Tile = { 16, 16, 8, 4, 2, 1 }, Rib = { 8, 8, 4, 2, 1 }, Swirl = { 16, 8, 4, 2, 1 } }
 local CB_RINGS, CB_TRAILS = 6, 14
@@ -4797,6 +4888,7 @@ function VFXLibrary.WarmCryoBeam()
 end
 
 VFXLibrary.StopCryoBeamWindup = VFXLibrary.StopCryoBeam
+end   -- (2026-10-19, audit GB-04) the Cryo Beam do-block
 
 --- The moment a Flash Freeze victim is caught (heavy = false) or shattered when the zone ends
 --- (heavy = true). Two weights of the same effect rather than two effects, because they are the
@@ -4810,7 +4902,10 @@ function VFXLibrary.ShatterFX(character, heavy)
 	emitter(burst, E.IceChips(), { Speed = NR(10 * scale, 26 * scale) }):Emit(heavy and 26 or 10)
 	emitter(burst, E.Glints(), { Speed = NR(6, 14) }):Emit(heavy and 18 or 8)
 	if heavy then
-		emitter(burst, E.FormFlash(), { Size = NS({ 0, 1 }, { 0.3, 9 }, { 1, 0 }) }):Emit(1)
+		-- (2026-10-19, audit P5F-03) Reduce Flashing skips the white form flash (burstLight halves the light itself)
+		if not (Settings.Get and Settings.Get("ReduceFlashing")) then
+			emitter(burst, E.FormFlash(), { Size = NS({ 0, 1 }, { 0.3, 9 }, { 1, 0 }) }):Emit(1)
+		end
 		burstLight(burst, { Color = COL.IceLight, Brightness = 5, Range = 18 }, 0.4)
 		playSound(burst, "Shatter")
 	end
@@ -5043,14 +5138,40 @@ local function acquireGlobeLook()
 	return look
 end
 
+--- (2026-10-19, audit P5F-16) a pooled look's emitters were scaled to Graphics Quality once, when made: a look taken from
+--- the pool is put back on the CURRENT density (each look remembers the one it is scaled to). Shard looks fly loose, so no
+--- Reduce Enemy VFX factor is in that number.
+function IS.Redensity(look)
+	local d = Settings.EffectDensity or 1
+	local was = look.Density or 1
+	look.Density = d
+	if was == d or was <= 0 then return look end
+	for _, key in ipairs({ "Glint", "Wake", "Flecks" }) do
+		local pe = look[key]
+		if typeof(pe) == "Instance" and pe.Rate > 0 then pe.Rate = math.max(1, pe.Rate * d / was) end
+	end
+	return look
+end
+
 local function acquireShardLook(kunai)
 	-- FROST DRAGON (Mythic, 2026-10-16): the Frost Wyrmling (FrostDragonKit.ShotLook / Ride: invisible holders here, the
 	-- head, jaw and segments ride them); the Default's trail, glint and wake, and scale chips for the flecks. Its own pool.
 	if kunai == "dragon" then
 		IS.DPool = IS.DPool or {}
 		local pool = VFXLibrary.Wrap and VFXLibrary.Wrap.Pool(IS.DPool) or IS.DPool
+		-- (2026-10-19, audit P5F-23) a Cryo wrap over the skin paints the Wyrmling (head, jaw, segments), as the globe and
+		-- kunai branches below paint theirs; the holders here are invisible, so the pieces are what PaintKit is given
+		local function painted(l)
+			local W, w = VFXLibrary.Wrap, l.Wyrm
+			if W and type(w) == "table" then
+				W.PaintKit(w.Head)
+				W.PaintKit(w.Jaw)
+				for _, seg in ipairs(w.Segs or {}) do W.PaintKit(seg) end
+			end
+			return l
+		end
 		local look = table.remove(pool)
-		if look then return look end
+		if look then return painted(IS.Redensity(look)) end
 		local m = script.Parent:FindFirstChild("FrostDragonKit")
 		local okD, fd = pcall(function() return m and require(m) end)
 		local g = okD and fd and fd.ShotLook()
@@ -5073,7 +5194,8 @@ local function acquireShardLook(kunai)
 			}
 			rigShardLook(look, 1)
 			fd.Ride(look)
-			return look
+			look.Density = Settings.EffectDensity or 1   -- (audit P5F-16) the density its emitters were made at
+			return painted(look)
 		end
 	elseif kunai == "globe" then
 		local g = acquireGlobeLook()
@@ -5090,7 +5212,7 @@ local function acquireShardLook(kunai)
 	end
 	local pool = VFXLibrary.Wrap and VFXLibrary.Wrap.Pool(IS.Pool) or IS.Pool     -- a Cryo wrap keeps its own looks
 	local look = table.remove(pool)
-	if look then return look end
+	if look then return IS.Redensity(look) end   -- (2026-10-19, audit P5F-16) on today's Graphics Quality
 	local S = T.IcicleShard
 	local cluster = shardTemplates()
 	if cluster then
@@ -5123,6 +5245,7 @@ local function acquireShardLook(kunai)
 			Flecks = emitter(a0, E.ShardFlecks()),
 		}
 		look.Pool = pool
+		look.Density = Settings.EffectDensity or 1   -- (audit P5F-16) the density its emitters were made at
 		rigShardLook(look, 1)
 		return look
 	end
@@ -5375,7 +5498,10 @@ function VFXLibrary.FireIcicleShard(origin, target, exclude, visualFrom, onHit, 
 		Offset = visualFrom and (visualFrom - origin) or nil,
 		CamStart = cam and cam.CFrame.Position or origin,
 		OnHit = onHit, Caster = caster,
-		Thin = (Settings.EffectDensity or 1) < 0.75 or (Settings.ThinEnemyVFX and onHit == nil),
+		-- (2026-10-19, audit P5F-06 / P5A-12) Reduce Enemy VFX thins an ENEMY's shot only (IsEnemy), not a teammate's;
+		-- CryoFX.ShardImpact reads this flag as "an enemy's" too (it also picks the Snow Globe slab tier). No caster: as before.
+		Thin = (Settings.EffectDensity or 1) < 0.75
+			or (Settings.ThinEnemyVFX and onHit == nil and (caster == nil or VFXLibrary.IsEnemy(caster))),
 	}
 	-- the release frame, placed before it is parented so a pooled part never flashes where it last was
 	local parts, cframes = {}, {}

@@ -128,6 +128,9 @@ local function tabs(plat)
 				Desc = "How much the game draws: shadows and effect density. Lower runs smoother on slower devices." },
 			{ Kind = "slider", Label = "Field of View", Id = "FieldOfView", Unit = "", Live = true,
 				Desc = "How wide your view is, in degrees. The first-person arms are fitted at 90, so they read a little larger below it." },
+			-- 2026-10-27 (the owner: "a small button to go third person so mobile players can do too, put it in settings")
+			{ Kind = "toggle", Label = "Third Person", Id = "ThirdPerson",
+				Desc = "Shows your whole character from a camera behind your shoulder instead of the first-person arms. Shots still leave from your head, so up close one can land a little off the crosshair. On PC, V switches it too." },
 			{ Kind = "slider", Label = "Brightness", Id = "Brightness", Unit = "%", Live = true,
 				Desc = "Brightens or darkens the picture. This is the picture, not the sun: it never changes how the map is lit for anyone else." },
 			{ Kind = "section", Label = "Effects" },
@@ -136,7 +139,9 @@ local function tabs(plat)
 			{ Kind = "slider", Label = "Motion Blur", Id = "MotionBlur", Unit = "%",
 				Desc = "How much the view smears while you are turning fast. Nothing below a real flick: a walk or a small aim correction stays sharp. 0 turns it off outright." },
 			{ Kind = "toggle", Label = "Reduce Enemy VFX", Id = "ReduceEnemyVFX",
-				Desc = "Halves the particles on other players' characters so busy fights stay readable. Clarity and performance only -- hitboxes never change." },
+				-- (2026-10-19, audit P5F-20) what it does, not "halves the particles": the cut varies by effect.
+				-- (2026-10-19, audit P5F-06, wave 2) enemies only: VFXLibrary.IsEnemy spares your own and your teammates'
+				Desc = "Thins your enemies' effects (not yours or your teammates') so busy fights stay readable: about half the particles, and some extra layers dropped. Clarity and performance only -- hitboxes never change." },
 		} },
 	}
 	if plat == "Mobile" then
@@ -222,7 +227,8 @@ local function tabs(plat)
 	table.insert(list, { Id = "Access", Title = "ACCESS", Icon = "Access", Stage = "palette", Rows = {
 		{ Kind = "section", Label = "Vision" },
 		{ Kind = "toggle", Label = "Colorblind-Safe Elements", Id = "ColorblindSafe", Live = true,
-			Desc = "Swaps the two Element pairs that actually collide -- Pyro against Terra, Toxin against Cryo -- for colours that stay apart. Applies where a colour is chosen in code; icon art keeps the colour it was drawn with." },
+			-- (2026-10-19, audit P5F-08 / P5F-20) the row says what it reaches: the uniforms, nothing else
+			Desc = "Repaints player uniforms so the two Element pairs that collide -- Pyro against Terra, Toxin against Cryo -- stay apart (Terra turns violet, Toxin teal). Ability effects, the HUD and icon art keep their own colours." },
 		{ Kind = "toggle", Label = "Reduce Flashing", Id = "ReduceFlashing",
 			Desc = "Softens the full-screen impact bursts and the vignette, and turns camera shake off." },
 		{ Kind = "slider", Label = "Text Size", Id = "TextSize", Unit = "%", Live = true,
@@ -418,7 +424,8 @@ local function showBubble(rowFace, spec)
 	if not spec.Desc then return end
 	bubbleTitle.Text = string.upper(spec.Label)
 	bubbleBody.Text = spec.Desc
-	local bounds = TextService:GetTextSize(spec.Desc, 14, Enum.Font.GothamBold, Vector2.new(BUBBLE_W - 28, 1000))
+	-- measured at the body's own size (2026-10-19, audit P5F-19: Text Size scales it)
+	local bounds = TextService:GetTextSize(spec.Desc, bubbleBody.TextSize, Enum.Font.GothamBold, Vector2.new(BUBBLE_W - 28, 1000))
 	local h = math.max(78, bounds.Y + 50)
 	bubbleHolder.Size = UDim2.fromOffset(BUBBLE_W, h)
 	-- which column the row is in decides the side the bubble sits on
@@ -911,16 +918,23 @@ end
 ----------------------------------------------------------------------------------------------------
 -- the stage: on the categories that can show something, the top of the right column previews it
 ----------------------------------------------------------------------------------------------------
-local ELEMENTS = {
-	{ "PYRO", Color3.fromRGB(233, 78, 27), Color3.fromRGB(233, 78, 27) },
-	{ "CRYO", Color3.fromRGB(64, 181, 240), Color3.fromRGB(64, 181, 240) },
-	{ "VOLTAIC", Color3.fromRGB(245, 199, 15), Color3.fromRGB(245, 199, 15) },
-	{ "TERRA", Color3.fromRGB(130, 107, 36), Color3.fromRGB(120, 78, 158) },     -- Terra reads as Pyro to a protan
-	{ "ZEPHYR", Color3.fromRGB(79, 209, 197), Color3.fromRGB(255, 255, 255) },
-	{ "UMBRA", Color3.fromRGB(79, 33, 145), Color3.fromRGB(20, 20, 20) },
-	{ "RADIANT", Color3.fromRGB(245, 194, 48), Color3.fromRGB(240, 240, 240) },
-	{ "TOXIN", Color3.fromRGB(128, 212, 33), Color3.fromRGB(0, 122, 94) },       -- Toxin vs Cryo is the other risky pair
-}
+-- (2026-10-19, audit P5F-20) the palette preview reads Settings.ElementColors, in the manual's Element order: its own
+-- hardcoded copy had drifted (a stale Pyro, the old Zephyr/Umbra/Radiant swaps, no Aqua). { NAME, normal, safe }.
+local ELEMENTS = {}
+do
+	local okC, Config = pcall(function()
+		return require(game:GetService("ReplicatedStorage"):WaitForChild("Spellshot"):WaitForChild("SpellshotConfig"))
+	end)
+	local defs = okC and type(Config) == "table" and Config.Elements or {}
+	for name, pair in pairs(Settings.ElementColors) do
+		local def = defs[name] or {}
+		ELEMENTS[#ELEMENTS + 1] = { string.upper(def.Display or name), pair[1], pair[2], def.Order or 99 }
+	end
+	table.sort(ELEMENTS, function(a, b)
+		if a[4] ~= b[4] then return a[4] < b[4] end
+		return a[1] < b[1]
+	end)
+end
 
 local function buildStage(parent, tab)
 	local _, face = slab(parent, UDim2.fromOffset(COL_W, STAGE_H), UDim2.fromOffset(0, 0), C.Ink, 6, 4)
@@ -1018,10 +1032,11 @@ local function buildStage(parent, tab)
 		screen.BackgroundColor3 = C.Paper
 		local chips = {}
 		for i, e in ipairs(ELEMENTS) do
+			-- five to a row (nine Elements; the sample line sits under two rows)
 			local chip = make("Frame", {
 				BackgroundColor3 = e[2], BorderSizePixel = 0, ZIndex = 16,
-				Position = UDim2.fromOffset(10 + ((i - 1) % 4) * 104, 10 + math.floor((i - 1) / 4) * 56),
-				Size = UDim2.fromOffset(96, 48),
+				Position = UDim2.fromOffset(10 + ((i - 1) % 5) * 86, 10 + math.floor((i - 1) / 5) * 56),
+				Size = UDim2.fromOffset(80, 48),
 			}, screen)
 			corner(chip, 3)
 			outline(chip, 2)
@@ -1037,6 +1052,7 @@ local function buildStage(parent, tab)
 			TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.fromOffset(0, 124),
 			Size = UDim2.new(1, 0, 0, 28), ZIndex = 17,
 		})
+		sample:SetAttribute("NoMenuScale", true)   -- it shows Text Size itself (below); the menu pass must not scale it twice
 		return face, function()
 			local safe = Settings.Get("ColorblindSafe")
 			for i, e in ipairs(ELEMENTS) do
@@ -1080,6 +1096,8 @@ local function layout(tab)
 	return cut
 end
 
+local applyMenuTextSize           -- (below; 2026-10-19, audit P5F-19: a rebuilt tab is scaled too)
+
 local function selectTab(id)
 	local tab
 	for _, t in ipairs(TABS) do
@@ -1122,6 +1140,7 @@ local function selectTab(id)
 	end
 	holder.Size = UDim2.fromOffset(DESIGN_W, BODY_Y + sheetH)
 	if liveUpdate then liveUpdate() end
+	if applyMenuTextSize then applyMenuTextSize() end
 end
 
 local function buildTabs()
@@ -1229,15 +1248,20 @@ end
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
 fit()
 
---- TEXT SIZE applies to this menu too, on top of whatever each label was authored at. The panel is
---- rebuilt whenever a tab changes, so the authored size is re-read rather than remembered.
-local function applyMenuTextSize()
+--- TEXT SIZE applies to this menu too, on top of whatever each label was authored at. (2026-10-19, audit P5F-19) each
+--- label's authored size is recorded ONCE (BaseTextSize) and every pass sets authored x k, so the labels that are never
+--- rebuilt (the gear, the tab row, the bubble, the close X) follow a second change and a return to 100% too, and a
+--- tab switch (selectTab calls this) no longer shows the authored sizes.
+applyMenuTextSize = function()
 	local k = Settings.Scale("TextSize")
-	if k == 1 then return end
 	for _, d in ipairs(gui:GetDescendants()) do
-		if (d:IsA("TextLabel") or d:IsA("TextButton")) and not d:GetAttribute("Scaled") then
-			d:SetAttribute("Scaled", true)
-			d.TextSize = math.max(8, math.floor(d.TextSize * k + 0.5))
+		if (d:IsA("TextLabel") or d:IsA("TextButton")) and not d:GetAttribute("NoMenuScale") then
+			local base = d:GetAttribute("BaseTextSize")
+			if type(base) ~= "number" then
+				base = d.TextSize
+				d:SetAttribute("BaseTextSize", base)
+			end
+			d.TextSize = math.max(8, math.floor(base * k + 0.5))
 		end
 	end
 end

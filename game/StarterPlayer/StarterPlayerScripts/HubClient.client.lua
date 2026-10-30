@@ -35,6 +35,8 @@ local hubRemote = ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("Hub"
 if not hubRemote then return end
 local registryModule = ReplicatedStorage.Spellshot:WaitForChild("MapRegistry", 10)
 local MapRegistry = registryModule and require(registryModule)
+-- (2026-10-19, audit P5F-13) the shadows answer is shared with Graphics Quality (Settings.ApplyShadows)
+local Settings = require(ReplicatedStorage.Spellshot:WaitForChild("SpellshotSettings"))
 local HUB_NAME = "ArcaneObservatoryHub"    -- the Arcane Observatory (2026-10-14); the Open Academy before it is unwired
 
 local INK = Color3.fromRGB(17, 17, 17)
@@ -195,6 +197,8 @@ local function onTeamMatch(kind, d)
 			end
 		elseif d.Result == "win" then
 			showBanner("YOUR TEAM WINS!", scoreLine(d), GOLD, 3.8)
+		elseif d.Result == "draw" then   -- (2026-10-19, audit P3-13) MaxRounds ended a level match
+			showBanner("MATCH DRAWN", scoreLine(d), CREAM, 3.8)
 		else
 			showBanner("THEIR TEAM WINS", scoreLine(d), RED, 3.8)
 		end
@@ -229,6 +233,8 @@ local function onMatch(kind, d)
 			end
 		elseif d.Result == "win" then
 			showBanner("YOU WIN THE DUEL!", scoreLine(d), GOLD, 3.8)
+		elseif d.Result == "draw" then   -- (2026-10-19, audit P3-13) MaxRounds ended a level match
+			showBanner("MATCH DRAWN", scoreLine(d), CREAM, 3.8)
 		else
 			showBanner(them .. " WINS THE DUEL", scoreLine(d), RED, 3.8)
 		end
@@ -328,6 +334,10 @@ local function cover(toZone, mapName, label)
 		if wipeToken == mine then reveal() end
 	end)
 end
+-- (2026-10-26) the same wipe for client cuts (the Loadout Showcase): Command:Fire("cover", label) / Fire("reveal")
+make("BindableEvent", { Name = "Command" }, wipeGui).Event:Connect(function(what, label)
+	if what == "cover" then cover(nil, nil, label) elseif what == "reveal" then reveal() end
+end)
 
 ----------------------------------------------------------------------------------------------------
 -- server messages
@@ -344,7 +354,13 @@ hubRemote.OnClientEvent:Connect(function(what, a, reason, extra, label)
 	elseif what == "match" then
 		onMatch(a, reason)
 	elseif what == "open" then
-		command(a == "Loadout" and "LoadoutMenu" or "QuickPlay", "open")
+		-- (2026-10-26, the owner) the Loadout Altar opens its showcase (AltarShowcase) where it runs; else the flat menu
+		local showcase = a == "Loadout" and playerGui:FindFirstChild("AltarShowcase")
+		if showcase and showcase:GetAttribute("Ready") then
+			command("AltarShowcase", "open")
+		else
+			command(a == "Loadout" and "LoadoutMenu" or "QuickPlay", "open")
+		end
 	elseif what == "queued" and a == false then
 		-- the server dropped you from Quick Play's queue; "dequeued" tells nothing back to the server
 		if reason then showToast(reason) end
@@ -367,6 +383,14 @@ hubRemote.OnClientEvent:Connect(function(what, a, reason, extra, label)
 		else
 			-- face the way the spot faces (the duel marks face each other): first person keeps the camera's old
 			-- heading through a move and turns the body back to it, so the camera is turned, not the body
+			-- (2026-10-30) and the body has to be where the server put it: a client still holding its old place (measured in
+			-- Play: the server's move never reached it) takes the body back there when the server hands it over, so a body
+			-- this far off the spot is set on it from here too (the client owns its body; the move's grace covers it)
+			local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if typeof(label) == "CFrame" and root and (root.Position - label.Position).Magnitude > 50 then
+				player.Character:PivotTo(label)
+				root.AssemblyLinearVelocity = Vector3.zero
+			end
 			local look = typeof(extra) == "Vector3" and Vector3.new(extra.X, 0, extra.Z) or nil
 			if look and look.Magnitude > 0.01 then
 				local cam = workspace.CurrentCamera
@@ -429,6 +453,8 @@ end
 
 local function restoreLight()
 	if not savedLight then return end
+	Settings.ProfileShadows = nil     -- (2026-10-19, audit P5F-13) back to Graphics Quality's answer alone
+	Settings.ApplyShadows()
 	for k, v in pairs(savedLight.props) do
 		pcall(function() Lighting[k] = v end)
 	end
@@ -482,9 +508,16 @@ local function applyLighting()
 	local universal = MapRegistry and MapRegistry.Universal
 	local lit = (map and map.Light) or (universal and universal.Light) or nil
 	for k, v in pairs((lit and lit.Props) or FLAT_LIGHT) do
-		savedLight.props[k] = Lighting[k]
-		pcall(function() Lighting[k] = v end)
+		if k == "GlobalShadows" then
+			-- (2026-10-19, audit P5F-13) not copied: the profile's wish is ANDed with Graphics Quality (LOW / MEDIUM keep
+			-- shadows off) and neither saved nor restored, so a quality change made in a zone is not undone on leaving
+			Settings.ProfileShadows = v == true
+		else
+			savedLight.props[k] = Lighting[k]
+			pcall(function() Lighting[k] = v end)
+		end
 	end
+	Settings.ApplyShadows()
 	local off = (profile == "Hub") and HUB_OFF or (lit and LIT_OFF or MAP_OFF)
 	for _, e in ipairs(Lighting:GetChildren()) do
 		if off[e.ClassName] then
@@ -676,31 +709,10 @@ RunService:BindToRenderStep("HubCameraWalls", Enum.RenderPriority.Camera.Value +
 end)
 
 ----------------------------------------------------------------------------------------------------
--- the Ley over the Hall of Cores
+-- (2026-10-19, audit P6A-14) the "Ley over the Hall of Cores" spin was removed: its Hall / Floor / Ley parts exist only in
+-- the replaced hub (ServerStorage.ReplacedHubs.SpellshotHub), so in the Arcane Observatory it only waited 90 s and quit.
+-- It is in git history (before this date) if that hub ever comes back.
 ----------------------------------------------------------------------------------------------------
-task.spawn(function()
-	local hub = workspace:WaitForChild(HUB_NAME, 60)
-	local hall = hub and hub:WaitForChild("Hall", 30)
-	local floorFolder = hall and hall:WaitForChild("Floor", 30)
-	local floor = floorFolder and floorFolder:WaitForChild("Hall_Floor", 30)
-	local ley = hall and hall:WaitForChild("Ley", 30)
-	if not (floor and ley) then return end
-	local centre = CFrame.new(floor.Position + Vector3.new(0, 44, 0))
-	local SPEED = { Hall_LeyStars = 0.6, Hall_LeyAurora = -1.1 }
-	local parts = {}
-	for name, speed in pairs(SPEED) do
-		local p = ley:WaitForChild(name, 30)
-		if p then parts[p] = { speed = speed, rest = centre:ToObjectSpace(p.CFrame) } end
-	end
-	local t0 = os.clock()
-	RunService.RenderStepped:Connect(function()
-		if zone() ~= "Hub" then return end
-		local t = os.clock() - t0
-		for p, s in pairs(parts) do
-			p.CFrame = centre * CFrame.Angles(0, math.rad(s.speed * t), 0) * s.rest
-		end
-	end)
-end)
 
 ----------------------------------------------------------------------------------------------------
 -- the Hub's prompts take the player's Interact bind

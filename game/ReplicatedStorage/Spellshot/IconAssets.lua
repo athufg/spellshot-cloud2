@@ -136,8 +136,10 @@ return {
 		-- SKIN HUD SETS (2026-10-14): a full Element skin's own icons, by skin Id, keyed like the tables above. Shown only
 		-- while that skin is the player's own Element skin (SkinCatalog.HudSkin); an empty id keeps the Default icon.
 		Skins = {
-			-- Cryo SNOW GLOBE (Epic, 2026-10-15; cryo_snowglobe_hud_2026_10_15/icons). The skin itself is not built yet, so
-			-- this set shows only through the Studio preview (HudSkinPreview_Cryo = "SnowGlobe"). Art with no HUD slot:
+			-- Cryo SNOW GLOBE (Rare since the tiers swapped with Frost Lotus, 2026-10-15; cryo_snowglobe_hud_2026_10_15/icons).
+			-- (2026-10-19, audit P5F-20) the skin is built and selectable, but as a Rare it has no HUD set: SkinCatalog.Hud has
+			-- no SnowGlobe row, so this set shows nowhere, not even through the Studio preview (HudSkinPreview_Cryo, which
+			-- only previews a Hud row). Kept for a Hud row if the tier gets one. Art with no HUD slot:
 			-- M1 Icicle Shard rbxassetid://126924652328679, Passive Cold Momentum rbxassetid://70744676230592.
 			-- FROST LOTUS (Epic, 2026-10-15; cryo_frostlotus_hud_2026_10_15/icons): its HUD set (SkinCatalog.Hud.FrostLotus)
 			FrostLotus = {
@@ -155,6 +157,22 @@ return {
 				Primary = { Cryo = "rbxassetid://95989905494488" },                      -- Flash Freeze
 				Technique = { Blizzard = "rbxassetid://98260135176650", DeepFreeze = "rbxassetid://132365833202978" },
 				Ultimate = { MirrorCage = "rbxassetid://80026946183434" },
+			},
+			-- Witch's Brew (Toxin, Epic, 2026-10-20): mapped, art TODO -- the owner uploads it; "" keeps the Default icon
+			WitchsBrew = {
+				Primary = { Toxin = "" },                                                -- TODO Corrosive Cloud
+				Technique = { AntitoxinVent = "", AcidRain = "" },                       -- TODO
+				Ultimate = { PatientZero = "" },                                         -- TODO
+			},
+			-- Hydra (Toxin, Mythic, 2026-10-23): toxin_hydra_hud_2026_10_23/icons/Hydra_<Key>.png (512 px RGBA), uploaded at
+			-- the owner's request. Studio preview before the skin is selectable: HudSkinPreview_Toxin = "Hydra" (server-side)
+			Hydra = {
+				Primary = { Toxin = "rbxassetid://120553229254496" },                    -- Corrosive Cloud (Hydra_CorrosiveCloud.png)
+				Technique = {
+					AntitoxinVent = "rbxassetid://90041594066581",                      -- Antitoxin Vent (Hydra_AntitoxinVent.png)
+					AcidRain = "rbxassetid://75906842347848",                            -- Acid Rain (Hydra_AcidRain.png)
+				},
+				Ultimate = { PatientZero = "rbxassetid://113771187534479" },            -- Patient Zero (Hydra_PatientZero.png)
 			},
 		},
 	},

@@ -362,13 +362,15 @@ end
 
 -- SKINS (2026-10-10, SkinCatalog): a canvas with a Palette draws its GOLD -- the sleeve, the gold strokes, the gold motes
 -- -- in the palette's colours, by where the span sits along its stroke; the cream core stays (the identity anchor).
--- Colour only: no span, sprite or light is added. A Flat palette is drawn alpha-blended (LightEmission 0, Brightness 1),
--- so it keeps its saturation in daylight. No Palette = exactly as before.
+-- Colour only: no span, sprite or light is added. The palette's tone comes from its MaxBright (a Brightness cap) and
+-- LEScale (x the Default's LightEmission) in skinEntry below; `pal.Flat` (SkinCatalog) is carried but read by nothing
+-- here (2026-10-19, audit P5C-15: this said a Flat palette was drawn alpha-blended, LightEmission 0 / Brightness 1 --
+-- no code did that). No Palette = exactly as before.
 local WHITE = Color3.new(1, 1, 1)
 local HUGE_BRIGHT = math.huge
 -- RECOLOUR ONLY (the owner, 2026-10-10): a skin entry keeps its Default entry's Brightness and LightEmission -- the same
 -- glow and blend at every level -- and swaps the colour alone; the core stays white-hot, tinted (SkinCoreLift)
-local function skinEntry(pal, u0, u1, core, base)
+local function skinEntry(pal, u0, u1, core, base, ps)
 	local seq, key = pal.Seq(u0, u1)
 	local all = pal._rd
 	if not all then
@@ -380,24 +382,96 @@ local function skinEntry(pal, u0, u1, core, base)
 		cache = {}
 		all[base.Key] = cache
 	end
-	local k = key * 2 + (core and 1 or 0)
+	local k = (key * 2 + (core and 1 or 0)) * 9 + (ps or 0)   -- (ps: the ladder's pulse step 1..8, nil = none)
 	local e = cache[k]
 	if not e then
+		local to = (pal.Look and pal.Look.CoreTo) or WHITE         -- (2026-10-25: a ladder wrap's cool core; else white)
 		if core then
 			local kp = {}
 			for i, p in ipairs(seq.Keypoints) do
-				kp[i] = ColorSequenceKeypoint.new(p.Time, p.Value:Lerp(WHITE, (pal and pal.CoreLift) or Config.SkinCoreLift))
+				kp[i] = ColorSequenceKeypoint.new(p.Time, p.Value:Lerp(to, (pal and pal.CoreLift) or Config.SkinCoreLift))
 			end
 			seq = ColorSequence.new(kp)
 		end
 		-- (2026-10-13) a dark skin (Devil) caps both: a red at Brightness > ~1.3, or added on itself, clips its red
 		-- channel first and climbs to pink, then white -- the rework is red and black, never pink
-		e = { Key = -(1 + k + base.Key * 1000000), Seq = seq, Bright = min(base.Bright, pal.MaxBright or HUGE_BRIGHT),
+		local pk = 1
+		if ps then pk = 1 + pal.Look.Pulse.Amp * math.sin(2 * math.pi * (ps - 0.5) / 8) end
+		e = { Key = -(1 + k + base.Key * 1000000), Seq = seq, Bright = min(base.Bright, pal.MaxBright or HUGE_BRIGHT) * pk,
 			LE = base.LE * (pal.LEScale or 1) }
 		cache[k] = e
 	end
 	return e
 end
+
+-- (2026-10-25) THE LADDER'S LOOKS: a Radiant wrap's Look block (SkinCatalog), set by Moonlight, Stained Glass, Starlight
+-- and Prism Bloom only -- Default, Rainbow and the Devil skin have none and draw exactly as before.
+--   CoreTo      the core lifts toward this colour, not white
+--   LightColor  the canvas's lights this colour, not a palette colour
+--   BodyGlow    Position Trade's body flash this colour (RadiantFX_Hand)
+--   Pulse       { Period, Amp }: the strokes breathe, in 8 steps a period (held under Reduce Flashing)
+--   Cycle       { Period }: the palette slides along every stroke, one pass a Period -- 48 steps a pass on HIGH / ULTRA, 24
+--               on MEDIUM, 12 on LOW (Graphics Quality: simpler, fewer writes); colours quantised to 1/16 so the entry
+--               caches stay bounded
+--   Facets      { Len, Lead, LeadColor, Colors }: hard-edged panels Len studs long along every stroke, a dark lead line
+--               Lead studs wide between them on the sleeve (the core: the panels lifted, no lead)
+--   Stars       { Rate, Size, Color, Bright, Twinkle }: pinpoint stars on Rate of each core stroke's spans x Graphics
+--               Quality (0.45 .. 1.15: fuller on ULTRA), steady with the pulse, or twinkling (Twinkle)
+local facetKeyN = -1e12
+local function facetEntry(pal, r0, len, core, base, ps)
+	local F = pal.Look.Facets
+	if not pal._fc or pal._fcN > 6000 then pal._fc, pal._fcN = {}, 0 end   -- (bounded: rebuilt past 6000 entries)
+	local n = #F.Colors
+	local q0 = floor((r0 % (F.Len * n)) / 0.05 + 0.5)
+	local ql = floor(len / 0.1 + 0.5)
+	local key = ((q0 * 1000 + ql) * 2 + (core and 1 or 0)) * 9 + (ps or 0)
+	local bc = pal._fc[base.Key]
+	if not bc then
+		bc = {}
+		pal._fc[base.Key] = bc
+	end
+	local e = bc[key]
+	if e then return e end
+	local a, L = q0 * 0.05, max(ql * 0.1, 0.05)
+	local lift, to = pal.CoreLift or Config.SkinCoreLift, pal.Look.CoreTo or WHITE
+	local function col(i)
+		local c = F.Colors[(i % n) + 1]
+		return core and c:Lerp(to, lift) or c
+	end
+	local i0 = floor(a / F.Len)
+	local lead = (not core) and F.Lead or 0
+	if floor((a + L) / F.Len) - i0 > 4 then lead = 0 end      -- (ColorSequence holds 20 keypoints)
+	local pts = { { 0, col(i0) } }
+	local function push(t, c)
+		local last = pts[#pts][1]
+		if t <= last then t = last + 1e-4 end
+		if t < 1 - 1e-4 then pts[#pts + 1] = { t, c } end
+	end
+	local i, b = i0, (i0 + 1) * F.Len
+	while b < a + L and #pts < 16 do
+		local t = (b - a) / L
+		if lead > 0 then
+			local h = lead * 0.5 / L
+			push(t - h, col(i)) push(t - h + 1e-4, F.LeadColor) push(t + h, F.LeadColor) push(t + h + 1e-4, col(i + 1))
+		else
+			push(t, col(i)) push(t + 1e-4, col(i + 1))
+		end
+		i += 1
+		b += F.Len
+	end
+	local kp = {}
+	for j, p in ipairs(pts) do kp[j] = ColorSequenceKeypoint.new(p[1], p[2]) end
+	kp[#kp + 1] = ColorSequenceKeypoint.new(1, col(i))
+	local pk = 1
+	if ps then pk = 1 + pal.Look.Pulse.Amp * math.sin(2 * math.pi * (ps - 0.5) / 8) end
+	facetKeyN -= 1
+	e = { Key = facetKeyN, Seq = ColorSequence.new(kp), Bright = min(base.Bright, pal.MaxBright or HUGE_BRIGHT) * pk,
+		LE = base.LE * (pal.LEScale or 1) }
+	bc[key] = e
+	pal._fcN += 1
+	return e
+end
+local emitStar                                           -- (a camera-facing star sprite: defined after emitSprite)
 
 local function pingPong(x)
 	local ph = x % 2
@@ -528,6 +602,43 @@ local function timeScale()
 	return 1
 end
 RadiantDraw.TimeScale = timeScale
+
+-- (2026-10-19, audit P5C-07 / P5F-03 / P5F-05) THE PLAYER'S SETTINGS (SpellshotSettings, as VoltaicKit and ZephyrDraw
+-- read them), refreshed at most twice a second and stamped on every canvas at Begin:
+--   cv.Calm  Reduce Flashing: a Flare is 0.6x the size and level with no shock ring, a LightPool half its level (and
+--            the pieces' own pulses read it: Benediction, the Trade body glow)
+--   cv.Dens  Graphics Quality's EffectDensity (capped at 1), x0.5 for an ENEMY's effect (RD.Play opts.Owner, the
+--            caster's character; VFXLibrary.IsEnemy since 2026-10-19, audit P5F-06 -- a teammate's is whole) under
+--            Reduce Enemy VFX: the counts of Sparkles, MoteField and Gather (the ambient
+--            particles). Strokes, rings, sigils, rays -- the shapes that say what a move is -- are never thinned.
+local settingsNow
+do
+	local lib, at = nil, -1
+	local st = { Calm = false, Density = 1, ThinEnemy = false, LP = game:GetService("Players").LocalPlayer }
+	function settingsNow()
+		local now = os.clock()
+		if now - at < 0.5 then return st end
+		at = now
+		if lib == nil then
+			lib = false
+			local rs = game:GetService("ReplicatedStorage")
+			local sp = rs:FindFirstChild("Spellshot")
+			local mod = sp and sp:FindFirstChild("SpellshotSettings")
+			if mod then
+				local ok, res = pcall(require, mod)
+				if ok and type(res) == "table" then lib = res end
+			end
+		end
+		if lib then
+			local ok, v = pcall(lib.Get, "ReduceFlashing")
+			st.Calm = ok and v == true
+			st.Density = clamp(tonumber(lib.EffectDensity) or 1, 0.3, 1)
+			st.DensityRaw = clamp(tonumber(lib.EffectDensity) or 1, 0.3, 1.15)   -- (2026-10-25: the ladder's stars; ULTRA fuller)
+			st.ThinEnemy = lib.ThinEnemyVFX == true
+		end
+		return st
+	end
+end
 
 function RadiantDraw.ServerNow()
 	return workspace:GetServerTimeNow()
@@ -1062,11 +1173,21 @@ local function emitChain(cv, level, w, n, wdir, bezel, look, zc)
 		local ec, es = e, eg
 		if pal then
 			local len = (KP[i + 1] - KP[i]).Magnitude
-			local u0 = pingPong((d0 + run) / Config.SkinSpan)
-			run += len
-			local u1 = pingPong((d0 + run) / Config.SkinSpan)
-			es = eg and skinEntry(pal, u0, u1, false, eg) or nil
-			ec = skinEntry(pal, u0, u1, look ~= LOOK_GOLD, e)
+			local lk = pal.Look
+			if lk and lk.Facets then                             -- (2026-10-25) Stained Glass's panels
+				local r0 = d0 + run
+				run += len
+				es = eg and facetEntry(pal, r0, len, false, eg, cv.LookPS) or nil
+				ec = facetEntry(pal, r0, len, look ~= LOOK_GOLD, e, cv.LookPS)
+			else
+				local ph = (lk and lk.Cycle) and 2 * (cv.LookPH or 0) or 0
+				local u0 = pingPong((d0 + run) / Config.SkinSpan + ph)
+				run += len
+				local u1 = pingPong((d0 + run) / Config.SkinSpan + ph)
+				if lk and lk.Cycle then u0, u1 = floor(u0 * 16 + 0.5) / 16, floor(u1 * 16 + 0.5) / 16 end
+				es = eg and skinEntry(pal, u0, u1, false, eg, cv.LookPS) or nil
+				ec = skinEntry(pal, u0, u1, look ~= LOOK_GOLD, e, cv.LookPS)
+			end
 		end
 		beamWrite(s.Core, s.CS, ec, face, KW[i], KW[i + 1], c0, c1, seg, zc, nil)
 		if eg then
@@ -1076,6 +1197,23 @@ local function emitChain(cv, level, w, n, wdir, bezel, look, zc)
 		end
 	end
 	cv.Beams += (KN - 1) * (eg and 2 or 1)
+	local S = pal and pal.Look and pal.Look.Stars
+	if S and look ~= LOOK_GOLD then                          -- (2026-10-25) the ladder's stars, on the core strokes
+		local rate = S.Rate * (cv.DensRaw or cv.Dens or 1)
+		local now = os.clock()
+		for i = 1, KN - 1 do
+			local h = (sin(cv.SkinC * 12.9898 + i * 78.233) * 43758.5453) % 1
+			if h < rate then
+				local k = 1
+				if S.Twinkle and not cv.Calm then
+					k = 0.2 + max(0, sin(2 * math.pi * (now * 0.8 + h * 5))) ^ 3
+				elseif cv.LookPS then
+					k = 1 + pal.Look.Pulse.Amp * sin(2 * math.pi * (cv.LookPS - 0.5) / 8)
+				end
+				emitStar(cv, KP[i]:Lerp(KP[i + 1], (h * 7.31) % 1), S.Size * k, S)
+			end
+		end
+	end
 	return true
 end
 
@@ -1103,9 +1241,32 @@ local function emitSprite(cv, p, half, look, level, rot, n, tex, z)
 		-- a mote or glint takes one palette colour, by its order in the frame (the same order every frame: no flicker)
 		cv.SkinN = (cv.SkinN or 0) + 1
 		local u = (cv.SkinN * 0.618034) % 1
-		le = skinEntry(cv.Palette, u, u, look ~= LOOK_GOLD, le)
+		local lk = cv.Palette.Look
+		if lk and lk.Cycle then u = floor(pingPong(u + 2 * (cv.LookPH or 0)) * 16 + 0.5) / 16 end
+		le = skinEntry(cv.Palette, u, u, look ~= LOOK_GOLD, le, cv.LookPS)
 	end
 	beamWrite(s.B, s.ST, le, n == nil, 2 * half, 2 * half, 0, 0, 1, z, tex)
+	cv.Beams += 1
+end
+
+local starEntries = {}
+emitStar = function(cv, p, half, S)
+	if half <= 1e-4 then return end
+	local e = starEntries[S]
+	if not e then
+		facetKeyN -= 1
+		e = { Key = facetKeyN, Seq = ColorSequence.new(S.Color), Bright = S.Bright or 2, LE = 1 }
+		starEntries[S] = e
+	end
+	local nn = camDir(p)
+	local u = camUp - nn * camUp:Dot(nn)
+	local m = u.Magnitude
+	u = (m > 1e-6) and (u / m) or camRight
+	local s = takeSprite(cv)
+	local y = orientY(u, nil, nil, true)
+	place0(s, p - u * half, u, y)
+	place1(s, p + u * half, u, y)
+	beamWrite(s.B, s.ST, e, true, 2 * half, 2 * half, 0, 0, 1, Config.CoreZOffset + 0.01, Config.GlintTexture4)
 	cv.Beams += 1
 end
 
@@ -1180,6 +1341,28 @@ function Canvas:Begin(t)
 		self.uSpan, self.uSprite, self.uLight = 0, 0, 0
 	end
 	camRefresh()
+	do                                                   -- (2026-10-19, audit P5C-07 / P5F-05) the settings, this frame
+		local st = settingsNow()
+		self.Calm = st.Calm
+		local d = st.Density
+		local lp = st.LP
+		if st.ThinEnemy and self.Owner ~= nil and not (lp and lp.Character == self.Owner) then
+			-- (2026-10-19, audit P5F-06) an ENEMY's only (VFXLibrary.IsEnemy, read lazily as timeScale reads it: no
+			-- require cycle): a teammate's is drawn as your own; without VFXLibrary, anyone else's as before
+			if vfxLib == nil then timeScale() end
+			if not (vfxLib and type(vfxLib.IsEnemy) == "function") or vfxLib.IsEnemy(self.Owner) then d *= 0.5 end
+		end
+		self.Dens = d
+		self.DensRaw = (st.DensityRaw or d) * ((st.Density > 0) and (d / st.Density) or 1)
+	end
+	local lk = self.Palette and self.Palette.Look
+	if lk then                                           -- (2026-10-25) the ladder's pulse step and cycle phase, this frame
+		self.LookPS = (lk.Pulse and not self.Calm) and (floor(((os.clock() / lk.Pulse.Period) % 1) * 8) + 1) or nil
+		if lk.Cycle then
+			local steps = (self.DensRaw or 1) < 0.6 and 12 or ((self.DensRaw or 1) < 0.9 and 24 or 48)
+			self.LookPH = floor(((os.clock() / lk.Cycle.Period) % 1) * steps) / steps
+		end
+	end
 	self.T = t or 0
 	self.nSpan, self.nSprite, self.nLight = 0, 0, 0
 	self.Pieces, self.Glints, self.Lights, self.Beams = 0, 0, 0, 0
@@ -1699,6 +1882,7 @@ function Canvas:Sparkles(c, radius, t, o)
 		opt(o, "spin", 0.8)
 	local tag = opt(o, "tag", nil)
 	local cfn = type(c) == "function"
+	n = ceil(n * (self.Dens or 1))                       -- (2026-10-19, audit P5F-05) the settings' share
 	for i = 0, n - 1 do
 		local age, born = cycleAt(t, i, life, t0, t1, seed)
 		if age then
@@ -1760,6 +1944,8 @@ function Canvas:Flare(p, u, o)
 	if u <= 0 or u >= 1 then return end
 	local size, level, points = opt(o, "size", 0.8), opt(o, "level", 1), opt(o, "points", 8)
 	local rot, n, tag = opt(o, "rot", 0), opt(o, "n", nil), opt(o, "tag", nil)
+	local calm = self.Calm == true                       -- (2026-10-19, audit P5C-07) Reduce Flashing: smaller, dimmer, no shock
+	if calm then size, level = size * 0.6, level * 0.6 end
 	local grow = ease_out_back(clamp(u / 0.22, 0, 1), 1.6)
 	local dec = 1 - smooth((u - 0.22) / 0.78)
 	local s = size * grow * (0.35 + 0.65 * dec) * dec ^ 0.35
@@ -1769,7 +1955,7 @@ function Canvas:Flare(p, u, o)
 			nil, 1.35)
 		countP(self, 1, tag)
 	end
-	if opt(o, "shock", true) and dec > 0.04 then
+	if opt(o, "shock", true) and not calm and dec > 0.04 then
 		local nn = n or camDir(p)
 		local st = ringCore(self, p, size * (0.3 + 0.95 * ease("Quad", u)), nn, min(1, level * dec), 0, TAU, 1, 0, 6,
 			nil, nil, false, 0, 0.55, nil, lw(level) * (0.35 + 0.85 * dec))
@@ -1779,12 +1965,15 @@ function Canvas:Flare(p, u, o)
 end
 
 function Canvas:LightPool(p, level, o)
-	local lvl = max(0, level or 1)
+	local lvl = max(0, level or 1) * (self.Calm and 0.5 or 1)   -- (2026-10-19, audit P5C-07) Reduce Flashing: half
 	if lvl <= 1e-3 then return nil end
 	local energy, col, range = opt(o, "energy", nil), opt(o, "color", C.LIGHT), opt(o, "range", Config.LightRange)
 	if self.Palette then   -- a skin: each light one palette colour, by its order in the frame
 		self.SkinL = (self.SkinL or 0) + 1
-		col = self.Palette.At((self.SkinL * 0.381966) % 1)
+		local lk = self.Palette.Look
+		local u = (self.SkinL * 0.381966) % 1
+		if lk and lk.Cycle then u = pingPong(u + 2 * (self.LookPH or 0)) end
+		col = (lk and lk.LightColor) or self.Palette.At(u)
 	end
 	local s = takeLight(self)
 	if s.p ~= p then s.p = p; s.Att.Position = p end
@@ -1809,6 +1998,7 @@ function Canvas:MoteField(c, radius, t, o)
 	local cfn = type(c) == "function"
 	local dirv = sink and -UP or UP
 	local k = 0
+	n = ceil(n * (self.Dens or 1))                       -- (2026-10-19, audit P5F-05) the settings' share
 	for i = 0, n - 1 do
 		local age, born = cycleAt(t, i, life, t0, t1, seed)
 		if age then
@@ -1840,6 +2030,7 @@ function Canvas:Gather(p, u, o)
 	local size, turns, gsize, t = opt(o, "size", 0.05), opt(o, "turns", 0.6), opt(o, "glint_size", 0.3), opt(o, "t", 0)
 	local tag = opt(o, "tag", nil)
 	local k = 0
+	n = ceil(n * (self.Dens or 1))                       -- (2026-10-19, audit P5F-05) the settings' share
 	for i = 0, n - 1 do
 		rsSeed(seed, i, 0x6A7)
 		local d = randDir()
@@ -2000,7 +2191,8 @@ local function driver(dt)
 end
 
 --- frameFn(cv, t, dt, handle) each render frame; return false to end. opts: T0 (server), Offset, Scale, Clock,
---- Until (clip s), MaxLife (s), Prewarm {Spans, Sprites, Lights}, OnEnd(handle)
+--- Until (clip s), MaxLife (s), Prewarm {Spans, Sprites, Lights}, OnEnd(handle), Owner (the caster's character: another
+--- player's effect is thinned under Reduce Enemy VFX; nil = never thinned as an enemy's)
 function RadiantDraw.Play(name, frameFn, opts)
 	opts = opts or {}
 	local e = setmetatable({
@@ -2009,6 +2201,7 @@ function RadiantDraw.Play(name, frameFn, opts)
 		Until = opts.Until, MaxLife = opts.MaxLife or Config.MaxLife, Born = os.clock(), OnEnd = opts.OnEnd,
 		Dead = false,
 	}, Effect)
+	e.Canvas.Owner = opts.Owner                          -- (2026-10-19, audit P5F-05) the caster's character, or nil
 	live[#live + 1] = e
 	if not bound then
 		bound = true

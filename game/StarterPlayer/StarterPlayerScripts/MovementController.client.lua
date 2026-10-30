@@ -245,8 +245,7 @@ end
 
 -- a speed buff (Cold Momentum) scales the stance speed; the caps above still win, as on the server
 local function mult(c)
-	-- RushSpeedMult is Heat Rush's, apart from Cold Momentum's MoveSpeedMult; the server multiplies both too
-	return (c:GetAttribute("MoveSpeedMult") or 1) * (c:GetAttribute("RushSpeedMult") or 1)
+	return c:GetAttribute("MoveSpeedMult") or 1
 end
 
 local STANCE_SPEED = { Crouch = "CrouchSpeed", Sprint = "SprintSpeed", None = "BaseWalkSpeed" }
@@ -403,6 +402,9 @@ local function startSlide()
 	}
 	slideReadyAt = slide.Start + MOVE.SlideDuration + SLIDE_REGAP     -- the backstop; dropSlide pulls it in
 	request("Slide")
+	-- (2026-10-19, audit P6A-20) SlideAudio's local cue: your own slide's sound starts on the press, not a round trip
+	-- later when the server's MoveState arrives. A client-side attribute (never replicates); SlideAudio stops on MoveState.
+	c:SetAttribute("LocalSlideAt", os.clock())
 	return true
 end
 
@@ -617,6 +619,7 @@ end
 local function menusOpen()
 	return player:GetAttribute("SettingsOpen") or player:GetAttribute("LoadoutOpen") or player:GetAttribute("QuickPlayOpen")
 		or player:GetAttribute("ShopOpen")
+		or player:GetAttribute("ReactionsOpen")   -- (2026-10-19, audit GA-20) the Reactions tablet is a menu too
 end
 
 --- A jump PRESS. On the ground this does nothing: the Humanoid makes the ground jump (and a slide-jump
@@ -816,12 +819,12 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
--- A speed buff coming or going (Heat Rush held, Cold Momentum) re-applies the stance's speed here as well, the
--- moment the attribute arrives, rather than leaving it to the server's WalkSpeed write alone (2026-09-14: Heat
--- Rush's speed-up could not be felt). A leap, wall run or dash holds its own speed and is left alone (the dash's
+-- A speed buff coming or going (Cold Momentum) re-applies the stance's speed here as well, the moment the
+-- attribute arrives, rather than leaving it to the server's WalkSpeed write alone (2026-09-14: a speed-up could not
+-- be felt). A leap, wall run or dash holds its own speed and is left alone (the dash's
 -- end re-applies the stance anyway); predict sets none for a slide.
 local function watchSpeed(c)
-	for _, name in ipairs({ "MoveSpeedMult", "RushSpeedMult" }) do
+	for _, name in ipairs({ "MoveSpeedMult" }) do
 		c:GetAttributeChangedSignal(name):Connect(function()
 			if c == character() and not leap and not wallRun and not wallKick and not DashMotor.IsActive() then
 				predict(requested)
@@ -1157,7 +1160,7 @@ end)
 -- request the server dropped -- a SlideJump it refused because the stance behind it landed first,
 -- one sent in the frame the body died -- left the two sides disagreeing for good. That matters
 -- because the server re-asserts ITS OWN MoveState's speed whenever a cap or a buff moves
--- (SpellshotService watches SpeedCapSlow, SpeedCapUlt, MoveSpeedMult and RushSpeedMult), so a
+-- (SpellshotService watches SpeedCapSlow, SpeedCapUlt and MoveSpeedMult), so a
 -- server still parked in Crouch drops a running player to 8 studs/s the next time any of those
 -- change -- a second, or a minute, after the slide-jump that caused it, for no reason the player
 -- can see. The replicated MoveState is compared with what this client wants and the request is

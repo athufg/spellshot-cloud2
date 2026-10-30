@@ -16,7 +16,7 @@
 	  1.13-1.90  the break: plates and chunks out, up and along the dragon's exit, tumbling, falling; a faint frost ring
 	Triggered by the killer's character attributes KillFX (server time) + KillFXVictim (the victim model's name), the
 	way Pyro's kill visual rides PassiveProc. Settings: Reduce Flashing (no light rings, fewer glints, a dimmer light),
-	Reduce Enemy VFX (no dragon, fewer shards), the killer's colour wrap (CryoWrap: pieces, bursts, light), Graphics Quality (FrostDragonKit.Tier: plates 64 / 44 / 23, chunks
+	Reduce Enemy VFX (no dragon, fewer shards; the dragon flies on the killer's and the victim's clients only, 2026-10-19), the killer's colour wrap (CryoWrap: pieces, bursts, light), Graphics Quality (FrostDragonKit.Tier: plates 64 / 44 / 23, chunks
 	28 / 18 / 9). Everything pooled (the chunks by CryoFX's own debris pool).
 ]]
 
@@ -164,14 +164,11 @@ end
 
 --- Dragon's Pass at `victim` for `killer` (stamp = the kill's server time), drawn in the killer's colour wrap if any.
 local function why(msg) if RunService:IsStudio() then warn("[FrostDragonKillFX] skipped: " .. msg) end end
-local function play(killer, victim, stamp)
-	-- the kit builds when a wearer joins; a kill in the first moments may find it still building: wait a little for it
-	local tw = os.clock()
-	while FD and not FD.Built and not FD.Failed and os.clock() - tw < 2 do task.wait(0.1) end
+local function play(killer, victim, stamp, waited)
 	if not (FD and FD.Built and FD.Kind("bzbody") and FD.Kind("Plate")) then return why("the dragon kit is not built") end
 	if typeof(victim) ~= "Instance" then return why("no victim") end
 	local age0 = stamp and math.max(0, H.serverNow() - stamp) or 0
-	if os.clock() - tw > 0.05 then age0 = 0 end                         -- (waited on the kit: play it from the start)
+	if waited then age0 = 0 end                                        -- (waited on the kit: play it from the start)
 	if age0 > 0.8 then return why("late by " .. math.floor(age0 * 10) / 10 .. " s") end   -- (late: never a stale effect)
 	local thin = H.thinFor(killer)
 	local dens = H.density(killer)
@@ -270,10 +267,15 @@ local function play(killer, victim, stamp)
 				Spin = rng:NextNumber(3, 7) * (rng:NextNumber() < 0.5 and -1 or 1) }
 		end
 	end
-	local dragon = (not thin) and takeDragon() or nil
+	-- (2026-10-19, audit P5A-21) the swoop (a dragon 5x the victim's height, framed on the killer's view) flies only on
+	-- the killer's and the victim's clients: everyone else in a live fight sees the kill on the body (the statue, its
+	-- break, the frost ring), as the manual asks (kill effects "stay on the body, stay short")
+	local me = Players.LocalPlayer and Players.LocalPlayer.Character
+	local flies = (not thin) and me ~= nil and (killer == me or victim == me)
+	local dragon = flies and takeDragon() or nil
 	if dragon and W then for _, o in ipairs(dragon.All) do W.PaintKit(o) end end
 	local J = dragon and rig()
-	local bms = (not thin) and beams() or {}
+	local bms = flies and beams() or {}
 	local cracks = {}
 	local function crescent(p0, v, life, g)
 		for _, bm in ipairs(bms) do
@@ -304,7 +306,7 @@ local function play(killer, victim, stamp)
 	H.ripple(CFrame.new(at + Vector3.new(0, 0.06, 0)), 0.5, 5, 0.6)       -- the frost ring under the victim
 	local c0 = os.clock()
 	local sealed, shattered, hit, misted, lastWake, settled, faded, stroked = false, false, false, false, -1, false, false, false
-	H.run(((W and W.Bind) or function(f) return f end)(function(now, dt, parts, cframes)      -- (each frame in the wrap)
+	local function frame(now, dt, parts, cframes)
 		local t = age0 + (os.clock() - c0)
 		-- THE DRAGON: the long descending curve in, the strike and its hold, the rising curve out, gone
 		local dpos, dfwd
@@ -525,12 +527,29 @@ local function play(killer, victim, stamp)
 			return false
 		end
 		return true
+	end
+	-- (2026-10-19, audit P5A-21) a frame that errors ends the effect cleanly: the hidden body shows again (a living
+	-- dummy used to stay invisible), the crescents switch off and the folder goes
+	H.run(((W and W.Bind) or function(f) return f end)(function(now, dt, parts, cframes)      -- (each frame in the wrap)
+		local ok, keep = pcall(frame, now, dt, parts, cframes)
+		if ok then return keep end
+		why("a frame failed: " .. tostring(keep))
+		for _, x in ipairs(hide) do if x.Parent then x.LocalTransparencyModifier = 0 end end
+		for _, bm in ipairs(bms) do pcall(function() bm.T0 = -1 bm.B.Enabled = false end) end
+		folder:Destroy()
+		return false
 	end))
 end
 function KFX.Play(killer, victim, stamp)
+	-- the kit builds when a wearer joins; a kill in the first moments may find it still building: wait a little for it.
+	-- (2026-10-19, audit P5A-16) the wait is here, before W.Run: CryoWrap swaps every shared palette for the length of the
+	-- call, so a wrapped function must never yield ("Never wrap a function that yields")
+	local tw = os.clock()
+	while FD and not FD.Built and not FD.Failed and os.clock() - tw < 2 do task.wait(0.1) end
+	local waited = os.clock() - tw > 0.05
 	local P = W and W.For and W.For(killer)
-	if P then return W.Run(P, play, killer, victim, stamp) end
-	return play(killer, victim, stamp)
+	if P then return W.Run(P, play, killer, victim, stamp, waited) end
+	return play(killer, victim, stamp, waited)
 end
 
 --- Watch every character for a Frost Dragon kill (KillFX + KillFXVictim, set by the server's kill hook).
@@ -541,6 +560,16 @@ function KFX.Start()
 	local okW, w = pcall(function() return require(iceFolder:WaitForChild("CryoWrap")) end)
 	W = okW and w or nil
 	FD = require(iceFolder:WaitForChild("FrostDragonKit"))
+	if FD.OnRelease then                                -- (2026-10-19, MeshBudget) the kit let go: its pooled pieces go too
+		FD.OnRelease(function()
+			for _, d in ipairs(pool.Dragons) do
+				for _, o in ipairs(d.All) do FD.Drop(o) end
+				pcall(function() d.Model:Destroy() end)
+			end
+			for _, o in ipairs(pool.Plates) do FD.Drop(o) end
+			pool.Dragons, pool.Plates = {}, {}
+		end)
+	end
 	local seen = setmetatable({}, { __mode = "k" })
 	local function watch(character)
 		if seen[character] then return end
@@ -571,6 +600,15 @@ function KFX.Start()
 		local function dummy(m) if m:IsA("Model") and m:GetAttribute("StudioSkin") then watch(m) end end
 		for _, m in ipairs(workspace:GetChildren()) do dummy(m) end
 		workspace.ChildAdded:Connect(function(m) task.defer(dummy, m) end)
+	end
+	-- (2026-10-26) the showcase stand-ins (ShowcaseSkin = "FrostDragon", live and in Studio), wherever in the workspace
+	if FD.Showcased then
+		task.spawn(function()
+			while true do
+				for _, m in ipairs(FD.Showcased()) do watch(m) end
+				task.wait(1)
+			end
+		end)
 	end
 end
 

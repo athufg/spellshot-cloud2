@@ -93,12 +93,13 @@ local FX = T and T.FX or nil
 local TX = T and T.Textures or {}
 if T and not FX then warnOnce("nofx", "UmbraTuning has no FX table (paste the Phase 4 block): Umbra draws nothing") end
 local E = FX and FX.Engine or nil
--- WRAPS (SkinCatalog, 2026-10-11): colour only. CUR is the wrap the code now running draws under (a SkinCatalog skin's
--- Shadow block), nil for Default: set while an entry point builds its effect (the WRAPS block at the end of this file),
+-- WRAPS (SkinCatalog, 2026-10-11; an Element wrap since 2026-10-19): colour only. CUR is the wrap the code now running
+-- draws under (the caster's Umbra wrap: a SkinCatalog skin's Palette block), nil for Default: set while an entry point builds its effect (the WRAPS block at the end of this file),
 -- stamped on every effect run() starts, and put back by the driver round that effect's own Step and by the entry
 -- round every method of the handle it returned. PAL and wrapped() read it; with CUR nil each returns UmbraTuning's
 -- own value, so Default draws exactly as before.
 local CUR = nil
+local WHO = nil                          -- the caster CUR belongs to, while an entry builds (the density helper's)
 local BASE_PAL = T and T.Color or nil
 local PAL = BASE_PAL and setmetatable({}, { __index = function(_, k)
 	local c = CUR and CUR.Color
@@ -110,7 +111,7 @@ local function wrapped(key, base)        -- the wrap's `key`, or UmbraTuning's `
 	return v
 end
 
-local WHERE = { VFXLibrary = "IceMagic", Viewmodel = "IceMagic", SpellshotConfig = "Spellshot" }
+local WHERE = { VFXLibrary = "IceMagic", Viewmodel = "IceMagic", SpellshotConfig = "Spellshot", SpellshotSettings = "Spellshot" }
 local mods, failedAt = {}, {}
 local function need(name)
 	local m = mods[name]
@@ -131,6 +132,103 @@ local function need(name)
 	mods[name] = res
 	return res
 end
+
+--- THE DENSITY HELPER (2026-10-19, CryoFX's pattern; Umbra had none -- its Default draws no ParticleEmitters): a wrap's
+--- extra emitters scale with Graphics Quality (0.4 .. 1) and halve for somebody else's effect under Reduce Enemy VFX.
+local function density(character)
+	local S = need("SpellshotSettings")
+	local d = math.clamp((S and S.EffectDensity) or 1, 0.4, 1)
+	if S and S.ThinEnemyVFX and character ~= nil and character ~= player.Character then d *= 0.5 end
+	return d
+end
+
+--- AN EPIC WRAP'S GLOW AND PULSE (Palette.Glow / Palette.Pulse, 2026-10-19, U2; Sakura Frost's contract). GLOW: the key
+--- bodies shine in the wrap's own colour -- every ribbon's Brightness x Glow.Gain[kind] with Glow.Emission[kind] as a
+--- floor under its LightEmission, every ball's rim/halo billboard at Brightness Glow.Ball and its light x Glow.Light
+--- (Beams and billboards are already LightInfluence 0: unlit). PULSE: that brightness breathes, a sine of +-Pulse.Amp
+--- every Pulse.Period s, held at mid under Reduce Flashing (read once a second; in Studio the workspace attribute
+--- StudioReduceFlashing stands in). No Glow on CUR: gain 1, floor 0 -- every value exactly as before.
+local rfAt, rfOn = -10, false
+local function pulseK()
+	local P = CUR and CUR.Pulse
+	if not P then return 1 end
+	local now = os.clock()
+	if now - rfAt > 1 then
+		rfAt = now
+		local S = need("SpellshotSettings")
+		local ok, v = pcall(function() return S and S.Get and S.Get("ReduceFlashing") end)
+		rfOn = (ok and v == true) or (RunService:IsStudio() and workspace:GetAttribute("StudioReduceFlashing") == true)
+	end
+	if rfOn then return 1 end
+	return 1 + P.Amp * math.sin(2 * math.pi * now / P.Period)
+end
+local function glowOf(kind)                 -- -> Brightness gain, LightEmission floor of a ribbon of `kind` now
+	local G = CUR and CUR.Glow
+	if not G then return 1, 0, math.huge end
+	return (G.Gain[kind] or 1) * pulseK(), G.Emission[kind] or 0, G.Flare or math.huge
+end
+-- (Glow.Flare, UR 2026-10-19: the ceiling on every ribbon's LightEmission, so the Tell's additive flare keeps the wrap's
+-- own hue instead of washing into the sky's blue; none on the palette: no ceiling)
+
+--- A MYTHIC WRAP'S FLOW (Palette.Flow, 2026-10-19, U2): Umbra's own Eclipse corona on every ribbon. The colour runs
+--- along each ribbon (f = 0 tail .. 1 head) through Flow.Stops in Flow.Order and back, Flow.Along cycles per ribbon,
+--- drifting one full cycle every Flow.Period s; each ribbon starts Flow.Spread rad behind the one made before it, so an
+--- effect's ribbons (made in order round their centre) carry one field sweeping round it, not per-piece noise. Linear
+--- between stops and slow (the fastest 1 s change is bounded by the period), held still under Reduce Flashing. It
+--- multiplies what the piece already draws (a strip and its running band, a B strip's Tint), so the Tell still lights it.
+--- (A world-space field was tried first and rejected: the charge's ribbons orbit once a second and the Eclipse wave
+--- races outward at ~36 studs/s, so any field fixed in space strobes on them.)
+local flowSeq = 0
+local function flowMul(a, b) return Color3.new(a.R * b.R, a.G * b.G, a.B * b.B) end
+local function stopsOf(F)                   -- Flow.Stops (named, so the guard reads them) in Flow.Order
+	local S = F._list
+	if not S then
+		S = {}
+		for i, k in ipairs(F.Order) do S[i] = F.Stops[k] end
+		F._list = S
+	end
+	return S
+end
+local function flowGrey(F, kind, c)          -- (Flow.Grey[kind], UR: 0 the flow's colour .. 1 its luminance grey)
+	local k = F.Grey and F.Grey[kind]
+	if not k then return c end
+	local l = 0.299 * c.R + 0.587 * c.G + 0.114 * c.B
+	return c:Lerp(Color3.new(l, l, l), k)
+end
+local function flowCol(F, f, ph, now)
+	pulseK()                                                           -- (refreshes the Reduce Flashing read)
+	local t = if rfOn then 0 else now
+	local u = 0.5 + 0.5 * math.sin(2 * math.pi * (f * F.Along - t / F.Period) + ph)
+	local S = stopsOf(F)
+	local x = u * (#S - 1)
+	local i = math.clamp(math.floor(x), 0, #S - 2)
+	return S[i + 1]:Lerp(S[i + 2], x - i)
+end
+--- the frame cost probe (Studio only, off unless workspace.UmbraCostProbe is set; read once a second): the mean ms of
+--- every effect's Step per frame, written to the local player's attribute UmbraStepMs
+local probe = { At = -10, On = false, T = 0, Frames = 0 }
+
+-- (2026-10-19, audit P5C-07 / P5F-03 / P5F-05) THE PLAYER'S SETTINGS, read as VoltaicKit and ZephyrDraw read them
+-- (SpellshotSettings), refreshed at most twice a second (the ribbons ask every frame). Reduce Flashing halves every
+-- flash's lift above rest: the Tell's glint (ribbons, balls, the chest light), the Mark headshot flash, and the Eclipse
+-- pulse's light and ColorCorrection (its rise slowed x3). Graphics Quality scales every Beam's curve Segments;
+-- Reduce Enemy VFX drops half of an enemy's Eclipse wisps (not a teammate's: VFXLibrary.IsEnemy, audit P5F-06). The
+-- Eclipse darkness (the grade), the domain's wave, a decoy and the Tell itself are never removed.
+local setCache = { At = -1, Calm = false, Density = 1, ThinEnemy = false }
+local function settingsNow()
+	local now = os.clock()
+	if now - setCache.At >= 0.5 then
+		setCache.At = now
+		local S = need("SpellshotSettings")
+		local ok, v = pcall(function() return S and S.Get("ReduceFlashing") end)
+		setCache.Calm = ok and v == true
+		setCache.Density = math.clamp(tonumber(S and S.EffectDensity or 1) or 1, 0.45, 1)
+		setCache.ThinEnemy = (S and S.ThinEnemyVFX) == true
+	end
+	return setCache
+end
+--- 0.5 under Reduce Flashing (a flash's lift above rest x this), else 1
+local function calmK() return settingsNow().Calm and 0.5 or 1 end
 
 local function timeScale()
 	local V = need("VFXLibrary")
@@ -329,6 +427,131 @@ end
 local Ribbon = {}
 Ribbon.__index = Ribbon
 
+-- A RARE WRAP'S RIBBON GRADIENT (Palette.Ramp[kind] = { Head, Mid, Tail, At }, 2026-10-19): a multiplier along each
+-- ribbon, u = 0 at its head (A: the leading end, s = 0; B: the head, f = 1) to 1 at its tail, through Mid at At
+local function rampAt(R, u)
+	u = if u < 0 then 0 elseif u > 1 then 1 else u
+	local at = R.At or 0.5
+	if u <= at then return R.Head:Lerp(R.Mid, u / at) end
+	return R.Mid:Lerp(R.Tail, (u - at) / (1 - at))
+end
+local function rampMul(R, c, u)
+	local v = rampAt(R, u)
+	return Color3.new(c.R * v.R, c.G * v.G, c.B * v.B)
+end
+--- B's beam over [f0, f1] (f = 0 tail .. 1 head) in colour `base` x the ramp, Mid kept as a keypoint where it falls
+local function rampSeq(R, base, f0, f1)
+	local kp = { ColorSequenceKeypoint.new(0, rampMul(R, base, 1 - f0)) }
+	local fm = 1 - (R.At or 0.5)
+	if fm > f0 + 1e-3 and fm < f1 - 1e-3 then
+		kp[#kp + 1] = ColorSequenceKeypoint.new((fm - f0) / (f1 - f0), rampMul(R, base, 1 - fm))
+	end
+	kp[#kp + 1] = ColorSequenceKeypoint.new(1, rampMul(R, base, 1 - f1))
+	return ColorSequence.new(kp)
+end
+-- A RARE WRAP'S MOTTLE (Palette.Mottle = { N, Width, Edge, Depth, Min, Max, light = Color3, shadow = Color3 }, R2U
+-- 2026-10-19): N crisp blotches painted along every ribbon that has a Ramp, fixed in the ribbon's own length (u = 0
+-- head .. 1 tail) so they ride with it and never change in time (a static pattern, the Rare lever); a blotch takes
+-- Mottle[kind] x the ribbon's own multiplier at Depth, its edges Edge of its width. Each ribbon gets its own positions
+-- (a golden-ratio walk on the ribbon count), so an effect's ribbons read mottled, not striped in step. No Mottle on
+-- the palette: rampSeq and the A colour exactly as before.
+local MOT = { Seq = 0 }
+function MOT.spots(M)
+	MOT.Seq += 1
+	local out, lo, hi, q = {}, M.Min or 0.12, M.Max or 0.88, MOT.Seq
+	for i = 1, M.N do
+		local c = lo + (hi - lo) * ((q * 0.6180339 + (i - 1) / M.N) % 1)
+		local hw = M.Width * (0.75 + 0.5 * (((q * 7 + i * 3) % 5) / 4)) / 2
+		out[i] = { c - hw, c + hw, 2 * hw * (M.Edge or 0.25) }
+	end
+	return out
+end
+function MOT.w(sp, u)
+	local w = 0
+	for _, q in ipairs(sp) do
+		if u > q[1] and u < q[2] then w = math.max(w, math.min(1, (u - q[1]) / q[3], (q[2] - u) / q[3])) end
+	end
+	return w
+end
+function MOT.col(R, base, u, sp, S)
+	local c = rampMul(R, base, u)
+	local w = MOT.w(sp, u)
+	if w > 0 then c = c:Lerp(flowMul(base, S.C), w * S.D) end
+	return c
+end
+function MOT.edges(sp, out, k)              -- every blotch's four edge points, x k (A: in s; B: as u)
+	for _, q in ipairs(sp) do
+		out[#out + 1] = q[1] * k
+		out[#out + 1] = (q[1] + q[3]) * k
+		out[#out + 1] = (q[2] - q[3]) * k
+		out[#out + 1] = q[2] * k
+	end
+	return out
+end
+function MOT.seq(R, base, f0, f1, sp, S)    -- rampSeq with the blotches (f = 0 tail .. 1 head, u = 1 - f)
+	local fs = { f0, f1 }
+	local fm = 1 - (R.At or 0.5)
+	if fm > f0 + 1e-3 and fm < f1 - 1e-3 then fs[#fs + 1] = fm end
+	for _, u in ipairs(MOT.edges(sp, {}, 1)) do
+		local f = 1 - u
+		if f > f0 + 1e-4 and f < f1 - 1e-4 then fs[#fs + 1] = f end
+	end
+	table.sort(fs)
+	local kp, last = {}, -1
+	for _, f in ipairs(fs) do
+		local t = math.clamp((f - f0) / (f1 - f0), 0, 1)
+		if t > last + 1e-4 then
+			kp[#kp + 1] = ColorSequenceKeypoint.new(t, MOT.col(R, base, 1 - f, sp, S))
+			last = t
+		end
+	end
+	if #kp > 20 or #kp < 2 or kp[#kp].Time < 1 then return rampSeq(R, base, f0, f1) end
+	return ColorSequence.new(kp)
+end
+
+-- A RARE WRAP'S ASH (Palette.Ash, 2026-10-19): one emitter riding each ribbon's head, so flecks shed along its path and
+-- drift. Its rate is the ribbon's own Default draw (beams x segments: Umbra's Default has no particles, so its drawn
+-- quads are the unit) x Ash.Share, per mean particle life, through the density helper. Lit only while the ribbon draws.
+-- (Burst: Palette.Motes.Burst / Ash.Burst, a share of the ribbon's Default quads put out at once when the ribbon first
+-- draws -- the effect's key moment: the cast, the impact, the break, the open. burstAcc carries the fraction so an
+-- effect's ribbons together put out exactly Burst x its quads. No Burst on the palette: nothing changes.)
+local burstAcc = 0
+local function newAsh(A, quads)
+	local att = Instance.new("Attachment")
+	att.Name = A.Name or "UmbraAsh"
+	att.Parent = workspace.Terrain
+	local pe = Instance.new("ParticleEmitter")
+	pe.Name = A.Name or "UmbraAsh"
+	pe.Texture = A.Texture
+	pe.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, A.Colors.Birth), ColorSequenceKeypoint.new(A.At, A.Colors.Mid),
+		ColorSequenceKeypoint.new(1, A.Colors.Death) })
+	pe.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.12, A.Alpha),
+		NumberSequenceKeypoint.new(0.7, A.Alpha + 0.15), NumberSequenceKeypoint.new(1, 1) })
+	pe.Size = NumberSequence.new(A.Size, A.Size * 0.7)
+	local sq = {}
+	for i = 0, A.Flutter do sq[#sq + 1] = NumberSequenceKeypoint.new(i / A.Flutter, (i % 2 == 0) and 0.55 or -0.55) end
+	pe.Squash = NumberSequence.new(sq)                   -- each fleck tumbles: wide, thin, wide ... over its life
+	pe.Lifetime = NumberRange.new(A.Life[1], A.Life[2])
+	pe.Speed = NumberRange.new(A.Speed[1], A.Speed[2])
+	pe.SpreadAngle = Vector2.new(180, 180)
+	pe.Acceleration = Vector3.new(0, A.Rise, 0)
+	pe.Drag = A.Drag
+	pe.Rotation = NumberRange.new(0, 360)
+	pe.RotSpeed = NumberRange.new(-A.Spin, A.Spin)
+	pe.LightEmission, pe.LightInfluence, pe.Brightness = A.Emission or 0, 0, A.Brightness or 1   -- (Ash: normal blending, unlit)
+	pe.Rate = A.Share * quads / ((A.Life[1] + A.Life[2]) / 2) * density(WHO)
+	pe.Enabled = false
+	pe.Parent = att
+	local burst = nil
+	if A.Burst then                     -- an Epic+ wrap's burst at the ribbon's first draw (UR, 2026-10-19)
+		burstAcc += A.Burst * quads * density(WHO)
+		burst = math.floor(burstAcc)
+		burstAcc -= burst
+		pe:SetAttribute("Burst", burst)
+	end
+	return pe, att, burst
+end
+
 local EPS_A = 0.004           -- A's fit: the tangent by +-0.004 in s (one-sided at the chain's ends)
 local EPS_B = 1 / 480         -- B's fit: the tangent by +-1/480 s of path time
 local MAX_KEYS = 20           -- a ColorSequence / NumberSequence holds at most 20 keypoints
@@ -346,10 +569,32 @@ local function newRibbon(style, kind, beams, segments, faceCamera, speed)
 	self.Textured = tex ~= nil
 	local wb = (style ~= "A") and wrapped("RibbonB", nil) or nil      -- a wrap's multiply and gain for B's baked strip
 	self.Gain = (wb and wb.Gain[kind]) or 1
+	local ramp = wrapped("Ramp", nil)                                  -- a Rare wrap's head-to-tail gradient, per kind
+	ramp = ramp and ramp[kind] or nil
+	self.Ramp = ramp
+	local mo = ramp and wrapped("Mottle", nil)                         -- a Rare wrap's blotches along it (R2U)
+	if mo and mo[kind] then self.Spots, self.Spot = MOT.spots(mo), { C = mo[kind], D = mo.Depth or 1 } end
+	-- a Rare wrap's drifting ash, or an Epic wrap's shimmer motes (Palette.Motes, the same recipe: one emitter on the
+	-- ribbon's head at Share of its Default quads, colour over life, through the density helper)
+	local ash = wrapped("Motes", nil) or wrapped("Ash", nil)
+	if ash then
+		self.Ash, self.AshAtt, self.Burst = newAsh(ash, beams * segments)
+		self.AshLife, self.AshNear = ash.Life[2], ash.Near or 0
+	end
+	local tw = wrapped("Twinkle", nil)                                 -- a Mythic wrap's sparse star glints
+	if tw then
+		self.Tw, self.TwAtt = newAsh(tw, beams * segments)
+		self.TwLife, self.TwNear = tw.Life[2], tw.Near or 0
+	end
+	local fl = wrapped("Flow", nil)                                    -- a Mythic wrap: this ribbon's phase in the flow
+	if fl then
+		flowSeq += 1
+		self.FlowPh = flowSeq * fl.Spread
+	end
 	for j = 1, beams do
 		local b = takeBeam()
 		b.Attachment0, b.Attachment1 = self.Atts[j - 1], self.Atts[j]
-		b.Segments = segments
+		b.Segments = math.max(4, math.floor(segments * settingsNow().Density + 0.5))   -- (2026-10-19, audit P5F-05)
 		b.FaceCamera = faceCamera
 		b.LightInfluence = 0
 		b.ZOffset = 0
@@ -366,8 +611,9 @@ local function newRibbon(style, kind, beams, segments, faceCamera, speed)
 		else
 			b.TextureSpeed = speed * E.TextureSpeedSign
 			-- no strip uploaded yet: the body colour the strip would have carried
-			b.Color = ColorSequence.new(tex and (wb and wb.Tint[kind] or Color3.new(1, 1, 1))
-				or (wb or FX.RibbonB).Untextured[kind])
+			local base = tex and (wb and wb.Tint[kind] or Color3.new(1, 1, 1)) or (wb or FX.RibbonB).Untextured[kind]
+			b.Color = if ramp and self.Spots then MOT.seq(ramp, base, (j - 1) / beams, j / beams, self.Spots, self.Spot)
+				elseif ramp then rampSeq(ramp, base, (j - 1) / beams, j / beams) else ColorSequence.new(base)
 			b.LightEmission = FX.RibbonB.Quiet[kind]
 		end
 		b.Enabled = false
@@ -386,9 +632,23 @@ function Ribbon:hide()
 	for _, b in ipairs(self.Beams) do
 		if b.Enabled then b.Enabled = false end
 	end
+	if self.Ash and self.Ash.Enabled then self.Ash.Enabled = false end
+	if self.Tw and self.Tw.Enabled then self.Tw.Enabled = false end
 end
 
 function Ribbon:free()
+	if self.Ash then
+		local att = self.AshAtt
+		self.Ash.Enabled = false
+		self.Ash = nil
+		task.delay(self.AshLife + 0.2, function() att:Destroy() end)
+	end
+	if self.Tw then
+		local att = self.TwAtt
+		self.Tw.Enabled = false
+		self.Tw = nil
+		task.delay(self.TwLife + 0.2, function() att:Destroy() end)
+	end
 	for _, b in ipairs(self.Beams) do giveBeam(b) end
 	for j = 0, self.K do giveAttachment(self.Atts[j]) end
 	self.Beams, self.Atts = {}, {}
@@ -499,6 +759,39 @@ function Ribbon:drawA(a)
 		local n = nodes[j]
 		placeKnot(self.Atts[j], n.P, n.Axis, (not self.FaceCamera) and n.W or nil)
 	end
+	if self.Ash then
+		local hp = nodes[0].P
+		self.AshAtt.Position = hp
+		local cam = camera()
+		local on = not (cam and (cam.CFrame.Position - hp).Magnitude < self.AshNear)   -- no flecks into the lens
+		if self.Ash.Enabled ~= on then self.Ash.Enabled = on end
+		if self.Burst then
+			if on and self.Burst > 0 then self.Ash:Emit(self.Burst) self.Ash:SetAttribute("BornAt", os.clock()) end
+			self.Burst = nil
+		end
+	end
+	if self.Tw then
+		local hp = nodes[0].P
+		self.TwAtt.Position = hp
+		local cam = camera()
+		local on = not (cam and (cam.CFrame.Position - hp).Magnitude < self.TwNear)
+		if self.Tw.Enabled ~= on then self.Tw.Enabled = on end
+	end
+	local gk, ge, gc = glowOf(self.Kind)
+	local colour, knots = a.Colour, a.ColourKnots
+	if self.Ramp and self.Spots then                                    -- (R2U: the Mottle's blotches, crisp at their edges)
+		local R, fn, sp, S = self.Ramp, a.Colour, self.Spots, self.Spot
+		colour = function(s) return MOT.col(R, fn(s), s / smax, sp, S) end
+		knots = MOT.edges(sp, table.clone(knots or {}), smax)
+	elseif self.Ramp then
+		local R, fn = self.Ramp, a.Colour
+		colour = function(s) return rampMul(R, fn(s), s / smax) end
+	end
+	if self.FlowPh and CUR and CUR.Flow then                           -- a Mythic wrap: the flow along the ribbon
+		local F, fn, ph, now = CUR.Flow, colour, self.FlowPh, os.clock()
+		local kind = self.Kind
+		colour = function(s) return flowMul(flowGrey(F, kind, flowCol(F, 1 - s / smax, ph, now)), fn(s)) end
+	end
 	for j = 1, k do
 		local b = self.Beams[j]
 		local n0, n1 = nodes[j - 1], nodes[j]
@@ -507,10 +800,10 @@ function Ribbon:drawA(a)
 		b.CurveSize1 = n1.Speed * ds / 3 * E.CurveSize1Sign
 		b.Width0 = math.max(0, a.Width(n0.S))
 		b.Width1 = math.max(0, a.Width(n1.S))
-		b.Color = colourSeq(a.Colour, n0.S, n1.S, a.ColourKnots)
+		b.Color = colourSeq(colour, n0.S, n1.S, knots)
 		b.Transparency = alphaSeq(a.Alpha, n0.S, n1.S, a.AlphaKnots)
-		b.Brightness = a.Brightness
-		b.LightEmission = a.Emission
+		b.Brightness = a.Brightness * gk                                 -- (gk 1, ge 0 without an Epic Glow)
+		b.LightEmission = math.min(math.max(a.Emission, ge), gc)
 		if not b.Enabled then b.Enabled = true end
 	end
 end
@@ -562,8 +855,32 @@ function Ribbon:drawB(path, tau, span, W, alphaMul, brightness, flareU, twist)
 		if d.Magnitude < 1e-6 then d = if j < k then P[j + 1] - P[j] else P[j] - P[j - 1] end
 		placeKnot(self.Atts[j], P[j], unitOr(d, Vector3.zAxis), nil)
 	end
+	if self.Ash then
+		self.AshAtt.Position = P[k]
+		local cam = camera()
+		local on = not (cam and (cam.CFrame.Position - P[k]).Magnitude < self.AshNear)   -- no flecks into the lens
+		if self.Ash.Enabled ~= on then self.Ash.Enabled = on end
+		if self.Burst then
+			if on and self.Burst > 0 then self.Ash:Emit(self.Burst) self.Ash:SetAttribute("BornAt", os.clock()) end
+			self.Burst = nil
+		end
+	end
+	if self.Tw then
+		self.TwAtt.Position = P[k]
+		local cam = camera()
+		local on = not (cam and (cam.CFrame.Position - P[k]).Magnitude < self.TwNear)
+		if self.Tw.Enabled ~= on then self.Tw.Enabled = on end
+	end
+	local flowF, flowTint, now = self.FlowPh and CUR and CUR.Flow, nil, os.clock()
+	if flowF then
+		local wb = CUR.RibbonB
+		flowTint = (wb and wb.Tint[self.Kind]) or Color3.new(1, 1, 1)
+	end
 	local q, fl = FX.RibbonB.Quiet[self.Kind], FX.RibbonB.Flare[self.Kind]
+	local ck = calmK()                                   -- (2026-10-19, audit P5C-07) Reduce Flashing: half the lift
+	if ck < 1 then brightness, flareU = 1 + (brightness - 1) * ck, flareU * ck end
 	local le = q + (fl - q) * flareU
+	local gk, ge, gc = glowOf(self.Kind)
 	local rewriteT = math.abs(alphaMul - self.LastAlpha) > 0.01
 	for j = 1, k do
 		local b = self.Beams[j]
@@ -577,8 +894,12 @@ function Ribbon:drawB(path, tau, span, W, alphaMul, brightness, flareU, twist)
 		b.CurveSize0 = D[j - 1].Magnitude * h / 3
 		b.CurveSize1 = D[j].Magnitude * h / 3 * E.CurveSize1Sign
 		if rewriteT then b.Transparency = subSeq(f0, f1, alphaMul) end
-		b.Brightness = brightness * self.Gain
-		b.LightEmission = le
+		b.Brightness = brightness * self.Gain * gk
+		b.LightEmission = math.min(math.max(le, ge), gc)
+		if flowF then
+			b.Color = ColorSequence.new(flowMul(flowGrey(flowF, self.Kind, flowCol(flowF, f0, self.FlowPh, now)), flowTint),
+				flowMul(flowGrey(flowF, self.Kind, flowCol(flowF, f1, self.FlowPh, now)), flowTint))
+		end
 		if not b.Enabled then b.Enabled = true end
 	end
 	if rewriteT then self.LastAlpha = alphaMul end
@@ -598,7 +919,7 @@ local function bandA(kind, L)
 	local band = R.Band:Lerp(A.Lit, L)
 	return if texturedA(kind) then band else mulC(band, R.Untextured)
 end
-local function brightA(L) return 1 + FX.RibbonA.BrightnessGain * L end
+local function brightA(L) return 1 + FX.RibbonA.BrightnessGain * L * calmK() end   -- calmK: (2026-10-19, audit P5C-07)
 local function emissionA(kind, L) return FX.RibbonA[kind].Emission + FX.RibbonA[kind].EmissionGain * L end
 
 ----------------------------------------------------------------------------------------------------
@@ -703,7 +1024,7 @@ local function newBall(rangeRadius, firstPerson, plain)
 		rim.Parent = bb
 	end
 	rim.ZIndex = 2
-	local body = nil
+	local body, orbLayers = nil, nil
 	if bodyImg then
 		-- the sprite's disc fills its image edge to edge: 1 / RimExtent of the billboard is the ball's silhouette
 		body = Instance.new("ImageLabel")
@@ -711,16 +1032,13 @@ local function newBall(rangeRadius, firstPerson, plain)
 		body.Image = bodyImg
 		body.ImageColor3 = wrapped("BallBodyTint", Color3.new(1, 1, 1))
 		if moon then
-			-- the image's disc cut out of its black square, shaded from its lit limb to its dark one
-			body.ImageColor3 = Color3.new(1, 1, 1)
+			-- the image's disc cut out of its black square under ONE flat tint (2026-10-19: the lit-to-dark UIGradient
+			-- it had is a Rare lever, gone from this Uncommon wrap; the moon's own craters are its only shading)
+			body.ImageColor3 = moon.Tint or Color3.new(1, 1, 1)
 			body.ImageRectOffset, body.ImageRectSize = moon.RectOffset, moon.RectSize
 			local round = Instance.new("UICorner")
 			round.CornerRadius = UDim.new(0.5, 0)
 			round.Parent = body
-			local shade = Instance.new("UIGradient")
-			shade.Color = ColorSequence.new(moon.Lit, moon.Dark)
-			shade.Rotation = moon.Rotation
-			shade.Parent = body
 		end
 		body.BackgroundTransparency = 1
 		body.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -728,10 +1046,38 @@ local function newBall(rangeRadius, firstPerson, plain)
 		body.Size = UDim2.fromScale(1 / B.RimExtent, 1 / B.RimExtent)
 		body.ZIndex = 1
 		body.Parent = bb
+		-- A MYTHIC WRAP'S CRYSTAL ORB (Palette.BallOrb = { Layers = { { Image, Color, Color2, Period, Size, X, Y, Alpha,
+		-- Spin, Orbit = { R, Speed, Tilt } }, ... } }, R2U 2026-10-19, the texture-reassignment pilot): the round balls only
+		-- (never the dart's head), layers drawn inside the body in order (each round, sized and placed in the body's own
+		-- frame, so they follow a stretched core too), turning at Spin deg/s, drifting Color -> Color2 over Period s, and an
+		-- Orbit layer circling inside on a tilted ellipse (R of the body, Speed deg/s, Tilt the ellipse's height), up to 30 %
+		-- larger on the near side and fainter behind: light moving inside the glass (all held still under Reduce Flashing,
+		-- like the flow). The images are the engine's own (rbxasset://), nothing uploaded. No BallOrb: no layers.
+		local orb = (not plain) and wrapped("BallOrb", nil)
+		if orb then
+			orbLayers = {}
+			for i, L in ipairs(orb.Layers) do
+				local im = Instance.new("ImageLabel")
+				im.Name = "Orb" .. i
+				im.Image = L.Image
+				im.BackgroundTransparency = 1
+				im.ImageColor3 = L.Color
+				im.ImageTransparency = L.Alpha or 0
+				im.AnchorPoint = Vector2.new(0.5, 0.5)
+				im.Position = UDim2.fromScale(0.5 + (L.X or 0), 0.5 + (L.Y or 0))
+				im.Size = UDim2.fromScale(L.Size, L.Size)
+				im.ZIndex = 1
+				local rc = Instance.new("UICorner")
+				rc.CornerRadius = UDim.new(0.5, 0)
+				rc.Parent = im
+				im.Parent = body
+				orbLayers[i] = { Im = im, L = L, Ph = 1.7 * i }
+			end
+		end
 	end
 	bb.Parent = att
 	return setmetatable({ Part = part, Light = light, Att = att, Gui = bb, Rim = rim, Stroke = stroke, Body = body,
-		PartT = if body then (if firstPerson then 1 else B.ShadowOnly) else 0,
+		Orb = orbLayers, PartT = if body then (if firstPerson then 1 else B.ShadowOnly) else 0,
 		RangeRadius = rangeRadius, Shown = false }, Ball)
 end
 
@@ -766,7 +1112,13 @@ function Ball:put(cf, size, g, L, shape, scale, attachK)
 	light.Enabled = true
 	light.Color = glint
 	light.Range = B.LightRangeK * self.RangeRadius * (scale or 1)
-	light.Brightness = B.LightBrightness * clamp01(g) * (1 + B.TellLightGain * L)
+	light.Brightness = B.LightBrightness * clamp01(g) * (1 + B.TellLightGain * L * calmK())   -- calmK: audit P5C-07
+	local glow = CUR and CUR.Glow                                       -- an Epic wrap: the rim/halo and light glow, breathing
+	if glow then
+		local pk = pulseK()
+		light.Brightness *= glow.Light * pk
+		self.Gui.Brightness = glow.Ball * pk
+	end
 	-- the rim
 	local cam = camera()
 	if not cam then
@@ -777,7 +1129,9 @@ function Ball:put(cf, size, g, L, shape, scale, attachK)
 	local camPos = camCF.Position
 	local c = cf.Position
 	local gui, rim = self.Gui, self.Rim
-	if self.Stroke then self.Stroke.Color = glint elseif rim:IsA("ImageLabel") then rim.ImageColor3 = glint end
+	local rimC = glint
+	if CUR and CUR.Rim then rimC = CUR.Rim:Lerp(PAL.Glint, L) end    -- a Mythic wrap: the thin limb in gold-white
+	if self.Stroke then self.Stroke.Color = rimC elseif rim:IsA("ImageLabel") then rim.ImageColor3 = rimC end
 	if shape == "dart" then
 		-- an ellipsoid a across, b along the flight: the image centred on the projected tips, stretched and turned
 		local a, b = size.X / 2, size.Z / 2
@@ -842,6 +1196,24 @@ function Ball:put(cf, size, g, L, shape, scale, attachK)
 		local px = rim.AbsoluteSize.X
 		self.Stroke.Thickness = math.clamp(px * 0.05, 1, 6)
 	end
+	if self.Orb then                                                    -- the crystal orb's light turning inside
+		pulseK()
+		local now = if rfOn then 0 else os.clock()
+		for _, o in ipairs(self.Orb) do
+			local L = o.L
+			if L.Spin then o.Im.Rotation = (L.Spin * now + 57.3 * o.Ph) % 360 end
+			local Ob = L.Orbit
+			if Ob then
+				local th = math.rad(Ob.Speed * now) + o.Ph
+				local sn = math.sin(th)
+				o.Im.Position = UDim2.fromScale(0.5 + (L.X or 0) + Ob.R * math.cos(th), 0.5 + (L.Y or 0) + Ob.R * (Ob.Tilt or 0.5) * sn)
+				local sz = L.Size * (1 + 0.3 * sn)
+				o.Im.Size = UDim2.fromScale(sz, sz)
+				o.Im.ImageTransparency = math.min(1, (L.Alpha or 0) + 0.45 * (1 - sn) / 2)
+			end
+			if L.Color2 then o.Im.ImageColor3 = L.Color:Lerp(L.Color2, 0.5 + 0.5 * math.sin(2 * math.pi * now / (L.Period or 18) + o.Ph)) end
+		end
+	end
 	if not gui.Enabled then gui.Enabled = true end
 end
 
@@ -872,7 +1244,9 @@ local function driver(dt)
 			local alive = false
 			if not e.Dead and now - e.Born <= e.MaxLife then
 				CUR = e.Wrap
+				local t0 = probe.On and os.clock() or 0
 				local ok, res = pcall(e.Step, e, now, dt)
+				if probe.On then probe.T += os.clock() - t0 end
 				CUR = nil
 				if ok then
 					alive = res ~= false
@@ -886,6 +1260,12 @@ local function driver(dt)
 			end
 		end
 	end
+	if now - probe.At > 1 then
+		if probe.On and probe.Frames > 0 then player:SetAttribute("UmbraStepMs", 1000 * probe.T / probe.Frames) end
+		probe.At, probe.T, probe.Frames = now, 0, 0
+		probe.On = RunService:IsStudio() and workspace:GetAttribute("UmbraCostProbe") == true
+	end
+	if probe.On then probe.Frames += 1 end
 	if #live == 0 and bound then
 		bound = false
 		RunService:UnbindFromRenderStep(STEP_NAME)
@@ -959,7 +1339,8 @@ function UmbraFX.Tell(character, reason)
 	l.Color = PAL.Glint
 	l.Range = BL.Range
 	l.Shadows = false
-	l.Brightness = BL.Brightness
+	local peak = BL.Brightness * calmK()                 -- (2026-10-19, audit P5C-07) halved under Reduce Flashing
+	l.Brightness = peak
 	l.Parent = torso
 	local scale = timeScale()
 	run({
@@ -967,7 +1348,7 @@ function UmbraFX.Tell(character, reason)
 		Step = function(e, now)
 			local u = (now - e.Start) * scale
 			if u >= BL.Time or not l.Parent then return false end
-			l.Brightness = BL.Brightness * (1 - qout(u / BL.Time))
+			l.Brightness = peak * (1 - qout(u / BL.Time))
 			return true
 		end,
 		Stop = function() if l.Parent then l:Destroy() end end,      -- a newer Tell may have replaced it already
@@ -1424,12 +1805,13 @@ function UmbraFX.MarkHeadshot(point, dir, opts)
 	disc.Parent = bb
 	bb.Parent = att
 	local scale = timeScale()
+	local ck = calmK()                                   -- (2026-10-19, audit P5C-07) Reduce Flashing: half the flash
 	return run({
 		Name = "HeadshotFlash", Start = os.clock(),
 		Step = function(e, now)
 			local u = (now - e.Start) * scale
 			if u > M.FlashRise + M.FlashFall then return false end
-			local env = if u < M.FlashRise then qout(u / M.FlashRise) else 1 - sio((u - M.FlashRise) / M.FlashFall)
+			local env = (if u < M.FlashRise then qout(u / M.FlashRise) else 1 - sio((u - M.FlashRise) / M.FlashFall)) * ck
 			light.Brightness = M.FlashBrightness * env
 			local sz = M.FlashSize.From + (M.FlashSize.To - M.FlashSize.From) * qout(u / (M.FlashRise + M.FlashFall))
 			bb.Size = UDim2.fromScale(sz, sz)
@@ -1662,6 +2044,17 @@ local function veil(inst, on)
 	end)
 end
 
+--- A Rare wrap's mosaic on the decoy's pieces (Finish.Pieces = { { Color, Material, Reflectance }, ... }, R2U
+--- 2026-10-19): each body part keeps one look, picked by its name, so the pieces fly as crisp blotches; or nil
+local function pieceOf(name)
+	local fin = wrapped("Finish", nil)
+	local P = fin and fin.Pieces
+	if not P then return nil end
+	local h = 0
+	for i = 1, #name do h = (h * 31 + string.byte(name, i)) % 9973 end
+	return P[h % #P + 1]
+end
+
 --- A local shadow-skin copy of a decoy part: its mesh, nothing else of it
 local function peelCopy(part)
 	local ok, c = pcall(function() return part:Clone() end)
@@ -1682,6 +2075,10 @@ local function peelCopy(part)
 	c.CastShadow = true
 	c.Material = Enum.Material.SmoothPlastic
 	c.Color = wrapped("ShadowSkin", FX.Decoy.ShadowSkin)
+	local fin = wrapped("Finish", nil)                                 -- a Rare wrap's finish on the travelling pieces
+	if fin then c.Material, c.Reflectance = Enum.Material[fin.Material], fin.Reflectance end
+	local pl = pieceOf(part.Name)
+	if pl then c.Color, c.Material, c.Reflectance = pl.Color, Enum.Material[pl.Material], pl.Reflectance or 0 end
 	c.Transparency = 1
 	c.LocalTransparencyModifier = 0
 	c.Parent = ownFolder()
@@ -1713,6 +2110,10 @@ local function ghostArm()
 			if not ink then
 				d.Material = Enum.Material.SmoothPlastic
 				d.Color = wrapped("ShadowSkin", FX.Decoy.ShadowSkin)
+				local fin = wrapped("Finish", nil)
+				if fin then d.Material, d.Reflectance = Enum.Material[fin.Material], fin.Reflectance end
+				local pl = pieceOf(d.Name)
+				if pl then d.Color, d.Material, d.Reflectance = pl.Color, Enum.Material[pl.Material], pl.Reflectance or 0 end
 			end
 			pieces[#pieces + 1] = { Part = d, Offset = root:ToObjectSpace(d.CFrame) }
 		end
@@ -1745,6 +2146,8 @@ function UmbraFX.DecoyPeel(owner, decoy, opts)
 		local restX = math.clamp(rootCF:PointToObjectSpace(part.Position).X, -1.5, 1.5)
 		local ent = { Part = part, Copy = peelCopy(part), Src = src and src.CFrame or part.CFrame,
 			Delay = P.Stagger * (1 - (restX + 1.5) / 3), Size = part.Size, Colour = part.Color, Done = false }
+		local pl = pieceOf(name)
+		ent.Skin = pl and pl.Color
 		e.Entries[#e.Entries + 1] = ent
 		e.ByName[name] = ent
 	end
@@ -1835,14 +2238,20 @@ function UmbraFX.DecoyPeel(owner, decoy, opts)
 			copy.Transparency = 0
 			if u >= 1 then
 				local k = clamp01((tc - ent.Delay - P.Travel) / P.Recolour)
-				copy.Color = wrapped("ShadowSkin", Dc.ShadowSkin):Lerp(ent.Colour, k)
+				local land = CUR and CUR.Finish and CUR.Finish.Land          -- (UR: a wrap's pieces land matte, Default's way)
+				if land and not ent.Landed then ent.Landed = true copy.Material = Enum.Material[land] end
+				local skin = ent.Skin or wrapped("ShadowSkin", Dc.ShadowSkin)
+				if CUR and CUR.Flow then skin = flowMul(flowCol(CUR.Flow, 0.5, 4 * ent.Delay, now), skin) end
+				copy.Color = skin:Lerp(ent.Colour, k)
 				if k >= 1 then
 					ent.Done = true
 					veil(ent.Part, false)                            -- the real part takes over, exactly as Umbra looks
 					copy:Destroy()
 				end
 			else
-				copy.Color = wrapped("ShadowSkin", Dc.ShadowSkin)
+				local skin = ent.Skin or wrapped("ShadowSkin", Dc.ShadowSkin)
+				if CUR and CUR.Flow then skin = flowMul(flowCol(CUR.Flow, 0.5, 4 * ent.Delay, now), skin) end
+				copy.Color = skin
 			end
 		end
 		-- the streamers
@@ -2071,6 +2480,10 @@ local function stepScreen(scr, tc, tEnd)
 		im.ImageRectOffset = Vector2.new(off % 512, 0)
 		im.Rotation = 90 * e0 + Sc.Swing * (1 - sIn)
 		im.ImageTransparency = math.clamp(1 - (1 - s.Strip) * sstep(te, te + Sc.FadeIn, tc) * (1 - sOut), 0, 1)
+		local F = CUR and CUR.Flow
+		if F then
+			im.ImageColor3 = flowMul(flowCol(F, 0, 0.5 * math.pi * e0, os.clock()), wrapped("EdgeTint", Color3.new(1, 1, 1)))
+		end
 		if e == 1 then
 			im.Position = UDim2.fromOffset(Wd * (0.5 + along), d)
 		elseif e == 2 then
@@ -2255,7 +2668,15 @@ function UmbraFX.Eclipse(caster, opts)
 			local kind = (i % 3 == 0) and "light" or "shadow"
 			dom.Wave[i + 1] = { Rib = newRibbon("B", kind, 2, Wv.Segments, true, jitterSpeed(Wv.TextureSpeed, i)), I = i }
 		end
+		-- (2026-10-19, audit P5F-05) another player's Eclipse under Reduce Enemy VFX: every other wisp (ambient only;
+		-- the wave, the pulse and the grade are whole)
+		local thinW = settingsNow().ThinEnemy and caster ~= player.Character
+		if thinW then   -- (2026-10-19, audit P5F-06) an ENEMY's Eclipse only (VFXLibrary.IsEnemy): a teammate's is whole
+			local V = need("VFXLibrary")
+			if V and type(V.IsEnemy) == "function" then thinW = V.IsEnemy(caster) end
+		end
 		for i, def in ipairs(Wp.Centres) do
+			if thinW and i % 2 == 0 then continue end
 			local i0 = i - 1
 			local localC = def[1]
 			-- keep a wisp out of the walls: pulled in short of the first thing between C's height and it
@@ -2339,7 +2760,10 @@ function UmbraFX.Eclipse(caster, opts)
 		end
 		-- the pulse
 		local p = 0
-		if u >= 0 then p = if u < Pu.Rise then qout(u / Pu.Rise) else 1 - sio((u - Pu.Rise) / Pu.Fall) end
+		-- (2026-10-19, audit P5C-07 / P5F-03) Reduce Flashing: the screen-wide pulse at half strength, rising 3x slower
+		local ck = calmK()
+		local rise = Pu.Rise * ((ck < 1) and 3 or 1)
+		if u >= 0 then p = (if u < rise then qout(u / rise) else 1 - sio((u - rise) / Pu.Fall)) * ck end
 		dom.Light.Brightness = Pu.LightBrightness * p
 		local on = p > 0.001
 		if dom.CC.Enabled ~= on then dom.CC.Enabled = on end
@@ -2528,6 +2952,9 @@ function UmbraFX.GradePush(key)
 		grade.G = wrapGrade()               -- the first Eclipse's wrap grades the view; a second one joins it
 		local ok, err = pcall(gradeIn)
 		if not ok then warnOnce("gradein", "the Eclipse grade failed: " .. tostring(err)) end
+		-- (2026-10-19, audit P5C-11) published for SettingsRuntime: while it is set the Brightness slider's lift is held
+		-- at <= 0, so the setting cannot undo the darkness
+		Lighting:SetAttribute("UmbraGrade", true)
 	end
 end
 
@@ -2538,6 +2965,7 @@ function UmbraFX.GradePop(key)
 	if grade.Count == 0 then
 		local ok, err = pcall(gradeOut)
 		if not ok then warnOnce("gradeout", "restoring the map's lighting failed: " .. tostring(err)) end
+		Lighting:SetAttribute("UmbraGrade", nil)           -- (2026-10-19, audit P5C-11)
 	end
 end
 
@@ -2611,14 +3039,15 @@ function UmbraFX.RevealStart(untilServer, bodies)
 end
 
 ----------------------------------------------------------------------------------------------------
--- WRAPS (SkinCatalog, 2026-10-11): every entry point draws under its caster's wrap for the ability it belongs to --
--- the caster's own replicated, validated choice (the player attribute Skin_<ability>). A wrap changes colour only:
--- no shape, count, timing or mechanic reads it. No wrap: the entry runs exactly as it always has.
+-- WRAPS (SkinCatalog, 2026-10-11; moved to the Element-wrap path 2026-10-19): every entry point draws under its
+-- caster's UMBRA WRAP -- one for the whole Element, the caster's own replicated, validated choice (the player attribute
+-- ElementWrap_Umbra through SkinCatalog.ElementWrap, like CryoWrap; in Studio a WrapStudio attribute on the caster's
+-- model stands in). The wrap is the catalog entry's Palette block. A wrap changes colour only: no shape, count, timing
+-- or mechanic reads it. No wrap: the entry runs exactly as it always has.
 ----------------------------------------------------------------------------------------------------
 local SkinCat = nil
-local function wrapOf(character, ability)
-	local plr = typeof(character) == "Instance" and Players:GetPlayerFromCharacter(character) or nil
-	if not plr then return nil end
+local function wrapOf(character)
+	if typeof(character) ~= "Instance" then return nil end
 	if SkinCat == nil then
 		local folder = ReplicatedStorage:FindFirstChild("Spellshot")
 		local m = folder and folder:FindFirstChild("SkinCatalog")
@@ -2626,55 +3055,87 @@ local function wrapOf(character, ability)
 		SkinCat = (ok and type(mod) == "table") and mod or false
 	end
 	if not SkinCat then return nil end
-	local ok, skin = pcall(function() return SkinCat.Resolve("Umbra", ability, SkinCat.Chosen(plr, ability)) end)
-	return (ok and type(skin) == "table" and type(skin.Shadow) == "table") and skin.Shadow or nil
+	local id = RunService:IsStudio() and character:GetAttribute("WrapStudio") or nil
+	if not id then
+		local plr = Players:GetPlayerFromCharacter(character)
+		if not plr or plr:GetAttribute("Element") ~= "Umbra" then return nil end   -- (a borrowed Umbra Technique: Default)
+		local ok, got = pcall(SkinCat.ElementWrap, plr, "Umbra")
+		id = ok and got or nil
+	end
+	local s = type(id) == "string" and id ~= "Default" and SkinCat.Skins[id]
+	if not (type(s) == "table" and s.Wrap == "Umbra" and type(s.Palette) == "table") then return nil end
+	return s.Palette, character
 end
 
---- The four palette colours `character`'s `ability` draws with: its wrap's, else Umbra's own (UmbraClient's marker)
-function UmbraFX.Palette(character, ability)
-	local w = wrapOf(character, ability)
+--- The four palette colours `character` draws with: its Umbra wrap's, else Umbra's own (UmbraClient's marker)
+function UmbraFX.Palette(character)
+	local w = wrapOf(character)
 	return (w and w.Color) or BASE_PAL
 end
 
-local function under(w, fn, ...)
+--- The finish `character`'s Umbra wrap gives the Mark marker once it turns light (full stacks): { Lit = its display
+--- input, Reflectance }, or nil (UmbraClient's marker)
+function UmbraFX.MarkFinish(character)
+	local w = wrapOf(character)
+	return w and w.Mark or nil
+end
+
+--- An Epic+ wrap's glow on the Mark marker (Palette.MarkGlow = { Light, Range }: self-lit Neon and a light in the wrap's
+--- Shade), or nil; MarkPulse: that light's breathing now (the wrap's Pulse, held under Reduce Flashing; 1 when none)
+--- (UR, 2026-10-19; UmbraClient's marker)
+function UmbraFX.MarkGlow(character)
+	local w = wrapOf(character)
+	return w and w.MarkGlow or nil
+end
+function UmbraFX.MarkPulse(character)
+	local w = wrapOf(character)
+	if not (w and w.Pulse) then return 1 end
 	local prev = CUR
 	CUR = w
-	local r = table.pack(pcall(fn, ...))
+	local ok, k = pcall(pulseK)
 	CUR = prev
+	return ok and k or 1
+end
+
+local function under(w, who, fn, ...)
+	local prev, prevWho = CUR, WHO
+	CUR, WHO = w, who
+	local r = table.pack(pcall(fn, ...))
+	CUR, WHO = prev, prevWho
 	if not r[1] then error(r[2], 0) end
 	return table.unpack(r, 2, r.n)
 end
 local function ownerOf(opts) return type(opts) == "table" and opts.Owner or nil end
 
+-- (each entry names its caster; one wrap covers all five abilities, the Techniques Mark and Decoy Double included)
 local ENTRIES = {
-	DartCharge = function(character) return wrapOf(character, "ShadowDart") end,
-	Dart = function(owner) return wrapOf(owner, "ShadowDart") end,
-	Hit = function(_, _, opts) return wrapOf(ownerOf(opts), "ShadowDart") end,
-	MarkHeadshot = function(_, _, opts) return wrapOf(ownerOf(opts), "Mark") end,
-	StepOut = function(character) return wrapOf(character, "ShadowStep") end,
-	DecoyPeel = function(owner) return wrapOf(owner, "DecoyDouble") end,
-	DecoyBreak = function(_, opts) return wrapOf(ownerOf(opts), "DecoyDouble") end,
-	Eclipse = function(caster) return wrapOf(caster, "Eclipse") end,
-	-- the Tell lights whichever move broke the concealment
-	Tell = function(character, reason) return wrapOf(character, reason == "Decoy" and "DecoyDouble" or "ShadowDart") end,
+	DartCharge = function(character) return wrapOf(character) end,
+	Dart = function(owner) return wrapOf(owner) end,
+	Hit = function(_, _, opts) return wrapOf(ownerOf(opts)) end,
+	MarkHeadshot = function(_, _, opts) return wrapOf(ownerOf(opts)) end,
+	StepOut = function(character) return wrapOf(character) end,
+	DecoyPeel = function(owner) return wrapOf(owner) end,
+	DecoyBreak = function(_, opts) return wrapOf(ownerOf(opts)) end,
+	Eclipse = function(caster) return wrapOf(caster) end,
+	Tell = function(character) return wrapOf(character) end,
 	GradePush = function(key)
 		local plr = type(key) == "number" and Players:GetPlayerByUserId(key) or nil
-		return wrapOf(plr and plr.Character, "Eclipse")
+		return wrapOf(plr and plr.Character)
 	end,
-	RevealStart = function() return wrapOf(player.Character, "Eclipse") end,
+	RevealStart = function() return wrapOf(player.Character) end,
 }
 for name, pick in pairs(ENTRIES) do
 	local raw = UmbraFX[name]
 	if type(raw) == "function" then
 		UmbraFX[name] = function(...)
-			local w = pick(...)
+			local w, who = pick(...)
 			if not w then return raw(...) end
-			local res = under(w, raw, ...)
+			local res = under(w, who, raw, ...)
 			-- the handle's own methods build and recolour too (Release, Impact, Open ...): each under the same wrap
 			if type(res) == "table" then
 				for k, v in pairs(res) do
 					if type(v) == "function" and k ~= "Step" and k ~= "Stop" then
-						res[k] = function(...) return under(w, v, ...) end
+						res[k] = function(...) return under(w, who, v, ...) end
 					end
 				end
 			end

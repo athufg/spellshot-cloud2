@@ -52,7 +52,8 @@ local FIRST_PERSON = true
 --   more than about 11.6 studs from your Head at a standstill, and this camera sits 12.5 studs back,
 --   so a shot fired from the camera would simply stop registering.
 --
---   ALLOW_THIRD_PERSON_TOGGLE is the gate, open because an open one is what makes this testable.
+--   ALLOW_THIRD_PERSON_TOGGLE is the gate, open because an open one is what makes this testable. (2026-10-19: the
+--   binding below also requires Config.IsDev, so live players never get it.)
 --   Closing it later is this one boolean -- or, for dev accounts only, a single `and
 --   player:GetAttribute("Dev") == true` on the binding at the bottom of this file.
 --   FLAGGED, NOT DECIDED HERE: free third person in a ranked duel sees around corners and over cover
@@ -79,7 +80,16 @@ local MIN_FOV = 90
 -- camera mode
 ----------------------------------------------------------------------------------------------------
 local camera = workspace.CurrentCamera
-camera.FieldOfView = MIN_FOV
+-- (2026-10-19, audit P5F-28) the player's Field of View setting owns the FOV (SettingsRuntime binds it): start from it, not
+-- a flat 90 that overwrote a saved value SettingsRuntime had already applied when this script ran second. 90 is that
+-- setting's default, so an unsaved player still gets the fitted 90.
+do
+	local okS, S = pcall(function()
+		return require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("SpellshotSettings"))
+	end)
+	local fov = okS and type(S) == "table" and tonumber(S.Get("FieldOfView")) or nil
+	camera.FieldOfView = fov or MIN_FOV
+end
 
 --- Put the Roblox camera into whichever mode `firstPerson` says. Min and Max zoom are set to the
 --- same value in both modes so the distance is fixed at what this file asks for rather than at
@@ -210,13 +220,14 @@ local function hideCharacter(character)
 	local function track(inst)
 		if inst:IsA("BasePart") or inst:IsA("Decal") or inst:IsA("Texture") then
 			hidden[#hidden + 1] = inst
-			inst.LocalTransparencyModifier = firstPerson and 1 or 0
+			-- (2026-10-29) not while the Wardrobe editor is open: its camera looks at this body (WardrobeEditor sets WardrobeOpen)
+			inst.LocalTransparencyModifier = (firstPerson and not player:GetAttribute("WardrobeOpen")) and 1 or 0
 		end
 	end
 	for _, d in ipairs(character:GetDescendants()) do track(d) end
 	table.insert(hiddenConns, character.DescendantAdded:Connect(function(d) task.defer(track, d) end))
 	table.insert(hiddenConns, RunService.RenderStepped:Connect(function()
-		if not firstPerson then return end
+		if not firstPerson or player:GetAttribute("WardrobeOpen") then return end   -- (2026-10-29) the Wardrobe shows the body
 		for i = #hidden, 1, -1 do
 			local inst = hidden[i]
 			if not inst.Parent then
@@ -400,10 +411,20 @@ local function setFirstPerson(on)
 	end
 end
 
+-- (2026-10-19, audit P5F-02) the toggle was dev accounts only until the owner decided: a shoulder camera sees round
+-- corners and over cover. 2026-10-27, the owner decided: "make a small button to go third person so mobile players can
+-- do too, put it in settings". Every player has it now, as the Third Person setting (VIDEO tab, saved with the rest),
+-- and V flips that same setting, so the menu, the key and the saved value never disagree.
 if FIRST_PERSON and ALLOW_THIRD_PERSON_TOGGLE then
-	UserInputService.InputBegan:Connect(function(input, gameProcessed)
-		if gameProcessed then return end
-		if input.KeyCode ~= TP_KEY then return end
-		setFirstPerson(not firstPerson)
+	local okS, Settings = pcall(function()
+		return require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("SpellshotSettings"))
 	end)
+	if okS and type(Settings) == "table" and Settings.ById and Settings.ById.ThirdPerson then
+		Settings.Bind("ThirdPerson", function(v) setFirstPerson(v ~= true) end)
+		UserInputService.InputBegan:Connect(function(input, gameProcessed)
+			if gameProcessed then return end
+			if input.KeyCode ~= TP_KEY then return end
+			Settings.Set("ThirdPerson", firstPerson)   -- in first person now: third person on, and back
+		end)
+	end
 end

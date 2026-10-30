@@ -124,7 +124,7 @@ function V.mount(fx)
 			local d = EMB[i]
 			local ph = math.floor(((fx.clock + d[3]) % 0.3) / 0.3 * 3) / 3
 			local k = 1 - 0.7 * ph
-			e.Position = UDim2.fromScale((17 + d[1] * ph) / sp.size, (17 + d[2] * ph) / sp.size)
+			e.Position = UDim2.fromScale((sp.size / 2 + d[1] * ph) / sp.size, (sp.size / 2 + d[2] * ph) / sp.size)   -- (2026-10-19, audit GA-17) the spark's centre, as primed_f
 			e.Size = UDim2.fromScale(4 * k / sp.size, 4 * k / sp.size)
 		end
 	end
@@ -265,7 +265,8 @@ function V.mount(fx)
 			rivT.Visible, rivB.Visible = true, true
 			rivT.ImageColor3, rivB.ImageColor3 = C.pyroY, C.pyroY
 		else
-			cg.Color = ((fx.clock % 0.4) < 0.2) and SEQ_HOT_A or SEQ_HOT_B
+			-- (2026-10-19, audit P5F-04) Reduce Flashing: the hot casing holds still instead of a 2.5 Hz red/yellow toggle
+			cg.Color = (fx.calm() or (fx.clock % 0.4) < 0.2) and SEQ_HOT_A or SEQ_HOT_B
 			rivT.Visible, rivB.Visible = false, false
 			fx.shake(1.5, 0.05)
 		end
@@ -278,7 +279,7 @@ function V.mount(fx)
 		sparkStep(sp, sx, sy)
 
 		-- stencil countdown
-		local s = math.max(1, math.ceil(st.t * 6 - 1e-6))
+		local s = math.max(1, math.ceil(st.t * (st.total or 6) - 1e-6))   -- (2026-10-19, audit GA-04) real seconds left: st.total is the fuse (Detonate 1.5 s), 6 only on the bench
 		if s ~= lastSec then
 			lastSec = s
 			cd.label.Text = tostring(s)

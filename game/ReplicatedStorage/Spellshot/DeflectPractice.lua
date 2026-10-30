@@ -10,19 +10,16 @@
 	is gone; CombatCore's OnParry / TryParry hooks are still there), so it simply flies at you and lands. Everything below
 	about the parry describes the window a future parry would use.
 
-	WHAT IT IS. Something live to parry, in the range:
+	WHAT IT IS. Something live to dodge, in the range:
 	  * a training dummy with the Thrower attribute throws a practice shot at the nearest player in the range, one at
 	    a time, a short pause after the last one ended (TrainingGround, server)
-	  * Deflect Gust is an equippable Defense (2026-09-16): with it equipped, the Defense key (E by default) swings the
-	    lead hand and asks the server for the cast (SpellshotInput). The server starts its 12 s cooldown on every press
-	    it accepts, caught or whiffed (SpellshotService), and then checks the catch (ZephyrHandler -> CombatCore.TryParry
-	    -> TrainingGround): a shot aimed at you that is inside the window is turned round where it is and flies back at
-	    the dummy, unchanged -- same look, same Damage, same Kind. With nothing in the window the press is a whiff, and
-	    the cooldown runs all the same
-	  * the Parry Arc and the Wind Shear play where the shot turned round and the Trail rides it home (ZephyrFX)
-	  * wherever the shot lands -- on you, or back on the dummy -- it plays its own plain hit and nothing else
+	  * wherever the shot lands -- on you, or (once something parries it) back on the dummy -- it plays its own plain hit
+	    and nothing else
+	RETIRED WITH DEFLECT GUST (2026-10-06, the Zephyr v6 import): the parry itself -- the Defense key's swing
+	(SpellshotInput), its 12 s cooldown, the catch (ZephyrHandler -> CombatCore.TryParry -> TrainingGround) and the
+	Parry Arc / Wind Shear / Trail (ZephyrFX). (2026-10-19, audit P5E-20)
 
-	WHAT IT IS NOT YET: a parry of anything else. The only thing Deflect Gust can catch is this server-flown practice
+	A FUTURE PARRY would catch this server-flown practice
 	shot, and the catch is the client's claim, checked against the server's copy of the shot with ServerSlack. In a duel
 	the defender must recognise somebody else's client-flown shot and substitute a new path. That is later work, and a
 	press anywhere else is a whiff.
@@ -48,7 +45,7 @@ DeflectPractice.Tuning = {
 	Damage = 10,           -- carried by the shot, and carried back unchanged when it is returned
 	Kind = "PracticeShot",
 	HitFloor = 1,          -- a practice shot never takes a player below this much health: it is practice
-	-- THE PARRY (the key is the Defense bind, and the cooldown is the ability's: VFXLibrary row DeflectGust)
+	-- THE PARRY (a future one's window; Deflect Gust's key and cooldown went with its VFXLibrary row, 2026-10-06)
 	Window = 0.30,         -- s: a parry catches a shot that will reach you within this long ...
 	BodyDepth = 1.5,       -- ... counted to your body, which it touches about this far before your root ...
 	Behind = 0.5,          -- ... or has only just reached it ...
@@ -82,12 +79,15 @@ function DeflectPractice.InWindow(shot, rootPos, t, slack)
 end
 
 -- THE SHOTS IN FLIGHT, as this client has them: [id] = { Shot = the broadcast, State = "Out" | "Back", ... }. Filled by
--- DeflectGustPractice (client), which draws them; read by SpellshotInput for the catch claim. Every LocalScript that
+-- DeflectGustPractice (client), which draws them; a parry's catch claim would read it (SpellshotInput's went with Deflect
+-- Gust, 2026-10-06; 2026-10-19, audit P6A-21). Every LocalScript that
 -- requires this module shares the one table. On the server it stays empty (TrainingGround keeps its own).
 DeflectPractice.Live = {}
 
 --- The shot a parry by `player` would catch right now, from this client's view: aimed at them, still on its way out,
 --- inside the window, the nearest one. Returns its Id and where it is (the contact), or nil.
+--- (2026-10-19, audit P6A-21) No caller since Deflect Gust retired (SpellshotInput's catch claim went with it); kept for a
+--- future parry, like the window numbers above.
 function DeflectPractice.Catchable(player, rootPos, t)
 	local bestId, bestAhead, bestPos = nil, math.huge, nil
 	for id, s in pairs(DeflectPractice.Live) do

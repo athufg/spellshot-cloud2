@@ -8,6 +8,8 @@
 		"M1"                                          SpellshotInput (the mouse button), RadiantClient (Light Lance's hold)
 		"Primary" "Mobility" "Defense" "Ultimate"     SpellshotInput (that role's key)
 		"Jump" "Crouch"                               MovementController (Space, and the crouch / slide key)
+		"CrouchClear"                                 MovementController: a one-off (drop a Toggle Crouch latch); never
+		                                              held, so TouchControls clears its Down flag at once (2026-10-19)
 
 	A module rather than an Instance in the tree so there is exactly one per client whichever script asks first.
 ]]

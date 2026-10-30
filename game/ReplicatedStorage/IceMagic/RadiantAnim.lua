@@ -1357,9 +1357,8 @@ local function step()
 		else
 			any = true
 			-- the carry base: re-asserted now and then (CastPose may drop a body's state and make it again), but never
-			-- over another kit's: Cinder Shield (a Technique any Element may slot) rests the body on its hold while the
-			-- server's CinderShield attribute is up, and a non-Radiant clip keeps the base it found (review fix 2026-09-29)
-			if S.Radiant and now - S.BaseAt >= Config.BaseEvery and not c:GetAttribute("CinderShield")
+			-- over another kit's: a non-Radiant clip keeps the base it found (review fix 2026-09-29)
+			if S.Radiant and now - S.BaseAt >= Config.BaseEvery
 				and not foreignClip(c) and register() then
 				local CP = need("CastPose")
 				if CP and CP.Clips and CP.Clips.RadiantCarry then

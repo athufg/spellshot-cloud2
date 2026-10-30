@@ -94,10 +94,13 @@
 	near the lens and full width out in the sky -- so the charge sits at the top of the view and never fills it.
 
 	SETTINGS.
-	  * Reduce Flashing: no exposure kick, no shake and no set-flash; THE FLASH's Bloom kick halved (the Kit then drops it
-	    entirely); stars x0.75;
-	    the strike's, the belly's and the hub's lights and the strike's internal flash x0.6; Beams x0.85; the skeleton
-	    flash fades straight out over three frames (no flicker) and its burst is 60 %.
+	  * Reduce Flashing: no exposure kick, no shake and no set-flash (Bloom or hand whitening); THE FLASH's Bloom kick
+	    halved (the Kit then drops it entirely); stars x0.75;
+	    the strike's, the belly's, the hub's and the forks' lights, the floor hot spots and EVERY internal flash event
+	    (the telegraph's, the punch, the fan, the re-strikes, the strike) x0.6, the telegraph's flashes at most 3 a
+	    second; the telegraph, fan, forks and strike re-jagged at a third of their rate (10 / 20 Hz); the fork re-strikes
+	    held as one stroke (no spike, reshape or whitening); Beams x0.85; the skeleton flash fades straight out over
+	    three frames (no flicker) and its burst is 60 %. (2026-10-19, audit P5D-03)
 	  * Graphics Quality (SpellshotSettings.EffectDensity -> tiers 1-4) and thin (Kit.thin: somebody else's cast with
 	    Reduce Enemy VFX, or low density) scale the decoration, never the read: florets all / half / none (florets first),
 	    scraps, SeamCap / SeamHz / SeamSamples / SeamLights / SeamShadows, the telegraph's walkers and jag depth, the
@@ -138,8 +141,11 @@
 
 	FLAGS (the owner's to check in Studio).
 	  1 Compiled with Studio's own compiler (tools/luau_compile_check.py) on 2026-09-27, after the review fixes: OK.
-	    Never run in Play yet. The main chunk holds ~165 locals of Luau's 200 (the section helpers live in do-blocks):
-	    add new helpers inside a section's block, not at the top level.
+	    Never run in Play yet. The main chunk holds ~166 locals of Luau's 200 at its end (the section helpers live in
+	    do-blocks), BUT a top-level do-block's locals are main-chunk registers while it runs: the PEAK is 187, inside the
+	    seamSolve block (its ~50 locals), so the hard limit is 13 locals away there. Add new helpers inside one of the
+	    SMALL sections' blocks or inside a function -- never to the seamSolve block, nor at the top level before it.
+	    (2026-10-19, audit P5D-14)
 	  2 SpecialMesh Sphere scales to Part.Size x Scale (assumed: the Part is the lump's ellipsoid x LumpRoom, the Scale
 	    uniform r / that); check one lump's drawn size against its r, and that a big lump at the screen's edge (looking
 	    up into the cloud) does not pop.
@@ -152,8 +158,8 @@
 	    VoltaicKit.bloomPulse's 6th argument `anyView` -- a VoltaicKit PATCH returned with this port. Until it is in,
 	    nobody in first person (FirstPersonController's default) gets either Bloom: only THE FLASH's exposure kick lands.
 	  8 The seam solve's cost is unmeasured: profile "CascadeFX seamSolve" at HIGH (three storms at once is the worst).
-	  9 tools/voltaic_test_harness.client.lua picked its own caster dummy as a Cascade target (the server never does);
-	    its patch is returned with this port -- until it is in, every harness run mispredicts and shows the late path.
+	  9 (applied) VoltaicTestHarness skips its own caster dummy as a Cascade target, as the server does
+	    (VoltaicTestHarness.client.lua lookCascade; 2026-10-19, audit P5D-18).
 
 	PLUMBING (OverchargeFX's). Nothing happens at require time: VoltaicKit / VoltaicTuning / VoltaicFX are required
 	lazily with timed waits on the first call, so the server may require this module and nothing breaks. One
@@ -168,6 +174,7 @@ local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 
 local CascadeFX = {}
+CascadeFX.PendingEnds = {}           -- (2026-10-19, audit P5D-15) Ends heard before their storm (see CascadeFX.End)
 
 -- VT_Overcharge_Soft (export/voltaic/VT_Overcharge_Soft.png), uploaded 2026-09-26: the soft glow sprite.
 local SOFT_TEX = "rbxassetid://130067461865773"
@@ -2022,9 +2029,13 @@ local function planFlashes(storm, rng)
 	local ev = {}
 	local anchor = Vector3.new(0, 0, storm.belly)
 	local V = 0.02
+	-- (2026-10-19, audit P5D-03) Reduce Flashing: every event's amplitude x CalmFlash (flashK), and the telegraph's
+	-- internal flashes at most 3 a second (they ramp to 15)
+	local fk = storm.flashK
 	while V < T.Fan do
 		local rate = curve(T.Flashes, V)
-		local amp = curve(T.FlashAmp, V) * rng:NextNumber(0.7, 1.3)
+		if storm.calm then rate = math.min(rate, 3) end
+		local amp = curve(T.FlashAmp, V) * rng:NextNumber(0.7, 1.3) * fk
 		local q = Vector3.new(gauss(rng, 0, 7.0), gauss(rng, 0, 7.0), rng:NextNumber(-1.0, 7.0))
 		ev[#ev + 1] = { V, anchor + q, rng:NextNumber(4.0, 7.5), amp, rng:NextNumber(0.05, 0.10), false }
 		V += rng:NextNumber(0.5, 1.5) / rate
@@ -2036,16 +2047,16 @@ local function planFlashes(storm, rng)
 		local dk = easeInQuad(span(V, 1.80, storm.VEND))
 		local c = anchor + Vector3.new(T.Drift[1] * dk, T.Drift[2] * dk, T.Drift[3] * dk)
 		local q = Vector3.new(gauss(rng, 0, 8.0 + 4 * u), gauss(rng, 0, 8.0 + 4 * u), rng:NextNumber(-1.0, 8.0) + 4.0 * u)
-		ev[#ev + 1] = { V, c + q, rng:NextNumber(5.0, 8.0), lerp(A[4][1], A[4][2], u) * rng:NextNumber(0.7, 1.3),
+		ev[#ev + 1] = { V, c + q, rng:NextNumber(5.0, 8.0), lerp(A[4][1], A[4][2], u) * rng:NextNumber(0.7, 1.3) * fk,
 			rng:NextNumber(0.08, 0.16), false }
 		V += rng:NextNumber(0.5, 1.5) / A[3]
 	end
 	-- the set pieces: [6] dropped when the release is called off, [7] the strike they belong to (0 = the fan), [8] the
 	-- seams are solved on their very first frame (stepSeams: never a solve period late)
-	ev[#ev + 1] = { T.Squeeze[1], anchor + Vector3.new(0, 0, 3.0), 22.0, 1.25, 0.11, false, nil, true }  -- the punch
-	ev[#ev + 1] = { T.Fan, anchor + Vector3.new(0, 0, -3.0), 16.0, 2.0, 0.12, true, 0, true }   -- the fan tears out of it
+	ev[#ev + 1] = { T.Squeeze[1], anchor + Vector3.new(0, 0, 3.0), 22.0, 1.25 * fk, 0.11, false, nil, true }  -- the punch
+	ev[#ev + 1] = { T.Fan, anchor + Vector3.new(0, 0, -3.0), 16.0, 2.0 * fk, 0.12, true, 0, true }   -- the fan tears out of it
 	for i = 1, 4 do
-		ev[#ev + 1] = { storm.STR[i], anchor + Vector3.new(0, 0, -1.5), 10.0, 0.9, 0.06, true, i, true }
+		ev[#ev + 1] = { storm.STR[i], anchor + Vector3.new(0, 0, -1.5), 10.0, 0.9 * fk, 0.06, true, i, true }
 	end
 	ev[#ev + 1] = { storm.FLASH, anchor + Vector3.new(0, 0, -2.0), 24.0, 3.2 * storm.flashK, 0.16, true, 5, true }  -- white
 	return ev
@@ -2097,7 +2108,7 @@ local function flashPrep(storm, V)
 		local sn = snaps[i]
 		local dt = V - sn[1]
 		if dt >= 0 and dt < T.SnapWindow then
-			add(sn[2], 3.0, sn[3] * math.exp(-dt / 0.05))
+			add(sn[2], 3.0, sn[3] * math.exp(-dt / 0.05) * storm.flashK)   -- flashK: (2026-10-19, audit P5D-03)
 			taken += 1
 			if taken >= T.SnapMax then break end
 		end
@@ -2855,6 +2866,7 @@ local function drawWindup(storm, g, tau, hands, fp)
 	local q = span(tau, 0, W0)
 	local I = 0.35 + 0.65 * smooth(q)
 	local fl = span(tau, W0 - T.SetFlash, W0) * (1 - span(tau, W0, W0 + 0.05))
+	if storm.calm then fl = 0 end                    -- (2026-10-19, audit P5D-03) Reduce Flashing: no set-flash whitening
 	local gone = smooth(span(tau, W0, W0 + 0.06))                   -- the charge leaves the hands at the launch
 	local fno = math.floor(tau * 60 + 1e-6)
 	local HS, HL = T.HandSeed, T.HandLight
@@ -3096,6 +3108,7 @@ stepTelegraph = function(storm, V)
 	-- re-jagged TelHz times a second (the showcase's 60 at ULTRA, 30 below); its one-frame windows (an arc's ember, a
 	-- landing's star) last one tick, so a 30 Hz redraw never skips one
 	local hz = storm.Q.TelHz or 30
+	if storm.calm then hz /= 3 end                   -- (2026-10-19, audit P5D-03) Reduce Flashing: 10 / 20 Hz re-jag
 	local tick = math.floor(V * hz + 1e-6)
 	if tick == storm.telTick then return end
 	storm.telTick = tick
@@ -3170,9 +3183,18 @@ do
 --- FriendlyFire off, the default). Anything that is not a player -- a training dummy -- always may.
 local function mayStrike(storm, m)
 	if m == storm.Character or m:GetAttribute("WallOwner") ~= nil then return false end
+	-- (2026-10-19, audit P5D-11) the rest of the server's rule (VoltaicHandler isEnemyBody -> Core.IsFriendly): an ally
+	-- dummy takes nothing, and a Decoy Double sides with its owner (the caster's own, or a friend's, is never struck)
+	if m:GetAttribute("AllyDummy") then return false end
+	local decoyOwner = m:GetAttribute("DecoyOwner")
+	local caster = storm.Character and Players:GetPlayerFromCharacter(storm.Character)
+	if decoyOwner ~= nil then
+		local op = tonumber(decoyOwner) and Players:GetPlayerByUserId(tonumber(decoyOwner))
+		if not op or op == caster then return false end
+		return op.Character ~= nil and op.Character ~= m and mayStrike(storm, op.Character)
+	end
 	local victim = Players:GetPlayerFromCharacter(m)
 	if not victim then return true end
-	local caster = storm.Character and Players:GetPlayerFromCharacter(storm.Character)
 	if not caster then return victim:GetAttribute("Zone") ~= "Hub" end
 	if victim == caster then return false end
 	local _, _, _, Config = Kit.libs()
@@ -3594,7 +3616,8 @@ stepFan = function(storm, V, S)
 		return
 	end
 	beginG(g)
-	local j30 = math.floor((V - s0) * 30 + 1e-6)
+	-- (2026-10-19, audit P5D-03) Reduce Flashing: the rays and forks re-jag at 10 Hz (the "j30" tick at a third)
+	local j30 = math.floor((V - s0) * (storm.calm and 10 or 30) + 1e-6)
 	local age = V - s0
 	local hub = storm.hub
 	-- the skeletons the fan connects with, in the same frame (once, never late)
@@ -3647,6 +3670,12 @@ stepFan = function(storm, V, S)
 				I, ember = (1.0 - 0.52 * span(V, s0 + F, s0 + 3 * F)) * fade, false
 			end
 			local restrike = not cut and V >= f.at and V < f.at + 2 * F
+			-- (2026-10-19, audit P5D-03) Reduce Flashing: no re-strike spike (I <= 1), no new shape and no whitening at
+			-- it -- the four re-strikes read as one held stroke
+			if storm.calm then
+				restrike = false
+				if I > 1 then I = 1 end
+			end
 			if I > 0.01 then
 				forkJag(storm, f, j30, restrike)
 				if ember then
@@ -3674,14 +3703,14 @@ stepFan = function(storm, V, S)
 			local spot = cut and 0 or 1 - smooth(span(V, f.at + 0.1, f.at + 1.2))
 			if spot > 0 then
 				local col = COL.Light:Lerp(COL.Base, span(V, f.at, f.at + 0.35)):Lerp(EMBER_HALO, span(V, f.at + 0.35, f.at + 1.0))
-				flatSpot(storm, i, f.g + UP * 0.04, 2.4, col, spot, 1.4 * spot)
+				flatSpot(storm, i, f.g + UP * 0.04, 2.4, col, spot, 1.4 * spot * storm.flashK)   -- flashK: audit P5D-03
 			end
 			local ra = V - f.at
 			if ra >= 0 and ra < 0.6 and not cut then
-				local b = T.ForkLight[1] * math.exp(-ra / 0.07) + 0.8 * (1 - span(ra, 0.1, 0.6))
+				local b = (T.ForkLight[1] * math.exp(-ra / 0.07) + 0.8 * (1 - span(ra, 0.1, 0.6))) * storm.flashK   -- audit P5D-03
 				reqLight(storm, LKEY.fork[i], f.g + UP * 1.6, b, T.ForkLight[2], COL.Light:Lerp(COL.Base, span(ra, 0, 0.2)), 5, lsh)
 			elseif age < 0.1 then
-				reqLight(storm, LKEY.fork[i], f.g + UP * 1.6, T.ForkLight[1] * 0.5, T.ForkLight[2], COL.Light, 5, lsh)
+				reqLight(storm, LKEY.fork[i], f.g + UP * 1.6, T.ForkLight[1] * 0.5 * storm.flashK, T.ForkLight[2], COL.Light, 5, lsh)
 			end
 			-- the re-strike's sparks and its skeleton (once, and only if not long past)
 			if V >= f.at and not f.fired and not cut then
@@ -3795,7 +3824,7 @@ stepStrike = function(storm, V, S)
 		return
 	end
 	if df <= life then
-		local j30 = math.floor(math.max(0, df) * 30 + 1e-6)
+		local j30 = math.floor(math.max(0, df) * (storm.calm and 10 or 30) + 1e-6)   -- calm 10 Hz: (2026-10-19, audit P5D-03)
 		local pts = mainPath(storm, M.seed + (df >= 0 and j30 or 0))
 		local ember = df > T.MainHold + T.MainFade * 0.60
 		local I, wk
@@ -3877,7 +3906,7 @@ stepStrike = function(storm, V, S)
 	local ua = span(df, 0.0, 1.6)
 	if ua < 1 then
 		local col = COL.Light:Lerp(COL.Base, span(df, 0.0, 0.35)):Lerp(EMBER_HALO, span(df, 0.35, 1.2))
-		flatSpot(storm, 5, ground + UP * 0.05, 6.0 * (1 - 0.3 * ua), col, 1 - smooth(ua), 2.0 * (1 - smooth(ua)))
+		flatSpot(storm, 5, ground + UP * 0.05, 6.0 * (1 - 0.3 * ua), col, 1 - smooth(ua), 2.0 * (1 - smooth(ua)) * storm.flashK)
 	end
 	finishG(g)
 end
@@ -4289,7 +4318,8 @@ local function newStorm(data, T0)
 	local Q = T.Quality[thin and 1 or qualityTier()] or T.Quality[3]
 	local own = kitFlag(Kit.isOwn, character)
 	local _, _, Sset = Kit.libs()
-	local thinEnemy = not own and Sset ~= nil and Sset.ThinEnemyVFX == true   -- Reduce Enemy VFX, somebody else's cast
+	-- Reduce Enemy VFX, an ENEMY's cast (2026-10-19, audit P5F-06: was somebody else's, a teammate's included)
+	local thinEnemy = not own and Sset ~= nil and Sset.ThinEnemyVFX == true and kitFlag(Kit.isEnemy, character)
 	local calm = kitFlag(Kit.reduceFlashing)
 	local lightK = 1
 	if Kit.lightK then
@@ -4425,6 +4455,18 @@ function CascadeFX.Gather(data)
 	end
 	if not storm then return nil end
 	startStorm(storm)
+	-- (2026-10-19, audit P5D-15) an End that came first (CascadeFX.End kept it)
+	local pend = CascadeFX.PendingEnds
+	for i = #pend, 1, -1 do
+		local e = pend[i]
+		if os.clock() - e.At > 15 then
+			table.remove(pend, i)
+		elseif (e.T0 == nil or math.abs(e.T0 - storm.T0) < 1e-3)
+			and (e.Character == nil or e.Character == storm.Character) and not (e.T0 == nil and e.Character == nil) then
+			table.remove(pend, i)
+			CascadeFX.End({ Character = e.Character, T0 = e.T0 })
+		end
+	end
 	return (not storm.Dead) and storm.handle or nil
 end
 
@@ -4467,8 +4509,20 @@ end
 --- (CatchUp: x3 its pace), never a jump.
 function CascadeFX.End(data)
 	if not RunService:IsClient() then return end
-	if type(data) ~= "table" or not Kit then return end
+	if type(data) ~= "table" then return end
 	local T0 = type(data.T0) == "number" and data.T0 or nil
+	-- (2026-10-19, audit P5D-15) an End heard before its storm exists here (the first storm still loading the kit, or
+	-- being built) is kept for 15 s; Gather applies it the moment the storm is up, so a cancelled storm is not drawn
+	local pend = CascadeFX.PendingEnds
+	local function keep()
+		pend[#pend + 1] = { T0 = T0, Character = data.Character, At = os.clock() }
+		if #pend > 16 then table.remove(pend, 1) end
+	end
+	if not Kit then
+		keep()
+		return
+	end
+	local found = false
 	for _, storm in ipairs(table.clone(STORMS)) do
 		local mine
 		if T0 then
@@ -4476,6 +4530,7 @@ function CascadeFX.End(data)
 		else
 			mine = storm.Character == data.Character
 		end
+		if mine then found = true end
 		if mine and not storm.Dead and not storm.Ended then
 			storm.Ended = true
 			local S = Kit.clock(storm.T0) + storm.Shift - storm.W
@@ -4496,6 +4551,7 @@ function CascadeFX.End(data)
 			end
 		end
 	end
+	if not found then keep() end
 end
 
 --- EXTRA: destroys every storm in flight.

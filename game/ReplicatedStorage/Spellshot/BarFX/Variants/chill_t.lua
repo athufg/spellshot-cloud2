@@ -178,7 +178,9 @@ function V.mount(fx)
 	}
 	for _, b in ipairs(BLK) do b[1].Visible = false end
 	local shards = mkShards(fx.front, 22, { 14, 84, 540, 196 }, 280, 150, 5)
-	local wF = mkWord("FROZEN!", 400, 50, 190, 76, -7, "chill-t/wF", C.cryo)
+	-- (2026-10-19, audit GA-01) max Chill stacks are the deepest SLOW since 2026-10-08, not a root, and FROZEN! is kept for
+	-- real freezes (AbilityHandler): the word says what it is. The sealed block still draws; a real root has no bar look yet
+	local wF = mkWord("CHILLED!", 400, 50, 190, 76, -7, "chill-t/wF", C.cryo)
 	local wK = mkWord("KSSH!", 300, 70, 170, 80, 5, "chill-t/wK", C.white)
 
 	local gRimT, gRimB, gEnds, gSpk, gBlk = shown(), shown(), shown(), shown(), shown()

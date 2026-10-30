@@ -441,6 +441,9 @@ local function setOpen(v)
 			end)
 		end
 		-- first person re-locks the mouse every frame; win it back while the vote is up
+		-- (2026-10-19, audit P6A-17) unbound first: a new vote over an open screen forces open = false and comes back here,
+		-- and a second binding under the same name could outlive the one Unbind on close (the mouse left unlocked)
+		pcall(function() RunService:UnbindFromRenderStep(CURSOR_STEP) end)
 		RunService:BindToRenderStep(CURSOR_STEP, Enum.RenderPriority.Camera.Value + 10, function()
 			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 			UserInputService.MouseIconEnabled = true

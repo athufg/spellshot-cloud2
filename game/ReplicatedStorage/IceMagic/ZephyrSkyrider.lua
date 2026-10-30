@@ -235,7 +235,8 @@ end
 local function fx(fn, ...) return call("ZephyrFX_Skyrider", fn, ...) end
 
 local function fxOpts(own, T0)
-	return { Own = own, T0 = T0, SummonTime = Tu.SummonTime, WindUp = Tu.Gust.WindUp, SeatBelowRoot = Tu.SeatBelowRoot }
+	return { Own = own, T0 = T0, SummonTime = Tu.SummonTime, WindUp = Tu.Gust.WindUp, SeatBelowRoot = Tu.SeatBelowRoot,
+		GustHalfAngle = Tu.Gust.HalfAngle }                 -- (2026-10-19, audit P5E-09) the drawn cone = the hit cone
 end
 
 --- the third-person body clip on a character, guarded; Stop lets go only of OUR clip
@@ -335,6 +336,7 @@ local controls = nil         -- the PlayerModule's controls (its move vector), f
 local function menusOpen()
 	return player:GetAttribute("SettingsOpen") or player:GetAttribute("LoadoutOpen") or player:GetAttribute("QuickPlayOpen")
 		or player:GetAttribute("ShopOpen")
+		or player:GetAttribute("ReactionsOpen")   -- (2026-10-19, audit GA-20) the Reactions tablet is a menu too
 end
 
 local function slotOf(r)
@@ -402,10 +404,15 @@ local function rayParams(character)
 end
 
 --- the character (a model with a Humanoid) that inst is part of, or nil (DashMotor's)
+--- (2026-10-19, audit P6A-05) a model stamped WallOwner (Terra's Bulwark Wall, which carries a Humanoid) is a wall,
+--- never a body: the ride is stopped by it and never no-collides it
 local function characterOf(inst)
 	local model = inst:FindFirstAncestorOfClass("Model")
 	while model do
-		if model:FindFirstChildOfClass("Humanoid") then return model end
+		if model:FindFirstChildOfClass("Humanoid") then
+			if model:GetAttribute("WallOwner") ~= nil then return nil end
+			return model
+		end
 		model = model:FindFirstAncestorOfClass("Model")
 	end
 	return nil

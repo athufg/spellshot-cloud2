@@ -15,12 +15,14 @@
 	Position Trade may swap with one (RadiantHandler's swappable asks Core.IsAllyOf). A heal's "+N" is RadiantHandler's
 	heal readout (Core.OnHeal), not this script's.
 
-	This script only keeps them TESTABLE: the ink-outlined bar over the head (the enemy dummies' style, "ALLY DUMMY" in
-	teal), and a slow drain so there is always something to heal. They start at CONFIG.StartPct of MaxHealth, lose
+	This script only keeps them TESTABLE: the ink-outlined bar over the head (the enemy dummies' style, "ALLY" in green
+	since 2026-10-20 -- it was "ALLY DUMMY" in teal), and a slow drain so there is always something to heal. They start at CONFIG.StartPct of MaxHealth, lose
 	CONFIG.DrainPerSecond down to CONFIG.FloorPct, never die and never refill.
 
-	On the range: workspace.TrainingGround.AllyDummies (Ally_Near1, Ally_Near2 within Benediction's 25 studs of the
-	spawn pad; Ally_Far 33 studs out, past it).
+	On the range: workspace.TrainingGround.AllyDummies (2026-10-20 rework: six). Ally_Near1 and Ally_Near2 within
+	Benediction's 25 studs of the spawn; Ally_Far 33 out, past it, inside Blessing's 45; Ally_Mid in the MID lane; Ally_Flex1
+	beside Dummy_F250 in OPEN, inside Halo's share radius; Ally_Flex2 alone in OPEN. The range is the one practice space for
+	both SOLO TEST and the Hub's Training portal, so every ally carries Zone "Arena" and Map "TrainingGround".
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -37,7 +39,7 @@ local CONFIG = {
 
 local INK = Color3.fromRGB(17, 17, 17)
 local WHITE = Color3.new(1, 1, 1)
-local TEAL = Color3.fromRGB(38, 196, 186)
+local GREEN = Color3.fromRGB(46, 204, 113)    -- (2026-10-20) the SNOWBALLS pad's own ON green; it was teal (38, 196, 186)
 
 local function make(class, props, parent)
 	local i = Instance.new(class)
@@ -63,14 +65,14 @@ local function setup(model)
 	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 	humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
 
-	-- the bar: the enemy dummies' (TrainingGround), in studs so it shrinks with distance, teal and titled ALLY DUMMY
+	-- the bar: the enemy dummies' (TrainingGround), in studs so it shrinks with distance, green and titled ALLY
 	local bb = make("BillboardGui", {
 		Name = "AllyDummyBar", Adornee = head, Size = UDim2.fromScale(3.6, 1.1), StudsOffset = Vector3.new(0, 2.1, 0),
 		LightInfluence = 0, MaxDistance = 160,
 	}, head)
 	local title = make("TextLabel", {
 		BackgroundTransparency = 1, Size = UDim2.fromScale(1, 0.42), Font = Enum.Font.GothamBlack,
-		Text = "ALLY DUMMY", TextColor3 = TEAL, TextScaled = true,
+		Text = "ALLY", TextColor3 = GREEN, TextScaled = true,
 	}, bb)
 	make("UIStroke", { Color = INK, Thickness = 1.2 }, title)
 	local trough = make("Frame", {
@@ -78,7 +80,7 @@ local function setup(model)
 	}, bb)
 	make("UICorner", { CornerRadius = UDim.new(0.3, 0) }, trough)
 	make("UIStroke", { Color = INK, Thickness = 1.5 }, trough)
-	local fill = make("Frame", { BackgroundColor3 = TEAL, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1) }, trough)
+	local fill = make("Frame", { BackgroundColor3 = GREEN, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1) }, trough)
 	make("UICorner", { CornerRadius = UDim.new(0.3, 0) }, fill)
 	local number = make("TextLabel", {
 		BackgroundTransparency = 1, Size = UDim2.fromScale(1, 0.9), Position = UDim2.fromScale(0, 0.05),

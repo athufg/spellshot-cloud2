@@ -6,7 +6,8 @@
 	screen, friends stay together, and every part of it runs in a Studio Play session.
 
 	  Hub    workspace.ArcaneObservatoryHub (the Arcane Rune Observatory, round 23), centred at (8000, 0, 8000). Everyone
-	         spawns here. Its Training room's portal leads to the Training Grounds island (Map_TrainingGrounds), a sandbox.
+	         spawns here. Its Training room's portal leads to the Training Ground (2026-10-20: the range at the origin, the
+	         one practice space; the Map_TrainingGrounds island it used to lead to is retired), a sandbox.
 	         (Since 2026-10-14. The Open Academy before it is still in workspace, unwired and unreachable.)
 	  Arena  a map: the baseplate at the origin with the TrainingGround range, or a map Model from
 	         MapRegistry (Shattered Neon City sits 3000 studs down -Z).
@@ -21,7 +22,10 @@
 	  Duel Pads    both marks taken for COUNTDOWN seconds: a DUEL for both
 	  a pad alone  hold Interact for SOLO TEST
 	  Quick Play   QUEUE for Duel fills to two teams of Config.Team.Size and starts a TEAM match (2026-10-18, team mode:
-	               3v3 on the duel's loop, teams drawn at random; the queue shows "3/6"); SOLO TEST sends you alone
+	               3v3 on the duel's loop, teams drawn at random; the queue shows "3/6"); SOLO TEST sends you alone.
+	               (2026-10-28) With Config.Matchmaking.Mode "Global" the queue is every server's: Matchmaker matches
+	               region first, then anyone, and a match whose players are not all here runs in its own reserved
+	               server (a MATCH SERVER: this script again, with QUEUE and the pads off). "Local" is the queue below.
 	  range door   walk onto the threshold: SOLO TEST
 	A DUEL belongs to DuelMatch from the end of its vote: rounds, first to Config.Duel.FirstTo, both duellists rebuilt on
 	their marks every round (respawnTo), and both sent home at the end. A SOLO TEST is a sandbox: no rounds, and dying
@@ -41,8 +45,9 @@
 	WIRED IN THE HUB  (every prompt is held with the Interact bind: G unless the player rebinds it; E is Defense)
 	  duel pads        P1-P9 on Duels' arc: stand on a half to register; each post screen shows who is on its pad
 	  Loadout altar    opens the loadout menu
-	  Cache Vault      in the Store: says it opens in a later update (there is no economy yet)
-	  Training portal  to the Training Grounds island; the island's gate brings you back to the portal's path
+	  Cache Vault      in the Store: says it opens in a later update (the Cache is not built; Sparks and Element unlocks are,
+                   2026-10-18 -- audit P2-18, 2026-10-19)
+	  Training portal  to the Training Ground range (2026-10-20); its gate behind the spawn brings you back to the portal's path
 	The shrines, the Ledger and the range door are still handled below, but nothing in the Observatory carries
 	their names, so they make nothing (bonding is in the loadout menu, Quick Play is the HUD's PLAY).
 ]]
@@ -55,8 +60,14 @@ local spellFolder = ReplicatedStorage:WaitForChild("Spellshot")
 local Config = require(spellFolder:WaitForChild("SpellshotConfig"))
 local MapRegistry = require(spellFolder:WaitForChild("MapRegistry"))
 local DuelMatch = require(script.Parent:WaitForChild("DuelMatch"))
+-- (2026-10-19, audit P1-03) the movement guard's grace before every move of a body below (Core.AllowMove). DuelMatch already
+-- requires CombatCore, so this adds no wait and no loop.
+local Core = require(script.Parent:WaitForChild("CombatCore"))
 -- (2026-10-18, economy) which Elements a player owns: a shrine bonds only an owned one
 local PlayerData = require(script.Parent:WaitForChild("PlayerData"))
+-- (2026-10-28, matchmaking) Quick Play's queue across every server, and this server's part when it is a match server
+-- (a reserved server that runs one match). Config.Matchmaking.Mode = "Local" keeps the one-server queue below.
+local Matchmaker = require(script.Parent:WaitForChild("Matchmaker"))
 
 local HUB_NAME = "ArcaneObservatoryHub"   -- the Arcane Observatory (2026-10-14); the Open Academy before it stays in workspace, unwired
 local COVER_TIME = 0.35       -- the client's wipe needs this long to cover the screen before the move
@@ -107,6 +118,14 @@ for _, c in ipairs(workspace:GetChildren()) do
 	if c:IsA("SpawnLocation") then
 		arenaMarker = arenaMarker or c
 		c.Enabled = false
+	end
+end
+-- (2026-10-19, audit P6A-06) ...and EVERY other SpawnLocation, at any depth, but the Hub's own: the loop above reached only
+-- workspace's children, so a nested one -- the retired Open Academy's HubSpawn (workspace.OpenAcademyHub, still in the
+-- place, unwired) -- stayed live and could take a join or a Hub respawn into a hub with no working prompts.
+if hubSpawn then
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("SpawnLocation") and d ~= hubSpawn then d.Enabled = false end
 	end
 end
 local ARENA = (arenaMarker and arenaMarker.Position or Vector3.zero) + Vector3.new(0, 3, 0)
@@ -166,15 +185,56 @@ end
 
 local arenaSpots = setmetatable({}, { __mode = "k" })     -- [player] = where they respawn in the arena
 local moving = setmetatable({}, { __mode = "k" })
+local settling = setmetatable({}, { __mode = "k" })      -- [player] = how many place() calls are on their body right now
 
+local MOVE_HOLD = 0.5           -- (2026-10-30) seconds the server keeps a body it moved (see place)
+local MOVE_SETTLE = 0.25        -- and how long after it gives the body back the move is checked
+local MOVE_TRIES = 3
+local ARRIVED = 25              -- studs, flat: this near its spot, a moved body has arrived
+
+local function flat(a, b)
+	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
+local function settle(p, d)
+	local n = (settling[p] or 0) + d
+	settling[p] = (n > 0) and n or nil
+end
+
+--- Puts p's body on `cf`. Returns true once it is there, false when the body would not stay there, and nil when p has no
+--- body to move (the next one spawns by the Zone). (2026-10-30, the owner in the live game, back from the Training
+--- Ground: "it like tries tp'ing but im stuck physically in the training ground still".) A client owns its own body's
+--- physics and can still be sending where it was when the server moves it, and on a live server that can win. So the
+--- server takes the body (Core.HoldBody) for the move and MOVE_HOLD after it, sets it on the spot once more as it hands it
+--- back (a body at rest sends its client nothing, so a client that wrote its old place keeps it and takes it back with
+--- the body: measured in Play), checks it is still there MOVE_SETTLE later, and moves it again if not.
 local function place(p, cf)
 	local char = p.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return end
+	if not root then return nil end
+	settle(p, 1)
 	-- the far side is 3000 studs away and streamed out for this player; ask for it before arriving
 	pcall(function() p:RequestStreamAroundAsync(cf.Position, STREAM_TIMEOUT) end)
-	char:PivotTo(cf)
-	root.AssemblyLinearVelocity = Vector3.zero
+	local arrived = false
+	for try = 1, MOVE_TRIES do
+		if not (p.Parent and p.Character == char and root.Parent) then break end
+		local key = {}                   -- this move's own hold: two moves of one body never end each other's
+		Core.AllowMove(char, MOVE_HOLD + 1.5)    -- (2026-10-19, audit P1-03) a server move: the movement guard lets it be
+		Core.HoldBody(char, key, true)
+		char:PivotTo(cf)
+		root.AssemblyLinearVelocity = Vector3.zero
+		task.wait(MOVE_HOLD)
+		char:PivotTo(cf)
+		root.AssemblyLinearVelocity = Vector3.zero
+		Core.HoldBody(char, key, false)
+		task.wait(MOVE_SETTLE)
+		arrived = root.Parent ~= nil and flat(root.Position, cf.Position) <= ARRIVED
+		if arrived then break end
+		warn(("[HubServer] %s: move %d of %d missed its spot by %.0f studs"):format(p.Name, try, MOVE_TRIES, flat(root.Position, cf.Position)))
+	end
+	settle(p, -1)
+	if not (p.Parent and p.Character == char) then return nil end
+	return arrived
 end
 
 --- Health never regenerates (2026-09-16), so a move is where a fight's damage ends: whoever arrives in the Hub or starts
@@ -195,15 +255,31 @@ local function moveTo(p, zone, spot, map)
 	task.wait(COVER_TIME)
 	if p.Parent then
 		local dest = (zone == "Arena") and spot or (spot or hubSpot())      -- (a Hub arrival may name its spot: the yard gate)
-		arenaSpots[p] = (zone == "Arena") and spot or nil
-		-- Map before Zone, so the client's Zone change already sees which map it is
-		p:SetAttribute("Map", (zone == "Arena") and (map and map.Id or "TrainingGround") or nil)
-		p:SetAttribute("Zone", zone)
-		refill(p)               -- after the Zone changes, so nothing thrown before the move can take it again
-		place(p, dest)
+		local was = { Spot = arenaSpots[p], Map = p:GetAttribute("Map"), Zone = p:GetAttribute("Zone") }
+		-- (2026-10-30) in a pcall, so whatever goes wrong the wipe still comes off and moving[p] still clears: a moving[p]
+		-- left set turns every portal and BACK TO HUB away until a rejoin
+		local ok, arrived = pcall(function()
+			arenaSpots[p] = (zone == "Arena") and spot or nil
+			-- Map before Zone, so the client's Zone change already sees which map it is
+			p:SetAttribute("Map", (zone == "Arena") and (map and map.Id or "TrainingGround") or nil)
+			p:SetAttribute("Zone", zone)
+			refill(p)           -- after the Zone changes, so nothing thrown before the move can take it again
+			return place(p, dest)
+		end)
+		if not ok then warn("[HubServer] moveTo failed for " .. p.Name .. ": " .. tostring(arrived)) end
+		if (not ok or arrived == false) and p.Parent then
+			-- the body never got there, so its Zone goes back with it and the way out it came by works again (a Hub Zone
+			-- on a body still in the Training Ground shut both: BACK TO HUB and the gate back)
+			arenaSpots[p] = was.Spot
+			p:SetAttribute("Map", was.Map)
+			p:SetAttribute("Zone", was.Zone)
+			notify(p, "The move didn't go through -- try again.")
+			dest = nil
+		end
 		-- the first-person camera keeps its old heading through a PivotTo (and turns the body back to it), so the
-		-- client is told which way the spot faces and turns the camera there under the wipe
-		hubRemote:FireClient(p, "transition", "reveal", zone, dest.LookVector)
+		-- client is told which way the spot faces and turns the camera there under the wipe (and is sent the spot, to set
+		-- a body it still has somewhere else on it: HubClient)
+		if p.Parent then hubRemote:FireClient(p, "transition", "reveal", zone, dest and dest.LookVector, dest) end
 	end
 	moving[p] = nil
 end
@@ -227,21 +303,28 @@ local function respawnTo(p, zone, spot, map, label)
 		-- arena). Into the arena from the Hub (round 1): only once the new body is on its mark -- until then the old
 		-- body, and the new one LoadCharacter puts on the Hub spawn, stand in the Hub, where an arena Zone would let two
 		-- duellists fight. (Rounds 2+ are already Arena; their new bodies are moved off the spawn at once below.)
-		if zone ~= "Arena" then enter() end
-		pcall(function() p:RequestStreamAroundAsync(dest.Position, STREAM_TIMEOUT) end)
-		local ok, err = pcall(function() p:LoadCharacter() end)
-		if not ok then
-			warn("[HubServer] LoadCharacter failed for " .. p.Name .. ": " .. tostring(err))
-			refill(p)           -- the old body carries on, so at least it starts full, as a new one would
-		end
-		if p.Parent then
-			-- off the Hub spawn with no yield first (place() waits on RequestStreamAroundAsync before its PivotTo)
-			local char = p.Character
-			if char and char:FindFirstChild("HumanoidRootPart") then char:PivotTo(dest) end
-			if zone == "Arena" then enter() end
-			place(p, dest)      -- streams the mark in again and settles the body on it, as before
-		end
-		hubRemote:FireClient(p, "transition", "reveal", zone, dest.LookVector)
+		-- (2026-10-30) in a pcall, so whatever goes wrong the wipe still comes off and moving[p] still clears
+		local okMove, moveErr = pcall(function()
+			if zone ~= "Arena" then enter() end
+			pcall(function() p:RequestStreamAroundAsync(dest.Position, STREAM_TIMEOUT) end)
+			local ok, err = pcall(function() p:LoadCharacter() end)
+			if not ok then
+				warn("[HubServer] LoadCharacter failed for " .. p.Name .. ": " .. tostring(err))
+				refill(p)       -- the old body carries on, so at least it starts full, as a new one would
+			end
+			if p.Parent then
+				-- off the Hub spawn with no yield first (place() waits on RequestStreamAroundAsync before its PivotTo)
+				local char = p.Character
+				if char and char:FindFirstChild("HumanoidRootPart") then
+					Core.AllowMove(char, 1.5)    -- (2026-10-19, audit P1-03) off the spawn: a server move the guard lets be
+					char:PivotTo(dest)
+				end
+				if zone == "Arena" then enter() end
+				place(p, dest)  -- streams the mark in again, holds the body on it and checks it arrived
+			end
+		end)
+		if not okMove then warn("[HubServer] respawnTo failed for " .. p.Name .. ": " .. tostring(moveErr)) end
+		if p.Parent then hubRemote:FireClient(p, "transition", "reveal", zone, dest.LookVector, dest) end
 	end
 	moving[p] = nil
 end
@@ -260,7 +343,9 @@ local function tellQueue()
 	end
 end
 
-local function unqueue(p)
+local function unqueue(p, why)
+	-- (2026-10-28) in Global mode the queue is Matchmaker's: one ticket per player, shared by every server
+	if Matchmaker.Global() then return Matchmaker.Remove(p, why) end
 	local i = table.find(queue, p)
 	if i then
 		table.remove(queue, i)
@@ -271,8 +356,13 @@ end
 
 --- kind: "Duel" (two players from a Hub pad: DuelMatch runs the rounds from here) | "Team" (Quick Play's two teams, the
 --- group's first half against its second: DuelMatch too, 2026-10-18) | "Solo" (one player, a sandbox)
-local function enterArena(group, kind, mapId)
+local function enterArena(group, kind, mapId, teams)
 	local map = MapRegistry.Get(mapId) or MapRegistry.Get("TrainingGround")
+	if kind == "Team" and teams then
+		-- (2026-10-28) a match server's teams, as its record has them (uneven if someone never arrived)
+		DuelMatch.Begin(group, map, teams, "Team")
+		return
+	end
 	if kind == "Duel" and #group == 2 then
 		-- the round loop takes over: it rebuilds both on their marks (a coin flip for round 1) and makes round 1 live
 		DuelMatch.Begin(group, map)
@@ -312,10 +402,11 @@ local voting = setmetatable({}, { __mode = "k" })         -- [player] = the vote
 local lastVote = setmetatable({}, { __mode = "k" })
 local voteSerial = 0
 
-local function voteChoices()
+local function voteChoices(kind)
 	local list = {}
 	for _, m in ipairs(MapRegistry.List) do
-		if m.Vote ~= false and (not m.Model or workspace:FindFirstChild(m.Model)) then
+		-- a Practice map (the range) is a Solo Test's only (2026-10-19, audit P1-04)
+		if m.Vote ~= false and not (m.Practice and kind ~= "Solo") and (not m.Model or workspace:FindFirstChild(m.Model)) then
 			table.insert(list, { Id = m.Id, Name = m.Name, Sub = m.Sub, Image = m.Image, Accent = m.Accent })
 		end
 	end
@@ -344,10 +435,16 @@ local function callOff(vote)
 			if vote.Kind == "Team" then back[#back + 1] = p end
 		end
 	end
+	-- (2026-10-28) a match server has no queue to go back to: Matchmaker starts its vote again, or sends everyone home
+	if vote.Kind == "Team" and Matchmaker.CalledOff(back) then return end
 	-- (2026-10-18, team mode) a team match's vote called off puts everyone left back at the FRONT of Quick Play's queue,
 	-- in their order, so one leaver doesn't send the rest back to the menu to queue again
-	for i = #back, 1, -1 do
-		if not table.find(queue, back[i]) then table.insert(queue, 1, back[i]) end
+	if Matchmaker.Global() then
+		for _, p in ipairs(back) do task.spawn(Matchmaker.Requeue, p) end     -- (2026-10-28) at their old place in line
+	else
+		for i = #back, 1, -1 do
+			if not table.find(queue, back[i]) then table.insert(queue, 1, back[i]) end
+		end
 	end
 	for _, p in ipairs(back) do
 		hubRemote:FireClient(p, "queued", true, "Someone left the map vote -- you are back in the queue.")
@@ -366,16 +463,16 @@ local function tally(vote)
 end
 
 --- A confirmed match: the map vote, then everyone into the winning map. With one map there is nothing to vote on.
-local function sendToArena(group, kind)
+local function sendToArena(group, kind, teams)
 	for _, p in ipairs(group) do
 		if voting[p] or moving[p] then return end            -- already on the way (a pad and the queue at once)
 	end
 	for _, p in ipairs(group) do
 		if unqueue(p) then dequeued(p, nil) end
 	end
-	local choices = voteChoices()
+	local choices = voteChoices(kind)
 	if #choices < 2 then
-		enterArena(group, kind, choices[1] and choices[1].Id)
+		enterArena(group, kind, choices[1] and choices[1].Id, teams)
 		return
 	end
 
@@ -387,6 +484,7 @@ local function sendToArena(group, kind)
 		voting[p] = vote
 		-- a team match's rows carry the team (2026-10-18): the group's first half is team A, the rest team B (enterArena)
 		local team = (kind == "Team") and ((i <= half) and "A" or "B") or nil
+		if kind == "Team" and teams then team = table.find(teams[1], p) and "A" or "B" end    -- (2026-10-28) a record's teams
 		table.insert(rows, { UserId = p.UserId, Name = p.DisplayName, Team = team })
 	end
 	local seconds = ((kind == "Team") and Config.Team and Config.Team.VoteSeconds) or VOTE_SECONDS[kind] or VOTE_SECONDS.Duel
@@ -436,7 +534,7 @@ local function sendToArena(group, kind)
 			return
 		end
 		for _, p in ipairs(group) do voting[p] = nil end
-		enterArena(group, kind, winner)
+		enterArena(group, kind, winner, teams)
 	end)
 end
 
@@ -471,12 +569,55 @@ end
 local function onCharacter(p, char)
 	if p:GetAttribute("Zone") ~= "Arena" then return end
 	-- died in the arena: back where they were fighting, not in the Hub
+	settle(p, 1)        -- (2026-10-30) the body-follows-its-Zone check below leaves this body to this move
 	task.defer(function()
 		if char:WaitForChild("HumanoidRootPart", 5) then
-			place(p, arenaSpots[p] or arenaSpot(nil, p:GetAttribute("Map")))
+			pcall(place, p, arenaSpots[p] or arenaSpot(nil, p:GetAttribute("Map")))
 		end
+		settle(p, -1)
 	end)
 end
+
+-- THE BODY FOLLOWS ITS ZONE (2026-10-30). The owner, in the live game, back from the Training Ground: "it like tries
+-- tp'ing but im stuck physically in the training ground still and cant return now , have to rejoin". A move that set the
+-- Zone and then lost the body shut both ways out (BACK TO HUB is for the arena Zone, the gate back for the Training
+-- Ground's Map). place() now holds and checks the body, and moveTo puts the Zone back when it never arrives; this is the
+-- backstop. Once a second: a living body in the Hub Zone that is not in the Hub, or in the arena Zone that is standing
+-- in the Hub, two looks running with nothing moving it, is put where its Zone says, and the server log (F9) says so.
+local HUB_REACH = 1000          -- studs, flat, from the Hub spawn: the Observatory is ~190 across, every map 3000+ away
+local strays = setmetatable({}, { __mode = "k" })
+task.spawn(function()
+	while true do
+		task.wait(1)
+		local home = hubSpot()
+		for _, p in ipairs(Players:GetPlayers()) do
+			local zone = p:GetAttribute("Zone")
+			local char = p.Character
+			local root = char and char:FindFirstChild("HumanoidRootPart")
+			local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+			local spot
+			if root and humanoid and humanoid.Health > 0 and not (moving[p] or voting[p] or settling[p]) then
+				local inHub = flat(root.Position, home.Position) <= HUB_REACH
+				if zone == "Hub" and not inHub then
+					spot = home
+				elseif zone == "Arena" and inHub then
+					spot = arenaSpots[p] or arenaSpot(nil, p:GetAttribute("Map"))
+				end
+			end
+			if spot then
+				strays[p] = (strays[p] or 0) + 1
+				if strays[p] >= 2 then
+					strays[p] = nil
+					warn(("[HubServer] %s: Zone %s but the body was %.0f studs from the Hub; put where the Zone says"):format(
+						p.Name, tostring(zone), flat(root.Position, home.Position)))
+					task.spawn(place, p, spot)
+				end
+			else
+				strays[p] = nil
+			end
+		end
+	end
+end)
 
 -- RESPAWNS ARE THIS SCRIPT'S (2026-10-18, team mode). In a team match a player who goes down stays down until the round
 -- is over (DuelMatch rebuilds everyone for the next one), and Roblox has no per-player switch for its own respawn. So its
@@ -488,15 +629,27 @@ Players.RespawnTime = 1e6     --[[the place's 3 until 2026-10-18 team mode; RESP
 local function watchDeath(p, char)
 	local humanoid = char:WaitForChild("Humanoid", 10)
 	if not humanoid then return end
-	humanoid.Died:Connect(function()
+	local started = false
+	-- (2026-10-23) this body is still the player's, or it is gone with none in its place
+	local function current() return p.Character == char or p.Character == nil end
+	local function respawn()
+		if started then return end      -- once a body: the rebuild after a death removes that body too
+		started = true
 		task.wait(RESPAWN_TIME)
-		while p.Parent and p.Character == char and (moving[p] or DuelMatch.Of(p)) do
+		-- (2026-10-19, audit P3-14) Holds, not Of: Of lets go at the result, and the dead were rebuilt into the arena for the
+		-- MatchEndHold; Holds keeps them down until the match sends them home
+		while p.Parent and current() and (moving[p] or DuelMatch.Of(p) or DuelMatch.Holds(p)) do
 			task.wait(0.25)
 		end
-		if p.Parent and p.Character == char then
+		if p.Parent and current() then
 			local ok, err = pcall(function() p:LoadCharacter() end)
 			if not ok then warn("[HubServer] respawn failed for " .. p.Name .. ": " .. tostring(err)) end
 		end
+	end
+	humanoid.Died:Connect(respawn)
+	-- 2026-10-23: a body removed without dying (destroyed, out of the world) fired no Died and never came back
+	char.AncestryChanged:Connect(function(_, parent)
+		if parent == nil then respawn() end
 	end)
 end
 
@@ -565,6 +718,10 @@ for elName, el in pairs(Config.Elements) do
 				notify(p, ("%s is not built yet. Ready to bond: %s."):format(display:upper(), builtList))
 			elseif p:GetAttribute("Element") == elName then
 				notify(p, "You are already bonded with " .. display .. ".")
+			elseif p:GetAttribute("DuelMatch") ~= nil or p:GetAttribute("Zone") ~= "Hub" then
+				-- (2026-10-19, audit P1-19) the loadout menu's lock (SpellshotService's LoadoutRequest), which this skipped: no
+				-- Element change in a match -- round 1 keeps the Hub Zone until the new body is on its mark -- nor outside the Hub
+				notify(p, "You can't change Element during a match.")
 			elseif not PlayerData.Owns(p, elName) then
 				-- OWNED ONLY (2026-10-18, economy), as the loadout menu's pick is (SpellshotService)
 				notify(p, display:upper() .. " is locked. Unlock it with Sparks in the Loadout menu.")
@@ -624,17 +781,23 @@ for _, name in ipairs({ "TeleportDoor_TestingRange_Portal", "TeleportDoor_Testin
 end
 
 ----------------------------------------------------------------------------------------------------
--- HUB: the Training Yard's gate, and the island's gate back
+-- HUB: the Training portal, and the Training Ground's gate back
 ----------------------------------------------------------------------------------------------------
--- The user's call, 2026-09-14: a much bigger training ground, reached by a portal. The island is a sandbox like SOLO
--- TEST (casting, the combat HUD, BACK TO HUB, no rounds); MapRegistry keeps it out of the map vote (Vote = false).
-local islandMap = MapRegistry.Get("TrainingGrounds")
-local lastGate = setmetatable({}, { __mode = "k" })
+-- The user's call, 2026-09-14: a much bigger training ground, reached by a portal. It is a sandbox like SOLO TEST
+-- (casting, the combat HUD, BACK TO HUB, no rounds).
+-- (2026-10-20, Training Ground rework) The portal now leads to THE one practice space, the TrainingGround range at the
+-- origin (workspace.TrainingGround, about 360 x 400), the same map SOLO TEST uses: same arrival, same dummies, boards and
+-- allies. The Open Academy island (Map_TrainingGrounds) is retired to ServerStorage.TrainingGroundsSuperseded_2026_10_20;
+-- MapRegistry's "TrainingGrounds" entry stays, dormant (no Model, so nothing offers it). Undo: maps\training_grounds\pre.
+local trainingMap = MapRegistry.Get("TrainingGround")
+--[[local lastGate = setmetatable({}, { __mode = "k" })   one 3 s for both portals until 2026-10-23: now one each, in gate()]]
 
 local function gate(name, onEnter)
 	local island = workspace:FindFirstChild("Map_TrainingGrounds")
-	local pane = find(name) or (island and island:FindFirstChild(name, true))
+	local range = workspace:FindFirstChild("TrainingGround")        -- its gate back is in TrainingGround.Interact (2026-10-20)
+	local pane = find(name) or (island and island:FindFirstChild(name, true)) or (range and range:FindFirstChild(name, true))
 	if not pane then return end
+	local lastGate = setmetatable({}, { __mode = "k" })     -- 2026-10-23: each portal its own 3 s (a shared one swallowed the gate back)
 	pane.CanTouch = true
 	pane.Touched:Connect(function(hit)
 		local p = Players:GetPlayerFromCharacter(hit.Parent)
@@ -650,16 +813,18 @@ end
 -- and climbs about 2 studs onto the first step during the 0.35 s cover. Walking at the frame beside the opening climbs
 -- that step without crossing the threshold, as at any door frame; stepping sideways into the opening from there does.
 gate("TY_Portal_Pane", function(p)
-	if p:GetAttribute("Zone") ~= "Hub" or not islandMap then return end
+	if p:GetAttribute("Zone") ~= "Hub" or not trainingMap then return end
 	if unqueue(p) then dequeued(p, nil) end
 	task.spawn(function()
-		moveTo(p, "Arena", arenaSpot(nil, islandMap.Id), islandMap)
-		notify(p, "THE TRAINING GROUNDS. The gate by the arrival plaza, or BACK TO HUB (H), takes you back.")
+		moveTo(p, "Arena", arenaSpot(nil, trainingMap.Id), trainingMap)
+		notify(p, "THE TRAINING GROUND. The gate behind the spawn, or BACK TO HUB (H), takes you back.")
 	end)
 end)
 
+-- (2026-10-20) anyone on the Training Ground map, by the portal or by SOLO TEST, may leave through it -- never a duellist
+-- (a duel only lands here as enterArena's fallback map, and leaving a duel goes through BACK TO HUB's forfeit)
 gate("TG_ReturnPortal_Pane", function(p)
-	if p:GetAttribute("Map") ~= "TrainingGrounds" then return end
+	if p:GetAttribute("Map") ~= "TrainingGround" or p:GetAttribute("DuelMatch") ~= nil then return end
 	local arrival = find("PortalArrival")        -- on Training's lit path, 86 out, facing the hall (Functional.Training)
 	task.spawn(moveTo, p, "Hub", arrival and (arrival.CFrame + Vector3.new(0, 3, 0)) or nil)
 end)
@@ -1015,7 +1180,8 @@ end
 
 local function padOf(p)
 	-- someone in a map vote is already matched: the pad lets them go, so it cannot start a second match
-	if p:GetAttribute("Zone") ~= "Hub" or voting[p] or moving[p] then return nil end
+	-- (2026-10-28) nor anyone on the way to a cross-server match, nor anyone at all in a match server (its pads are off)
+	if p:GetAttribute("Zone") ~= "Hub" or voting[p] or moving[p] or Matchmaker.Busy(p) then return nil end
 	local char = p.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -1070,6 +1236,23 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------------------------------------------
+-- (2026-10-28) the queue across servers, and a match server's part: Matchmaker, with this script's hands
+----------------------------------------------------------------------------------------------------
+Matchmaker.Init({
+	Notify = notify,
+	Dequeued = dequeued,
+	Requeued = function(p, text) hubRemote:FireClient(p, "queued", true, text) end,
+	QueueCount = function(p, have, needed) hubRemote:FireClient(p, "queueCount", have, needed) end,
+	CanGo = function(p)
+		return p.Parent ~= nil and p:GetAttribute("Zone") == "Hub" and not voting[p] and not moving[p] and not DuelMatch.Of(p)
+	end,
+	IsMoving = function(p) return moving[p] == true end,
+	StartLocal = function(group) sendToArena(group, "Team") end,              -- first half against second half
+	StartMatch = function(group, teams) sendToArena(group, "Team", teams) end,
+	Holds = DuelMatch.Holds,
+})
+
+----------------------------------------------------------------------------------------------------
 -- Quick Play, SOLO TEST, the map vote and BACK TO HUB
 ----------------------------------------------------------------------------------------------------
 hubRemote.OnServerEvent:Connect(function(p, what, mode, choice)
@@ -1090,7 +1273,9 @@ hubRemote.OnServerEvent:Connect(function(p, what, mode, choice)
 		return
 	end
 	-- CANCEL is never throttled (2026-10-18 review): a quick QUEUE then CANCEL used to leave the player in the team queue
-	if what ~= "cancel" and throttled(p) then return end
+	-- nor is BACK TO HUB (2026-10-30): a throttled one left the button on HEADING BACK for 6 s with nothing happening, and
+	-- moveTo already turns away a second move while one is on
+	if what ~= "cancel" and what ~= "return" and throttled(p) then return end
 	local inArena = p:GetAttribute("Zone") == "Arena"
 	if what == "return" then
 		if DuelMatch.Of(p) then
@@ -1115,8 +1300,13 @@ hubRemote.OnServerEvent:Connect(function(p, what, mode, choice)
 		elseif moving[p] then
 			-- mid-move, on either side of the Zone change (into the Hub, or still in the Hub on the way out)
 			dequeued(p, "You are being moved -- queue from the Hub once you are standing in it.")
+		elseif Matchmaker.IsMatchServer() then
+			dequeued(p, "This server is running one match -- QUEUE is off here.")
 		elseif mode ~= "Duel" then
 			dequeued(p, "Only DUEL can start a match in this build. Pick DUEL, or use SOLO TEST.")
+		elseif Matchmaker.Global() then
+			-- (2026-10-28) one queue for every server: a ticket Matchmaker matches by region first, then with anyone
+			task.spawn(Matchmaker.Enqueue, p)
 		else
 			-- (2026-10-18, team mode) DUEL is the team match now: the queue fills to two teams (popTeams), not to a pair.
 			-- (Until then the first two queued were paired into a 1v1 "Duel"; the Hub's pads still start those.)
@@ -1124,7 +1314,7 @@ hubRemote.OnServerEvent:Connect(function(p, what, mode, choice)
 			popTeams()
 		end
 	elseif what == "cancel" then
-		unqueue(p)
+		unqueue(p, "cancel")
 	elseif what == "solo" then
 		unqueue(p)
 		if inArena then

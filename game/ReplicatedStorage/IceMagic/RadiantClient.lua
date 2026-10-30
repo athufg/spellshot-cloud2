@@ -362,10 +362,18 @@ for _, kind in ipairs({ "RadiantHaloCharge", "RadiantHaloCancel", "RadiantHaloSt
 	"RadiantBenedictionStart", "RadiantBenedictionPulse", "RadiantBenedictionEnd" }) do
 	H[kind] = function(d) handle("RadiantFX_Staff", kind, d) end
 end
+-- (2026-10-19, audit P4-19) a Halo or Benediction cast by a body that is not Radiant (a borrowed Technique, with
+-- Config.TechniquesOwnElementOnly = false) fills the effect pool on its first broadcast, instead of never; Prewarm is
+-- idempotent, so for a Radiant match this is a no-op
+H.RadiantHaloCharge = function(d)
+	kit("RadiantFX_Staff", "Prewarm")
+	handle("RadiantFX_Staff", "RadiantHaloCharge", d)
+end
 
 -- Benediction's allies in range at the plant (the server's list): RadiantFX_Staff's Allies anchor reads it
 local benAllies = setmetatable({}, WEAK)
 H.RadiantBenedictionStart = function(d)
+	kit("RadiantFX_Staff", "Prewarm")                        -- (2026-10-19, audit P4-19) as RadiantHaloCharge
 	if d.Character then benAllies[d.Character] = type(d.Allies) == "table" and d.Allies or nil end
 	handle("RadiantFX_Staff", "RadiantBenedictionStart", d)
 end
@@ -425,21 +433,32 @@ if RunService:IsClient() and player then
 			end
 		end
 		-- THE DEVIL SKIN (2026-10-13): the moment the local player wears it (the Loadout's SKINS page), its forms are built
-		-- ahead -- the staff's and the hand's -- so the first Devil cast of each piece shows them from frame one
+		-- ahead -- the staff's and the hand's -- so the first Devil cast of each piece shows them from frame one.
+		-- (2026-10-19, audit P5C-02) ANY player wearing it, not only this one: an opponent's first Devil lance is the one
+		-- that matters most, and until its forms are built this client draws the Default strokes in their place
 		do
-			local lp = Players.LocalPlayer
 			local devilWarmed = false
-			local function warmDevil()
-				if devilWarmed or lp:GetAttribute("ElementSkin_Radiant") ~= "Devil" then return end
+			local devilConns = {}
+			local function warmDevil(p)
+				if devilWarmed or p:GetAttribute("ElementSkin_Radiant") ~= "Devil" then return end
 				devilWarmed = true
+				for _, cn in ipairs(devilConns) do cn:Disconnect() end
+				table.clear(devilConns)
 				task.defer(function()
 					if S and type(S.PrewarmDevil) == "function" then pcall(S.PrewarmDevil) end
 					local H = need("RadiantFX_Hand")
 					if H and type(H.PrewarmDevil) == "function" then pcall(H.PrewarmDevil) end
 				end)
 			end
-			lp:GetAttributeChangedSignal("ElementSkin_Radiant"):Connect(warmDevil)
-			warmDevil()
+			local function hookDevil(p)
+				if devilWarmed then return end
+				devilConns[#devilConns + 1] = p:GetAttributeChangedSignal("ElementSkin_Radiant"):Connect(function()
+					warmDevil(p)
+				end)
+				warmDevil(p)
+			end
+			devilConns[#devilConns + 1] = Players.PlayerAdded:Connect(hookDevil)
+			for _, p in ipairs(Players:GetPlayers()) do hookDevil(p) end
 		end
 		local Hd = need("RadiantFX_Hand")
 		if Hd and A and type(Hd.SetStaffHook) == "function" then

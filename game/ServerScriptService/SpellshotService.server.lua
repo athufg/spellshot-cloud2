@@ -81,7 +81,7 @@ local killFeed = remoteEvent("KillFeed")   -- server -> client duel results for 
 local applyStatusEvent = bindable("ApplyStatus")
 local addUltEvent = bindable("AddUltCharge")
 local performCast = bindable("PerformCast")     -- SpellshotService -> AbilityHandler / PyroHandler
--- An ability script ending a HELD ability itself (Heat Rush at its longest hold): (player, role). The
+-- An ability script ending a HELD ability itself (one held to its longest): (player, role). The
 -- cooldown starts here, exactly as it does when the player lets go.
 local releaseHold = bindable("ReleaseHold")
 -- An ability script SPENDING mana as it runs: (player, amount). The mana bar is this script's -- an ability
@@ -113,7 +113,9 @@ end
 ----------------------------------------------------------------------------------------------------
 -- state
 ----------------------------------------------------------------------------------------------------
-local state = {}   -- [player] = { LastDamage, ManaFloat, SlideReadyAt, MoveState, Charges, CastSeq }
+local state = setmetatable({}, { __mode = "k" })   -- [player] = { LastDamage, ManaFloat, SlideReadyAt, MoveState, Charges, CastSeq }
+-- (2026-10-19, audit P3-07) weak-keyed: a leaver is now cleared on the way out (CombatCore), and a kit's clear asking for
+-- their state after PlayerRemoving -- a held Technique's ReleaseHold -- would otherwise make a record that never goes.
 
 local function getState(p)
 	local s = state[p]
@@ -233,9 +235,7 @@ local SLIDE_GRACE = 0.2   -- seconds of latency slack either side of a slide's e
 local STANCE_SPEED = { Crouch = "CrouchSpeed", Slide = "SlideSpeed", Sprint = "SprintSpeed" }
 local function stanceSpeed(character, state)
 	-- MoveSpeedMult is a buff (Cryo's Cold Momentum): it scales the stance, and caps still win
-	-- RushSpeedMult is Heat Rush's own, kept apart so it and Cold Momentum never overwrite each other
 	local v = MOVE[STANCE_SPEED[state] or "BaseWalkSpeed"] * (character:GetAttribute("MoveSpeedMult") or 1)
-		* (character:GetAttribute("RushSpeedMult") or 1)
 	return math.min(v, character:GetAttribute("SpeedCapSlow") or math.huge,
 		character:GetAttribute("SpeedCapUlt") or math.huge)
 end
@@ -268,6 +268,14 @@ end
 
 moveRemote.OnServerEvent:Connect(function(player, requested)
 	if not VALID_MOVE[requested] then return end
+	-- (2026-10-19, audit P6A-04) MOVEMENT MODE on the server too: RunningOnly has no slide, so a Slide request is the crouch
+	-- it is on the client (MovementController's slideRefusal), and with no slide to leave a SlideJump finds none (below).
+	-- The mode is read as the clients read it: workspace's MovementMode when it names a mode, else Config.Movement.Mode.
+	if requested == "Slide" then
+		local mode = workspace:GetAttribute("MovementMode")
+		if mode ~= "Full" and mode ~= "RunningOnly" then mode = MOVE.Mode end
+		if mode == "RunningOnly" then requested = "Crouch" end
+	end
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if not (humanoid and humanoid.Health > 0) then return end
@@ -347,6 +355,35 @@ publishDev = function(p, character)
 	if s.FreeUltimate then character:SetAttribute("UltCharge", 1) end
 end
 
+--- (2026-10-19, audit P1-02) A dev's freebies never reach a match a non-dev is in. AllowInLiveGame stays on for Team
+--- Test, so on a live server the owner and Config.Dev.UserIds were playing ranked team matches with an Ultimate pinned
+--- full. Inside a match with anyone who is not a dev, FreeUltimate / FreeMana / NoCooldowns are put aside (and the
+--- panel refuses everything, below); they come back when the match ends. A match of devs only (a Team Test) keeps them.
+local function devMatchOK(p)
+	local match = p:GetAttribute("DuelMatch")
+	if match == nil then return true end
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other:GetAttribute("DuelMatch") == match and not getState(other).Dev then return false end
+	end
+	return true
+end
+
+local function applyDevMatchLock(p)
+	local s = getState(p)
+	if not s.Dev then return end
+	if devMatchOK(p) then
+		if s.SavedFree then
+			s.FreeUltimate, s.FreeMana, s.NoCooldowns = s.SavedFree[1], s.SavedFree[2], s.SavedFree[3]
+			s.SavedFree = nil
+			publishDev(p)
+		end
+	elseif not s.SavedFree then
+		s.SavedFree = { s.FreeUltimate, s.FreeMana, s.NoCooldowns }
+		s.FreeUltimate, s.FreeMana, s.NoCooldowns = false, false, false
+		publishDev(p)
+	end
+end
+
 local DEV_ACTIONS = {
 	ToggleFreeUlt = "FreeUltimate",
 	ToggleFreeMana = "FreeMana",
@@ -382,6 +419,13 @@ devRemote.OnServerEvent:Connect(function(p, action, a, b, c)
 		end
 		return                                -- a non-dev firing this remote gets nothing
 	end
+	-- (2026-10-19, audit P1-02 / P4-09) nothing from the panel inside a match a non-dev is in: no free Ultimate, heal,
+	-- cooldown reset, mid-duel Element swap or status preset for the whole server
+	if not devMatchOK(p) then
+		local hub = folder:FindFirstChild("Hub")
+		if hub then hub:FireClient(p, "notice", "Dev tools are off in a match with other players.") end
+		return
+	end
 	local character = p.Character
 	if not character then return end
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -394,12 +438,49 @@ devRemote.OnServerEvent:Connect(function(p, action, a, b, c)
 	-- ---- dev panel: economy (2026-10-18, economy) ------------------------------------------------------
 	-- Through PlayerData's real paths, so a press changes exactly what a match reward, an unlock and a new save change.
 	elseif action == "EcoAddSparks" then
-		PlayerData.AddSparks(p, 1000, "dev")
+		-- (2026-10-19, audit P2-07) This was Studio only: on a live server it wrote unlimited Sparks into the real save.
+		-- (2026-10-23) The owner gives Sparks to players on real servers too ("its not working, not tranferring", from a
+		-- real server): there, only the place's OWNER may, never a Config.Dev.UserIds entry. Studio playtests as before.
+		-- The panel is told what happened ("eco"), so it no longer just says "asked the server".
+		local function tell(msg) devRemote:FireClient(p, "eco", msg) end
+		if not RunService:IsStudio() and not (game.CreatorType == Enum.CreatorType.User and p.UserId == game.CreatorId) then
+			tell("Refused: on a real server only the place's owner can give Sparks.")
+			return
+		end
+		-- (2026-10-23, Dev Panel Sparks target) a = the TARGET's UserId, the only thing the panel sends; the Sparks go to
+		-- that player. The caller passed the s.Dev check above (Config.IsDev, decided here on the server, never by the
+		-- client); the target must be a Player on THIS server, or nothing happens. Nothing sent (an older panel) means the
+		-- caller, as before. The target gains no dev rights: their own requests still meet the s.Dev check.
+		local target = p
+		if a ~= nil then
+			local found = nil
+			if type(a) == "number" and a % 1 == 0 then
+				local ok, res = pcall(Players.GetPlayerByUserId, Players, a)
+				if ok then found = res end
+			end
+			if not found or found.Parent ~= Players then
+				warn(("[DevPanel] EcoAddSparks refused: %s (%d) sent target %s, not a player on this server")
+					:format(p.Name, p.UserId, tostring(a)))
+				tell("Refused: that player is not on this server.")
+				return
+			end
+			target = found
+		end
+		local now = PlayerData.AddSparks(target, 1000, "dev")
+		print(("[DevPanel] EcoAddSparks: caller %s (%d) -> target %s (%d), +1000 Sparks, now %s")
+			:format(p.Name, p.UserId, target.Name, target.UserId, tostring(now)))
+		if type(now) == "number" then
+			tell(("Gave 1000 Sparks to %s (now %d)."):format(target.Name, now))
+		else
+			tell(("Could not give Sparks to %s (their save may not have loaded): %s"):format(target.Name, tostring(now)))
+		end
 		return
 	elseif action == "EcoUnlockAll" then
+		if not RunService:IsStudio() then return end
 		for name in pairs(Config.Elements) do PlayerData.Unlock(p, name) end
 		return
 	elseif action == "EcoReset" then
+		if not RunService:IsStudio() then return end
 		-- a new player's save: the starter kit and 0 Sparks. An equipped Element the reset took away goes back to the default.
 		if PlayerData.ResetToStarter(p) and not PlayerData.Owns(p, p:GetAttribute("Element")) then
 			Config.ApplyElement(p, Config.DefaultLoadout.Element)
@@ -479,7 +560,7 @@ devRemote.OnServerEvent:Connect(function(p, action, a, b, c)
 		end
 		return
 	elseif action == "StatusHit" then
-		-- a hit on the dev's own body THROUGH the damage pipeline (Heat Rush, shields, Mark's bonus, Blessing's soak all
+		-- a hit on the dev's own body THROUGH the damage pipeline (shields, Mark's bonus, Blessing's soak all
 		-- run), which "Damage" above skips; nothing lands in the Hub (CombatCore.IsFriendly)
 		local Core = require(script.Parent:WaitForChild("CombatCore"))
 		if humanoid then Core.DealDamage(nil, humanoid, a or 20, {}) end
@@ -510,7 +591,9 @@ devRemote.OnServerEvent:Connect(function(p, action, a, b, c)
 		if fn and type(a) == "string" then pcall(function() fn:Invoke("status", p, a, "dummy") end) end
 		return
 	elseif action == "Heal" then
-		if humanoid then humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + (a or 25)) end
+		-- (2026-10-19, audit P3-20) never the dead, as Core.Heal refuses them: a corpse given health read as alive to every
+		-- check (AliveCharacter, DuelMatch) and could cast and be targeted
+		if humanoid and humanoid.Health > 0 then humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + (a or 25)) end
 		return
 	elseif action == "Damage" then
 		-- nobody has health to lose in the Hub (CombatCore.IsFriendly), the dev included
@@ -518,6 +601,11 @@ devRemote.OnServerEvent:Connect(function(p, action, a, b, c)
 		return
 	elseif action == "SetShield" then
 		character:SetAttribute("Shield", a or 0)
+		return
+	elseif action == "PassiveActive" then
+		-- (2026-10-19, audit P6A-22) the panel's PASSIVE ON / OFF, set here where it replicates: the panel's own write on its
+		-- character never left that client
+		character:SetAttribute("PassiveActive", a == true)
 		return
 	elseif action == "SetUltCharge" then
 		character:SetAttribute("UltCharge", math.clamp(a or 0, 0, 1))
@@ -562,7 +650,7 @@ local function onCharacter(p, character)
 	humanoid.Health = Config.MaxHealth
 	humanoid.WalkSpeed = MOVE.BaseWalkSpeed
 	-- a cap coming or going re-applies the stance's speed under whatever caps remain
-	for _, attr in ipairs({ "SpeedCapSlow", "SpeedCapUlt", "MoveSpeedMult", "RushSpeedMult" }) do
+	for _, attr in ipairs({ "SpeedCapSlow", "SpeedCapUlt", "MoveSpeedMult" }) do
 		character:GetAttributeChangedSignal(attr):Connect(function()
 			if humanoid.Parent then
 				humanoid.WalkSpeed = stanceSpeed(character, character:GetAttribute("MoveState") or "None")
@@ -667,6 +755,12 @@ local function refreshSlots(p)
 		-- ...and the last answered Seq with it, so a charge ability coming back into a slot on this same body (an
 		-- Element or Technique change) is not read against a CastSeq_ this body never had (see onCharacter)
 		character:SetAttribute("CastSeq_" .. role, getState(p).CastSeq[role] or 0)
+		-- (2026-10-19, audit P4-07) a HELD ability the slot no longer holds (an Element or Technique change mid-hold) ends
+		-- now, through ReleaseHold, exactly as its key coming up would: a Terra turned Pyro kept the wall, a Zephyr kept flying. The Lash, Railspike, Light Lance and
+		-- the Overcharge prime already checked this themselves; this covers every held row at once.
+		local held = character:GetAttribute("Holding_" .. role)
+		local inSlot = VFXLibrary.AbilityFor(p, role)
+		if held and not (inSlot and inSlot.Id == held) then releaseHold:Fire(p, role) end
 	end
 end
 
@@ -687,6 +781,11 @@ local function onPlayer(p)
 	Config.ApplyElement(p, first)
 	if p.Character then task.spawn(onCharacter, p, p.Character) end
 	p.CharacterAdded:Connect(function(c) onCharacter(p, c) end)
+	-- (2026-10-19, audit P1-02) a match starting or ending re-decides every dev's freebies (DuelMatch is set one player
+	-- at a time, so each change re-checks everyone)
+	p:GetAttributeChangedSignal("DuelMatch"):Connect(function()
+		for _, other in ipairs(Players:GetPlayers()) do applyDevMatchLock(other) end
+	end)
 end
 
 Players.PlayerAdded:Connect(onPlayer)
@@ -699,9 +798,11 @@ for _, p in ipairs(Players:GetPlayers()) do task.spawn(onPlayer, p) end
 -- Element. Both are attributes, which is what the HUD, the viewmodel and the ability handler already read, so
 -- nothing else has to know this remote exists.
 -- v0.7 (2026-09-24): the Ultimate comes with the Element and is no longer a pick, so only the two Technique slots
--- ("Mobility" = Q, "Defense" = E, internal names) take a Technique -- any Technique, from either half of the pool,
--- but not one the Element may not hold (Detonate is Pyro's only) and not the one already in the other slot. A new
--- Element brings its default Techniques and swaps out any it may not hold (SpellshotConfig.ApplyElement).
+-- ("Mobility" = Q, "Defense" = E, internal names) take a Technique -- one from either half of the pool, but not one the
+-- Element may not hold and not the one already in the other slot. Since P31 (2026-10-18, Config.TechniquesOwnElementOnly)
+-- an Element may hold only its OWN Techniques (Config.ElementMayHold); the shared pool comes back only with that flag off.
+-- (2026-10-19, audit P4-14: this read "any Technique ... (Detonate is Pyro's only)", the pre-P31 rule.) A new Element
+-- brings its default Techniques and swaps out any it may not hold (SpellshotConfig.ApplyElement).
 local LOADOUT_ROLES = { Mobility = true, Defense = true }
 local lastLoadoutAt = setmetatable({}, { __mode = "k" })
 
@@ -711,9 +812,12 @@ loadoutRemote.OnServerEvent:Connect(function(p, what, a, b)
 	local now = os.clock()
 	if now - (lastLoadoutAt[p] or 0) < 0.08 then return end     -- a click is not 12 a second
 	lastLoadoutAt[p] = now
-	-- A SKIN (2026-10-10): ("Skin", abilityKey, skinId). Colour only, so it may change mid-match, a duel included (the
-	-- next cast draws it). Only an ability of the player's own Element takes a skin (a borrowed Technique keeps Default:
-	-- FLAGGED), the Id must be offered for it, and SkinCatalog.OwnsSkin must agree (the one place gating will go).
+	-- A SKIN (2026-10-10): ("Skin", abilityKey, skinId). It may change mid-match, a duel included (the next cast draws it).
+	-- (2026-10-19, audit P5C-15) "Colour only" no longer holds: a Rework skin (Radiant's Devil, the Cryo skins) replaces
+	-- the effect's forms, not just its colours. Whether a mid-duel change should be refused is the owner's (P5C-03).
+	-- Only an ability of the player's own Element takes a skin (a borrowed Technique -- possible only
+	-- with Config.TechniquesOwnElementOnly off, 2026-10-19 audit P4-14 -- keeps Default: FLAGGED), the Id must be offered
+	-- for it, and SkinCatalog.OwnsSkin must agree (the one place gating will go).
 	if what == "Skin" then
 		if not (type(a) == "string" and type(b) == "string") then return end
 		local origin = SkinCatalog.Origin[a]
@@ -729,8 +833,8 @@ loadoutRemote.OnServerEvent:Connect(function(p, what, a, b)
 	if what == "ElementSkin" then
 		if not (type(a) == "string" and type(b) == "string" and Config.Elements[a]) then return end
 		if b ~= "Default" then
-			local element = p:GetAttribute("Element") or Config.DefaultLoadout.Element
-			if a ~= element or not SkinCatalog.ElementSkinAllowed(a, b) or not SkinCatalog.OwnsSkin(p, b) then return end
+			-- (2026-10-27, the owner) any Element you own, not only the one you play: the lobby never equips an Element
+			if not PlayerData.Owns(p, a) or not SkinCatalog.ElementSkinAllowed(a, b) or not SkinCatalog.OwnsSkin(p, b) then return end
 		end
 		p:SetAttribute(SkinCatalog.ElementSkinAttr(a), b ~= "Default" and b or nil)
 		return
@@ -739,8 +843,8 @@ loadoutRemote.OnServerEvent:Connect(function(p, what, a, b)
 	if what == "ElementWrap" then
 		if not (type(a) == "string" and type(b) == "string" and Config.Elements[a]) then return end
 		if b ~= "Default" then
-			local element = p:GetAttribute("Element") or Config.DefaultLoadout.Element
-			if a ~= element or not SkinCatalog.ElementWrapAllowed(a, b) or not SkinCatalog.OwnsSkin(p, b) then return end
+			-- (2026-10-27, the owner) any Element you own, not only the one you play: the lobby never equips an Element
+			if not PlayerData.Owns(p, a) or not SkinCatalog.ElementWrapAllowed(a, b) or not SkinCatalog.OwnsSkin(p, b) then return end
 		end
 		p:SetAttribute(SkinCatalog.ElementWrapAttr(a), b ~= "Default" and b or nil)
 		return
@@ -806,21 +910,41 @@ end
 --- A HELD ability's end, whoever ends it -- the player letting go, or the ability script at its longest hold
 --- (ReleaseHold): the cooldown starts now, and the ability script hears the release. `client` is the letting-go
 --- client's own payload (Cross-Slash Dash's launch rides on it; the ability script checks it), nil for ReleaseHold.
-local function endHold(p, character, role, ability, client)
+--- (2026-10-19, audit P4-05) `reason` is why a script ended it ("Interrupted": Undertow / Aftershock), passed on to the
+--- ability script as payload.Reason so an interrupted hold can end without its release (a Lash with no crack); nil for a
+--- key-up and a plain ReleaseHold.
+local function endHold(p, character, role, ability, client, reason)
 	if not (character and character.Parent) then return end
 	character:SetAttribute("Holding_" .. role, nil)
+	-- (2026-10-19, audit P1-03) a held Technique's end can launch the body (Cross-Slash Dash's glide rides on the key-up):
+	-- the movement guard's fast window (CombatCore, CastAt) runs from here too
+	character:SetAttribute("CastAt", workspace:GetServerTimeNow())
 	local s = getState(p)
-	character:SetAttribute("CDTotal_" .. role, ability.Cooldown)
-	character:SetAttribute("CD_" .. role, s.NoCooldowns and 0 or (workspace:GetServerTimeNow() + ability.Cooldown))
-	performCast:Fire(p, role, ability, { Phase = "Release", Client = client })
+	local cdUntil = s.NoCooldowns and 0 or (workspace:GetServerTimeNow() + ability.Cooldown)
+	-- (2026-10-19, audit P4-08) CD_ is the SLOT's. When the slot holds another ability by now (a loadout change mid-hold),
+	-- the held one's cooldown never shortens one that ability has running, and
+	-- never writes over a charge ability's lockout (its charges drive CD_ themselves).
+	local inSlot = abilityForRole(p, role)
+	if inSlot and inSlot.Id ~= ability.Id then
+		if not inSlot.Charges and cdUntil > (character:GetAttribute("CD_" .. role) or 0) then
+			character:SetAttribute("CDTotal_" .. role, ability.Cooldown)
+			character:SetAttribute("CD_" .. role, cdUntil)
+		end
+	else
+		character:SetAttribute("CDTotal_" .. role, ability.Cooldown)
+		character:SetAttribute("CD_" .. role, cdUntil)
+	end
+	performCast:Fire(p, role, ability, { Phase = "Release", Client = client, Reason = reason })
 end
 
-releaseHold.Event:Connect(function(p, role)
+-- (2026-10-19, audit P4-05) a third argument, `reason` (a string: "Interrupted" from AquaHandler / TerraHandler), rides on to
+-- the ability script as payload.Reason
+releaseHold.Event:Connect(function(p, role, reason)
 	local character = p and p.Character
 	if not (character and type(role) == "string") then return end
 	local id = character:GetAttribute("Holding_" .. role)
 	local ability = id and VFXLibrary.AbilityById[id]
-	if ability then endHold(p, character, role, ability) end
+	if ability then endHold(p, character, role, ability, nil, type(reason) == "string" and reason or nil) end
 end)
 
 --- An ability script spending mana as it runs (Tremor Vault's drain underground). Free mana ignores it, as it
@@ -841,9 +965,13 @@ end)
 giveBack.Event:Connect(function(p, role, ultToo, escape)
 	local character = p and p.Character
 	if not (character and type(role) == "string") then return end
-	local ability = abilityForRole(p, role)
-	if not ability then return end
 	local s = getState(p)
+	-- (2026-10-19, audit P4-08) the ability that was PAID for in this role (CastId, recorded by the cast paths below), not
+	-- whatever the slot holds now: a give-back that comes after a loadout change (Position Trade's swap finding no floor
+	-- after the Element changed during the dissolve) refunded the NEW row's mana
+	local paid = s.CastId and s.CastId[role]
+	local ability = (paid and VFXLibrary.AbilityById[paid]) or abilityForRole(p, role)
+	if not ability then return end
 	if not s.FreeMana then
 		s.ManaFloat = math.min(Config.MaxMana, s.ManaFloat + (ability.ManaCost or 0))
 		character:SetAttribute("Mana", s.ManaFloat)
@@ -865,6 +993,29 @@ giveBack.Event:Connect(function(p, role, ultToo, escape)
 		character:SetAttribute("Holding_" .. role, nil)        -- ...and it is not running, so the key works again
 	end
 end)
+
+-- (2026-10-19, audit P1-07) the per-player bucket for fresh presses (see the gate in the handler)
+local CAST_RATE, CAST_BURST = 20, 30
+local castTokens = setmetatable({}, { __mode = "k" })     -- [player] = { Tokens, At }
+local function castAllowed(p, now)
+	local b = castTokens[p]
+	if not b then
+		b = { Tokens = CAST_BURST, At = now }
+		castTokens[p] = b
+	end
+	b.Tokens = math.min(CAST_BURST, b.Tokens + (now - b.At) * CAST_RATE)
+	b.At = now
+	if b.Tokens < 1 then return false end
+	b.Tokens -= 1
+	return true
+end
+-- (2026-10-19, audit P1-08) seconds a ChargeOnCatch Ultimate press holds the next one off (one frame is all it needs)
+local ULT_IN_FLIGHT = 0.25
+-- (2026-10-19, audit P1-03) every ACCEPTED press but an M1 stamps the character's CastAt (server time): CombatCore's movement
+-- guard allows a dash, a glide or a blink its faster limit for Config.MovementGuard.FastAfterCast seconds after one
+local function stampCast(character)
+	character:SetAttribute("CastAt", workspace:GetServerTimeNow())
+end
 
 castRemote.OnServerEvent:Connect(function(p, role, payload)
 	if type(role) ~= "string" then return end
@@ -931,6 +1082,14 @@ castRemote.OnServerEvent:Connect(function(p, role, payload)
 	end
 	local now = os.clock()
 	local s = getState(p)
+	-- (2026-10-19, audit P1-07) A RATE LIMIT on fresh presses (a release or a steer is answered above and costs nothing).
+	-- Only the M1 had one, so a press the server refuses -- a Precheck with no target, a ChargeOnCatch Ultimate that
+	-- misses -- could be sent thousands of times a second, each one running overlaps and raycasts for free. CAST_RATE a
+	-- second, CAST_BURST at once: well above any honest client (the fastest M1 is ~8 a second).
+	if not castAllowed(p, now) then
+		if chargeCast then refuseCharge(p, character, role, seq) end
+		return
+	end
 
 	if role == "Ultimate" then
 		-- Dev free-Ultimate: skip the charge requirement and do not spend it. The heartbeat below
@@ -940,8 +1099,18 @@ castRemote.OnServerEvent:Connect(function(p, role, payload)
 			-- ChargeOnCatch (Earthen Tomb, 2026-09-19): the charge is CHECKED here and SPENT by the ability itself,
 			-- only when it lands -- its fissure can be dodged, and a dodged Tomb costs nothing. Every other Ultimate
 			-- (Cryo Beam among them) is paid for on the cast, as before.
-			if not ability.ChargeOnCatch then character:SetAttribute("UltCharge", 0) end
+			if not ability.ChargeOnCatch then
+				character:SetAttribute("UltCharge", 0)
+			else
+				-- (2026-10-19, audit P1-08) ONE IN FLIGHT. The meter is spent by the ability, after this handler: under
+				-- Deferred signals several requests in one frame all read a full meter here before any of them ran, and
+				-- each cast its own Patient Zero. A second ChargeOnCatch press within ULT_IN_FLIGHT of one let through is
+				-- refused; by then the first has spent the meter (a catch) or left it (a miss: press again).
+				if now - (s.UltPendingAt or -math.huge) < ULT_IN_FLIGHT then return end
+				s.UltPendingAt = now
+			end
 		end
+		stampCast(character)                       -- (2026-10-19, audit P1-03)
 		performCast:Fire(p, role, ability, payload)
 		return
 	end
@@ -959,6 +1128,11 @@ castRemote.OnServerEvent:Connect(function(p, role, payload)
 		if type(mult) == "number" and mult > 0 then interval /= mult end
 		if now - (s.LastM1 or 0) < math.min(interval * 0.8, interval - 0.05) then return end
 		s.LastM1 = now
+		-- (2026-10-19, audit P1-12 / GC-14) a PAID shot, counted where the kits can see it: a hit that deals damage takes
+		-- one (CombatCore.TakePaidM1). Without it a client could skip this request -- the mana, and the relay every other
+		-- client draws the shot from -- and still land the damage from its release and hit reports.
+		p:SetAttribute("M1Paid", (p:GetAttribute("M1Paid") or 0) + 1)
+		p:SetAttribute("M1PaidAt", workspace:GetServerTimeNow())
 		if not s.FreeMana then
 			s.ManaFloat = math.max(0, s.ManaFloat - (ability.ManaCost or 0))
 			character:SetAttribute("Mana", s.ManaFloat)
@@ -1006,12 +1180,19 @@ castRemote.OnServerEvent:Connect(function(p, role, payload)
 		publishCharges(character, role, c, ability)
 		settleSeq(p, character, role, seq)
 		-- a third of what a cooldown ability gives: three dashes are one cast's worth of meter
-		character:SetAttribute("UltCharge", math.clamp((character:GetAttribute("UltCharge") or 0) + 0.02, 0, 1))
+		local chargeUlt = character:GetAttribute("UltCharge") or 0
+		character:SetAttribute("UltCharge", math.clamp(chargeUlt + 0.02, 0, 1))
+		-- (2026-10-19, audit P3-22 / P4-08) recorded for a give-back, as the other paths do
+		s.CastUlt = s.CastUlt or {}
+		s.CastUlt[role] = (character:GetAttribute("UltCharge") or 0) - chargeUlt
+		s.CastId = s.CastId or {}
+		s.CastId[role] = ability.Id
+		stampCast(character)                       -- (2026-10-19, audit P1-03)
 		performCast:Fire(p, role, ability, payload)
 		return
 	end
 
-	-- HELD (Heat Rush, Gust Jump, Cross-Slash Dash): the key going down starts it and pays for it; the key coming up
+	-- HELD (Scorching Lash, Bulwark Wall, Cross-Slash Dash): the key going down starts it and pays for it; the key coming up
 	-- (payload.Release) ends it, and only then does the cooldown start. Holding_<role> says it is running -- for the
 	-- ability script, and so a second press cannot start it twice.
 	if ability.Held then
@@ -1024,8 +1205,9 @@ castRemote.OnServerEvent:Connect(function(p, role, payload)
 		if s.ManaFloat < holdCost then return end
 		-- PRECHECK on a held press too (2026-09-30, Benediction became held): asked exactly as the one-shot path below
 		-- asks it, before anything is spent. A held press refused AFTER it is paid gets its mana and cooldown back
-		-- (GiveBack) but never its Ultimate charge (a held press records no CastUlt), so without this a press that
-		-- cannot plant -- mid-air, mashed -- was 6% of Ultimate for free.
+		-- (GiveBack) -- and, since 2026-10-19 (audit P3-22), its Ultimate charge too when asked (it records CastUlt
+		-- below); before that it never did, so without this a press that cannot plant -- mid-air, mashed -- was 6% of
+		-- Ultimate for free.
 		if ability.Precheck then
 			local check = folder:FindFirstChild("Precheck_" .. ability.Id)
 			local ok, yes = false, nil
@@ -1037,7 +1219,15 @@ castRemote.OnServerEvent:Connect(function(p, role, payload)
 		s.ManaFloat -= holdCost
 		character:SetAttribute("Mana", s.ManaFloat)
 		character:SetAttribute("Holding_" .. role, ability.Id)
-		character:SetAttribute("UltCharge", math.clamp((character:GetAttribute("UltCharge") or 0) + 0.06, 0, 1))
+		-- (2026-10-19, audit P3-22 / P4-08) what this press added and what it paid for, as the generic path records them:
+		-- a give-back read a stale CastUlt left by an earlier cast in the role (or none), and refunded the slot's ability
+		local holdUlt = character:GetAttribute("UltCharge") or 0
+		character:SetAttribute("UltCharge", math.clamp(holdUlt + 0.06, 0, 1))
+		s.CastUlt = s.CastUlt or {}
+		s.CastUlt[role] = (character:GetAttribute("UltCharge") or 0) - holdUlt
+		s.CastId = s.CastId or {}
+		s.CastId[role] = ability.Id
+		stampCast(character)                       -- (2026-10-19, audit P1-03)
 		performCast:Fire(p, role, ability, { Phase = "Start" })
 		return
 	end
@@ -1092,6 +1282,9 @@ castRemote.OnServerEvent:Connect(function(p, role, payload)
 	character:SetAttribute("UltCharge", ultAfter)
 	s.CastUlt = s.CastUlt or {}
 	s.CastUlt[role] = ultAfter - ultBefore
+	s.CastId = s.CastId or {}
+	s.CastId[role] = ability.Id               -- (2026-10-19, audit P4-08) what a give-back refunds
+	stampCast(character)                       -- (2026-10-19, audit P1-03)
 
 	performCast:Fire(p, role, ability, payload)
 end)

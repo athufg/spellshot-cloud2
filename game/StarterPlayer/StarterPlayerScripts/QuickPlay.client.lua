@@ -52,7 +52,7 @@
 	  QUEUE goes to HubServer (the Spellshot.Hub remote). DUEL fills to two teams of Config.Team.Size
 	  (2026-10-18, team mode: a 3v3 on the duel's loop; the chip and the footer show the queue's fill, "3/6") and
 	  moves everyone into the arena (same server, no loading). The other modes have no match loop yet,
-	  so the server says so and drops you from the queue. SOLO TEST sends you to the arena on your own.
+	  so their cards are locked (2026-10-19, audit P6B-06; the server would say so and drop you from the queue). SOLO TEST sends you to the arena on your own.
 	  There is no search spinner: the footer and the chip say what is actually happening.
 
 	For tools: the ScreenGui carries a BindableEvent "Command" -- Fire("open"), Fire("close"),
@@ -73,6 +73,8 @@ local Settings = require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForChil
 -- the team match's size and format (2026-10-18, team mode): the DUEL card and the queue's lines read Config.Team
 local Config = require(ReplicatedStorage.Spellshot:WaitForChild("SpellshotConfig"))
 local TEAM_SIZE = math.max(1, math.floor((Config.Team and Config.Team.Size) or 3))
+-- (2026-10-28, matchmaking) "Global": the queue is every server's, so the footer says SEARCHING ALL SERVERS
+local GLOBAL_QUEUE = (Config.Matchmaking and Config.Matchmaking.Mode) == "Global"
 
 --- HubServer's remote. The server makes it as it starts, so it is looked up when needed, not waited on.
 local function hubRemote()
@@ -110,8 +112,9 @@ local QUICK = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Ou
 local LIFT_SELECTED, LIFT_HOVER = 6, 3
 
 -- The five slots, in the template's own order and shape. `Locked` is the honest state of the
--- build: nothing here can start, because there is no match loop -- but Duel is the one the game is
--- actually designed around (it is called Elemental Duels), so it is the hero and the default.
+-- build: only DUEL has a match loop (the 3v3 team match), so every other card is locked -- and Duel
+-- is the one the game is designed around (it is called Elemental Duels), so it is the hero and the
+-- default. (2026-10-19, audit P6B-06: Squad Clash and Convergence were selectable and the server refused them.)
 local MODES = {
 	{
 		Id = "Duel", Slot = "hero", Colour = C.Red, Title = "DUEL",
@@ -122,10 +125,12 @@ local MODES = {
 	{
 		Id = "SquadClash", Slot = "wide", Colour = C.Cyan, Title = "SQUAD CLASH",
 		Sub = "5v5 · FULL TEAM BRAWL",
+		-- (2026-10-19, audit P6B-06) HubServer starts only DUEL ("Only DUEL can start a match in this build")
+		Locked = true,
 	},
 	{
 		Id = "Convergence", Slot = "small", Colour = C.Gold, Title = "CONVER-\nGENCE",
-		Sub = "WEEKLY LTM", Burst = "NOW LIVE!",
+		Sub = "WEEKLY LTM", Locked = true,   -- (2026-10-19, audit P6B-06) was Burst = "NOW LIVE!": the server refuses it
 	},
 	{
 		Id = "Ranked", Slot = "small", Colour = C.Track, Title = "RANKED",
@@ -572,6 +577,9 @@ local function buildCard(m)
 			Text = m.Sub, TextSize = 18, TextColor3 = C.Ink, Position = UDim2.fromOffset(216, 144),
 			Size = UDim2.fromOffset(fw - 232, 22), ZIndex = 6,
 		})
+		if m.Locked then   -- (2026-10-19, audit P6B-06) the wide card can be locked too (Squad Clash)
+			card.badge, card.badgePop = lockedBadge(face, UDim2.fromOffset(fw - 44, fh - 44), 64)
+		end
 
 	else
 		local lines = select(2, m.Title:gsub("\n", "")) + 1
@@ -789,6 +797,26 @@ local function choose(id)
 	if card then press(card.face) end
 end
 
+-- (2026-10-19, audit P6A-18) HubServer silently drops any request but "cancel" that comes within 0.25 s of the one
+-- before it, which left this screen showing QUEUING while the server had you out (or the reverse). Requests that would
+-- land inside that gap are held and sent once it has passed; a held "queue" is dropped if you cancelled meanwhile.
+local ASK_GAP = 0.35
+local lastAsk = 0
+local function ask(remote, what)
+	if what == "cancel" then remote:FireServer(what, selected) return end   -- never throttled by the server
+	local wait = ASK_GAP - (os.clock() - lastAsk)
+	if wait <= 0 then
+		lastAsk = os.clock()
+		remote:FireServer(what, selected)
+		return
+	end
+	lastAsk = os.clock() + wait
+	task.delay(wait, function()
+		if what == "queue" and not queued then return end
+		remote:FireServer(what, selected)
+	end)
+end
+
 --- fromServer: HubServer already dropped you from the queue, so there is nothing to tell it.
 local function setQueued(v, fromServer)
 	local was = queued
@@ -802,12 +830,14 @@ local function setQueued(v, fromServer)
 	player:SetAttribute("QuickPlayQueued", v or nil)
 	local remote = hubRemote()
 	if not fromServer and remote and v ~= was then
-		remote:FireServer(v and "queue" or "cancel", selected)
+		ask(remote, v and "queue" or "cancel")
 	end
 	if v then
 		local title = modeById(selected).Title:gsub("\n", ""):gsub("%-", "")
 		if not remote then
 			say("Queued for " .. title .. " -- the Hub server is not running, so nothing will start.", true)
+		elseif selected == "Duel" and GLOBAL_QUEUE then
+			say(("SEARCHING ALL SERVERS for DUEL %dv%d..."):format(TEAM_SIZE, TEAM_SIZE))
 		elseif selected == "Duel" then
 			--[["Queued for DUEL -- waiting for a second duellist in this Hub." until 2026-10-18 team mode]]
 			say(("Queued for DUEL %dv%d -- it starts when %d are queued in this Hub."):format(TEAM_SIZE, TEAM_SIZE, 2 * TEAM_SIZE))
@@ -890,7 +920,7 @@ buttonFeel(soloFace, soloHit, function()
 		return
 	end
 	if queued then setQueued(false, true) end
-	remote:FireServer("solo")
+	ask(remote, "solo")          -- (P6A-18) paced like the queue: a throttled "solo" also left you queued server-side
 	say("Sending you to the arena on your own...")
 end)
 buttonFeel(backFace, backHit, function() setOpen(false) end)
@@ -925,7 +955,9 @@ command.Event:Connect(function(what, a)
 		-- (2026-10-18, team mode) the queue's fill from HubServer, "3/6": on the chip, and in the footer while queued
 		queueFill = (type(a) == "string") and a or nil
 		if queued then
-			if selected == "Duel" and queueFill then
+			if selected == "Duel" and queueFill and GLOBAL_QUEUE then
+				say(("SEARCHING ALL SERVERS -- %s for DUEL %dv%d."):format(queueFill, TEAM_SIZE, TEAM_SIZE))
+			elseif selected == "Duel" and queueFill then
 				say(("Queued for DUEL %dv%d -- %s in the queue."):format(TEAM_SIZE, TEAM_SIZE, queueFill))
 			end
 			chipTime()

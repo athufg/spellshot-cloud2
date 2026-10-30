@@ -12,20 +12,14 @@
 	                            Stacks_Primary / StacksMax_Primary count them for the HUD's flames
 	  Passive   Ember Refund    a hit taking an enemy under 30% health takes Share of Immolate's cooldown off whatever is
 	                            left of it (T.EmberRefund.Trigger; until 2026-10-17 a kill did)
-	  Mobility  Heat Rush       HELD: faster, and Heat builds while you run with it; at Threshold and above, a
-	                            ranged hit is thinned by Reduction and sparks off the heat. Heat lingers a
-	                            moment after the release, then cools
-	  Defense   Cinder Shield   soaks Strength damage from anything; the hit that fills it bursts it into a
-	                            heat haze sent the way you face, which hurts whoever it passes through.
-	                            Running out of Duration releases nothing
 	  Ultimate  Ring of Fire    POINTED: the client sends the ground spot under its crosshair, and the hand
 	                            draws a circle round it by itself; a settle, the snap-and-point, and fire
-	                            erupts inside it -- wider and harder if your Heat is high. Until the snap the
+	                            erupts inside it. Until the snap the
 	                            circle follows the caster's crosshair (RingOfFireSteer), and burns where it
 	                            was when the snap came (RingOfFireLock)
 
 	PYRO'S OWN SLOTS (2026-09-23, Config.ElementSlots): a Pyro's Q and E are no longer the Techniques above but
-	these two. Heat Rush and Cinder Shield stay in the code, and in the pools for anyone else who equips them.
+	these two. (2026-10-27, the owner) Heat Rush and Cinder Shield, Pyro's other two, are gone from the game.
 	  Mobility  Detonate        marks whoever you last hit with Fireball or Immolate; after a Fuse the mark
 	                            explodes, harder the lower their health (RX_Primed). A press with no target is
 	                            refused before it costs anything (Precheck_Detonate, asked by SpellshotService)
@@ -34,11 +28,12 @@
 	                            35 studs. The caster's client reports what the sweep caught (ScorchingLashStrike),
 	                            checked here against that sector round your aim, and every body struck gains a
 	                            stacking burn (RX_Burning_Stacks).
-	                            Any Element may equip it, in either Technique slot (Mobility or Defense role)
+	                            A Pyro may equip it in either Technique slot (Mobility or Defense role); other
+	                            Elements only with TechniquesOwnElementOnly off (2026-10-19, audit P4-14)
 
 	WHERE CASTS COME FROM: SpellshotService checks and pays for the cast, then fires PerformCast; both this
 	and AbilityHandler hear it and each acts only on its own kit's ability Ids. Damage goes through
-	CombatCore, so a Cinder Shield soaks Cryo hits too and a Cryo kill still refunds a Pyro's Immolate.
+	CombatCore, so a Cryo kill still refunds a Pyro's Immolate.
 
 	Server -> client (AbilityFX): ("VFX", kind, data) on IceAbilityRemote.
 ]]
@@ -216,6 +211,9 @@ local function burn(caster, humanoid, ticks, damage, interval, source)
 	burns[humanoid] = token
 	local epoch = Core.Epoch(caster)
 	model:SetAttribute("RX_Burning_Element", "Pyro")
+	-- (2026-10-25) who lit it and with what, for the client's burn flames (PyroFX: they wear that caster's wrap)
+	model:SetAttribute("RX_Burning_By", (typeof(caster) == "Instance" and caster:IsA("Player")) and caster.UserId or nil)
+	model:SetAttribute("RX_Burning_Src", source or "RingofFire")
 	refreshBurning(model)
 	Status.Stamp(model, "Burning", ticks * interval)
 	Core.ApplyStatusTag(humanoid, "Burning", ticks * interval)
@@ -249,7 +247,6 @@ local function castFireball(player, character, humanoid, root, payload)
 	end
 	broadcast("Fireball", {
 		Character = character, Side = (payload.Side == "L") and "L" or "R", Dir = dir,
-		Shielded = character:GetAttribute("CinderShield") == true,
 		Hot = (character:GetAttribute("Stacks_Primary") or 0) > 0,
 	})
 end
@@ -266,7 +263,9 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local character, humanoid, root = Core.CanAct(player)          -- CanAct, not AliveCharacter: not from underground (2026-09-21)
 	if not character then return end
 	local origin, dir, id = a.Origin, a.Dir, a.Id
-	if not (Core.ValidVector(origin) and Core.ValidVector(dir)) or type(id) ~= "number" or dir.Magnitude < 0.1 then
+	-- id ~= id refuses a NaN Id (2026-10-19, audit P1-11): the write below raised "table index is NaN" (TerraHandler's fix)
+	if not (Core.ValidVector(origin) and Core.ValidVector(dir)) or type(id) ~= "number" or id ~= id
+		or dir.Magnitude < 0.1 then
 		return
 	end
 	local now = os.clock()
@@ -288,8 +287,8 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local head = character:FindFirstChild("Head")
 	local ping = 0
 	pcall(function() ping = player:GetNetworkPing() end)
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	if (origin - (head and head.Position or root.Position)).Magnitude > 6 + speed * (0.35 + ping) then
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	if (origin - (head and head.Position or root.Position)).Magnitude > 6 + speed * (0.35 + Core.Lag(ping)) then
 		Core.CountShot("rej_origin")
 		return
 	end
@@ -433,6 +432,11 @@ remote.OnServerEvent:Connect(function(player, action, a)
 		Core.CountShot("rej_blocked")
 		return
 	end
+	-- only a PAID throw lands (2026-10-19, audit P1-12 / GC-14): its splash can hurt even off a wall
+	if not Core.TakePaidM1(player) then
+		Core.CountShot("rej_unpaid")
+		return
+	end
 	Core.CountShot("hit")
 	landFireball(player, shot, position, humanoid)
 	Core.ShotImpact:Fire(part, position, player)
@@ -484,158 +488,15 @@ Core.OnHitLanded(function(caster, humanoid, amount, info)
 	if T.EmberRefund.Trigger ~= "LowHealth" then return end
 	if typeof(caster) ~= "Instance" or not caster:IsA("Player") or humanoid.Parent == caster.Character then return end
 	local line = T.EmberRefund.Below * humanoid.MaxHealth
-	local after = humanoid.Health
+	-- (2026-10-19, audit P3-01) the health this hit left (CombatCore's info.HealthAfter), not what a reaction bonus from the
+	-- same hit has since moved it to
+	local after = (info and info.HealthAfter) or humanoid.Health
 	local before = after + ((info and info.Removed) or 0)
 	if after > 0 and after < line and before >= line then
 		emberRefund(caster, humanoid)
 	end
 end)
 
-----------------------------------------------------------------------------------------------------
--- MOBILITY: HEAT RUSH
-----------------------------------------------------------------------------------------------------
--- Held. SpellshotService pays for the press and starts the cooldown on the release; this owns what holding
--- does. Heat (0..1) is published on the character: every client's stance, glow, aura and heat lines, and the
--- HUD's meter, read it. RushSpeedMult is the speed, which SpellshotService and MovementController both apply.
-local heat = {}            -- [player] = { Character, Root, Holding, Heat, HoldStart, ReleasedAt, Published }
-
-local function heatRecord(player, character)
-	local h = heat[player]
-	if not h or h.Character ~= character then
-		h = { Character = character, Root = character:FindFirstChild("HumanoidRootPart"), Holding = false,
-			Heat = 0, HoldStart = 0, ReleasedAt = 0, Published = -1 }
-		heat[player] = h
-	end
-	return h
-end
-
-local function publishHeat(h, force)
-	local v = h.Heat
-	if force or math.abs(v - h.Published) >= 0.02 or ((v == 0 or v == 1) and h.Published ~= v) then
-		h.Published = v
-		if h.Character.Parent then h.Character:SetAttribute("Heat", v > 0 and v or nil) end
-	end
-end
-
-local function castHeatRush(player, character, humanoid, root, payload)
-	local h = heatRecord(player, character)
-	if payload.Phase == "Release" then
-		if not h.Holding then return end
-		h.Holding = false
-		h.ReleasedAt = os.clock()
-		character:SetAttribute("HeatRush", nil)
-		character:SetAttribute("RushSpeedMult", nil)
-		publishHeat(h, true)
-		broadcast("HeatRushRelease", { Character = character, Heat = h.Heat })
-		return
-	end
-	h.Holding = true
-	h.HoldStart = os.clock()
-	h.Root = root
-	character:SetAttribute("RushSpeedMult", T.HeatRush.SpeedMult)
-	character:SetAttribute("HeatRush", true)
-end
-
--- The reduction: a ranged hit on someone holding Heat Rush at Threshold or above is thinned, and sparks where
--- it met the heat -- on the side it came from, so everyone can see the hit was reduced.
-Core.AddModifier(10, function(victim, amount, info)
-	if not info.Ranged then return amount end
-	local player = Players:GetPlayerFromCharacter(victim.Parent)
-	local h = player and heat[player]
-	if not (h and h.Holding and h.Character == victim.Parent and h.Heat >= T.HeatRush.Threshold) then
-		return amount
-	end
-	local root = h.Root
-	if root and root.Parent then
-		local from = Core.ValidVector(info.From) and info.From or (root.Position + root.CFrame.LookVector * 10)
-		local d = from - root.Position
-		d = Vector3.new(d.X, 0, d.Z)
-		d = d.Magnitude > 0.1 and d.Unit or root.CFrame.LookVector
-		broadcast("HeatDeflect", {
-			Character = h.Character, From = from,
-			Position = root.Position + d * T.HeatRush.DeflectRadius + Vector3.new(0, -0.1, 0),
-		})
-	end
-	return amount * (1 - T.HeatRush.Reduction)
-end)
-
-----------------------------------------------------------------------------------------------------
--- DEFENSE: CINDER SHIELD
-----------------------------------------------------------------------------------------------------
-local shields = {}         -- [player] = { Character, Root, Strength, Absorbed, FormAt, Expires }
-
-local function clearShield(character)
-	if not character.Parent then return end
-	character:SetAttribute("CinderShield", nil)
-	character:SetAttribute("ShieldAbsorb", nil)
-	character:SetAttribute("RX_Shielded", false)
-end
-
-local function castCinderShield(player, character, humanoid, root)
-	local C = T.CinderShield
-	local now = os.clock()
-	shields[player] = {
-		Character = character, Root = root, Strength = C.Strength, Absorbed = 0,
-		FormAt = now + C.FormAt, Expires = now + C.FormAt + ABILITY.CinderShield.Duration,
-	}
-	character:SetAttribute("CinderShield", true)
-	character:SetAttribute("ShieldAbsorb", 0)
-	character:SetAttribute("RX_Shielded_Element", "Pyro")
-	character:SetAttribute("RX_Shielded", true)
-	broadcast("CinderShield", { Character = character, T0 = workspace:GetServerTimeNow() })
-end
-
---- The hit that fills the shield bursts it: the heat haze leaves the shield the way the caster faces, at
---- shield height, and hurts whoever it passes through as it reaches them. Every client draws the haze, and
---- blurs its own screen if the haze passes through its own character.
-local function burstShield(player)
-	local sh = shields[player]
-	if not sh then return end
-	shields[player] = nil
-	clearShield(sh.Character)
-	local C = T.CinderShield
-	local root = sh.Root
-	if not (root and root.Parent) then return end
-	local dir = VFXLibrary.Flat(root.CFrame.LookVector)
-	local origin = (root.CFrame * CFrame.new(C.CentreFromRoot)).Position
-	broadcast("CinderBurst", { Character = sh.Character, Origin = origin, Dir = dir, T0 = workspace:GetServerTimeNow() })
-	local reach = C.HazeRange * 0.5
-	for victim, model in pairs(Core.HumanoidsNear(origin + dir * reach, reach + 6, sh.Character)) do
-		local vroot = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
-		if vroot then
-			local rel = vroot.Position - origin
-			local along = rel:Dot(dir)
-			if along > 0 and along <= C.HazeRange then
-				local t = along / C.HazeSpeed
-				local s = PyroFX.HazeScale(t)
-				local side = rel - dir * along
-				local inside = math.abs(side.Y) <= C.HazeHalfHeight * s + 2.5
-					and Vector3.new(side.X, 0, side.Z).Magnitude <= C.HazeHalfWidth * s + 1.5
-				if inside and not lineBlocked(origin, vroot.Position, { sh.Character, model }) then
-					local epoch = Core.Epoch(player)
-					task.delay(C.HazeDelay + t, function()
-						if victim.Parent and victim.Health > 0 and Core.Epoch(player) == epoch then
-							Core.DealDamage(player, victim, C.HazeDamage, { From = origin })
-						end
-					end)
-				end
-			end
-		end
-	end
-end
-
--- The soak: anything that hurts the caster while the shield is up goes into the shield first. It glows by how
--- full it is (ShieldAbsorb, 0..1, which every client reads).
-Core.AddModifier(20, function(victim, amount)
-	local player = Players:GetPlayerFromCharacter(victim.Parent)
-	local sh = player and shields[player]
-	if not (sh and sh.Character == victim.Parent) or os.clock() < sh.FormAt then return amount end
-	local soak = math.min(amount, sh.Strength - sh.Absorbed)
-	sh.Absorbed += soak
-	victim.Parent:SetAttribute("ShieldAbsorb", math.clamp(sh.Absorbed / sh.Strength, 0, 1))
-	if sh.Absorbed >= sh.Strength - 1e-3 then burstShield(player) end
-	return amount - soak
-end)
 
 ----------------------------------------------------------------------------------------------------
 -- ULTIMATE: RING OF FIRE
@@ -663,6 +524,47 @@ local function groundUnder(point, caster)
 	return nil
 end
 
+--- (2026-10-19, audit P1-09) LINE OF SIGHT for the aimed spot. The honest client can only pick a spot its camera sees, so
+--- the server asks the same of its own copy of the world: from the caster's eye to the spot -- or to a point a few studs
+--- over it, so low cover in front of the spot does not hide it -- nothing solid may stand in between. Bodies never count;
+--- a Bulwark Wall does (Core.Blocked's rule). A spot out of sight is grounded again from just short of the first thing in
+--- the way (the line to the highest point), so a spot through a wall, or on the storey above or below, comes back to this
+--- side of it. nil when there is no floor there either.
+local SIGHT_RISES = { 0.5, 3, 5 }
+local function inSight(character, root, spot)
+	local head = character:FindFirstChild("Head")
+	local eye = head and head.Position or (root.Position + Vector3.new(0, 1.5, 0))
+	local list = { character }
+	local fx = Core.FxFolder()
+	if fx then list[#list + 1] = fx end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.RespectCanCollide = true
+	local stop
+	for _, rise in ipairs(SIGHT_RISES) do
+		local d = spot + Vector3.new(0, rise, 0) - eye
+		local len = d.Magnitude
+		if len < 0.5 then return spot end
+		local dir = d / len
+		stop = nil
+		for _ = 1, 8 do
+			params.FilterDescendantsInstances = list
+			local hit = workspace:Raycast(eye, d, params)
+			if not hit then break end
+			local depth = (hit.Position - eye):Dot(dir)
+			if depth >= len - Core.SameSurface then break end
+			local model = hit.Instance:FindFirstAncestorOfClass("Model")
+			if not (model and model:FindFirstChildOfClass("Humanoid")) or model:GetAttribute("WallOwner") then
+				stop = eye + dir * math.max(0, depth - 1)
+				break
+			end
+			list[#list + 1] = model
+		end
+		if not stop then return spot end
+	end
+	return groundUnder(stop - Vector3.new(0, 2, 0), character)     -- groundUnder casts from 2 over the point it is given
+end
+
 local rings = {}           -- [player] = the Ring of Fire still being drawn: { Character, Center, LockAt, Locked, Tokens, At }
 
 local function castRingOfFire(player, character, humanoid, root, payload)
@@ -681,13 +583,18 @@ local function castRingOfFire(player, character, humanoid, root, payload)
 	end
 	local radius = R.Radius
 	local ground = groundUnder(center, character) or center
-	local h = heat[player]
-	local hot = h ~= nil and h.Character == character and h.Heat >= R.HotHeat
+	-- (2026-10-19, audit P1-09) ...and in the caster's sight: through a wall it comes back to this side, and with no floor
+	-- on this side at all it is refused like a spot out of reach
+	ground = inSight(character, root, ground)
+	if not ground then
+		addUltCharge:Fire(player, 1)
+		return
+	end
 	local fuse = R.DrawTime + R.SettleTime + R.SnapBeat
 	local ring = { Character = character, Center = ground, LockAt = os.clock() + fuse, Tokens = 3, At = os.clock() }
 	rings[player] = ring
 	broadcast("RingOfFire", {
-		Character = character, Center = ground, Radius = radius, Hot = hot, T0 = workspace:GetServerTimeNow(),
+		Character = character, Center = ground, Radius = radius, Hot = false, T0 = workspace:GetServerTimeNow(),
 		Start = PyroFX.RingStartAngle(ground, root.Position),
 	})
 	-- the draw, the settle, then the snap-and-point: the eruption lands on the point's ignition frame, wherever the
@@ -700,13 +607,15 @@ local function castRingOfFire(player, character, humanoid, root, payload)
 		if rings[player] == ring then rings[player] = nil end
 		ground = ring.Center
 		broadcast("RingOfFireLock", { Character = character, Center = ground })
-		local reach = radius * (hot and R.HotReach or 1)
+		local reach = radius
 		for victim, model in pairs(Core.HumanoidsNear(ground + Vector3.new(0, 3, 0), reach + 4, character)) do
 			local vroot = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
 			if vroot then
 				local d = vroot.Position - ground
 				if Vector3.new(d.X, 0, d.Z).Magnitude <= reach and d.Y >= -2 and d.Y <= R.Height then
-					if Core.DealDamage(player, victim, hot and R.HotDamage or R.Damage, { From = ground }) then
+					-- (2026-10-19, audit P4-13) a Bulwark Wall takes the eruption and nothing else: no burn, no Burning tag
+					if Core.DealDamage(player, victim, R.Damage, { From = ground })
+						and not Core.IsWall(model) then
 						burn(player, victim, R.BurnTicks, R.BurnDamage, R.BurnInterval)
 					end
 				end
@@ -734,6 +643,8 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local flat = Vector3.new(a.X - root.Position.X, 0, a.Z - root.Position.Z)
 	if flat.Magnitude > ABILITY.RingOfFire.Range + 8 then return end
 	local ground = groundUnder(a, character)
+	if not ground then return end
+	ground = inSight(character, root, ground)        -- (2026-10-19, audit P1-09) as the cast's own spot
 	if not ground then return end
 	ring.Center = ground
 	broadcast("RingOfFireSteer", { Character = character, Center = ground })
@@ -784,16 +695,20 @@ local function showMark(mark)
 	model:SetAttribute("RX_Primed_Expires", mark.Expires)
 	model:SetAttribute("RX_Primed_Total", mark.Fuse)
 	model:SetAttribute("RX_Primed_By", mark.Caster.UserId)
+	model:SetAttribute("RX_Primed_Paid", false)       -- (2026-10-19, audit GA-06) true only when it goes off (hideMark)
 	model:SetAttribute("RX_Primed", true)
 end
 
 --- The flag down FIRST, then the suffixes -- and only while the attributes are still this mark's, so a stale clear never
 --- wipes a newer mark (another caster's, on a dummy).
-local function hideMark(mark)
+local function hideMark(mark, paid)
 	local model = mark.Model
 	if shownMark[model] ~= mark then return end
 	shownMark[model] = nil
 	if not model.Parent then return end
+	-- (2026-10-19, audit GA-06) BarFX's payoff marker, before the flag falls: true when the mark went off, false for a
+	-- fizzle or a clear. It stays after the flag (the next showMark resets it), so the client reads it with the fall
+	model:SetAttribute("RX_Primed_Paid", paid == true)
 	model:SetAttribute("RX_Primed", false)
 	for _, suffix in ipairs({ "_Element", "_Expires", "_Total", "_By" }) do
 		model:SetAttribute("RX_Primed" .. suffix, nil)
@@ -805,7 +720,7 @@ local function endMark(mark, fizzle)
 	if mark.Done then return end
 	mark.Done = true
 	if marks[mark.Caster] == mark then marks[mark.Caster] = nil end
-	hideMark(mark)
+	hideMark(mark, not fizzle)
 	if fizzle then
 		broadcast("DetonateFizzle", { Victim = mark.Model, Position = victimPosition(mark.Model) })
 	end
@@ -880,11 +795,14 @@ local function castDetonate(player, character, humanoid, root, payload, role)
 		mark.Fuse = D.Fuse / scale
 		mark.Expires = now + mark.Fuse
 		marks[player] = mark
-		showMark(mark)
-		watchVictim(mark.Victim)
+		-- (2026-10-19, audit GB-03) the broadcast BEFORE the attributes: it alone carries the caster's wrap and the landing
+		-- pop, and a client's attribute watcher that started the crown first made the broadcast's own call a duplicate it
+		-- threw away. Sent first, it is normally handled first; the attributes still carry the mark to a late joiner.
 		broadcast("DetonateMark", {
 			Character = character, Victim = mark.Model, Position = victimPosition(mark.Model), T0 = now, Fuse = mark.Fuse,
 		})
+		showMark(mark)
+		watchVictim(mark.Victim)
 		task.delay(mark.Fuse, explode, mark)
 	end)
 end
@@ -898,7 +816,7 @@ RunService.Heartbeat:Connect(function()
 end)
 
 ----------------------------------------------------------------------------------------------------
--- A TECHNIQUE: SCORCHING LASH (either keyed slot, any Element)
+-- A TECHNIQUE: SCORCHING LASH (either keyed slot; any Element only with TechniquesOwnElementOnly off -- 2026-10-19, audit P4-14)
 ----------------------------------------------------------------------------------------------------
 -- 2026-09-23, reworked 2026-09-24 (round 2, the owner: "if you hold ability of whip, then the whip should be there just
 -- you holding it ... should be medium to long range"). HELD, through SpellshotService's held path: the key going down
@@ -943,6 +861,8 @@ local function dropLash(humanoid, rec)
 	if model.Parent then
 		refreshBurning(model)                                   -- the flag first (an Immolate burn may still hold it up)
 		model:SetAttribute("RX_Burning_Stacks", nil)            -- then the count
+		model:SetAttribute("RX_Burning_By", nil)                -- (2026-10-19, audit GB-02) and who lit it
+		model:SetAttribute("RX_Burning_Src", nil)
 	end
 end
 
@@ -978,6 +898,9 @@ local function addLashStack(caster, humanoid)
 	rec.Stacks = math.min(LB.MaxStacks, rec.Stacks + 1)
 	rec.TicksLeft = LB.Ticks
 	rec.Caster, rec.Epoch = caster, Core.Epoch(caster)
+	-- (2026-10-19, audit GB-02) who lit this burn, for the client's burn flames (PyroFX reads RX_Burning_By / _Src)
+	model:SetAttribute("RX_Burning_By", (typeof(caster) == "Instance" and caster:IsA("Player")) and caster.UserId or nil)
+	model:SetAttribute("RX_Burning_Src", "ScorchingLash")
 	-- the Element, then the count, then the flag -- the order Chill's stacks are written in
 	model:SetAttribute("RX_Burning_Element", "Pyro")
 	model:SetAttribute("RX_Burning_Stacks", rec.Stacks)
@@ -1039,7 +962,9 @@ local function castScorchingLash(player, character, humanoid, root, payload, rol
 	if not rec then return end                     -- already ended without a crack (a clear, a death, a swap)
 	lashHolds[player] = nil
 	if rec.Died then rec.Died:Disconnect() end
-	if rec.Character ~= character or rec.Epoch ~= Core.Epoch(player) or not holds(player, rec.Role, "ScorchingLash") then
+	-- (2026-10-19, audit P4-05) an interrupt (Undertow, Aftershock: SpellshotService's Reason) ends it without a crack
+	if rec.Character ~= character or rec.Epoch ~= Core.Epoch(player) or not holds(player, rec.Role, "ScorchingLash")
+		or payload.Reason == "Interrupted" then
 		broadcast("ScorchingLashHold", { Character = rec.Character, On = false })
 		return
 	end
@@ -1145,7 +1070,7 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	-- LASH_MAX_TRAIL_SPEED and LASH_MAX_LAG of it)
 	local origin = a.Origin
 	local lag = math.min(ping, LASH_MAX_LAG)
-	local speed = math.min(math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed), LASH_MAX_TRAIL_SPEED)
+	local speed = math.min(Core.TrailSpeed(root, humanoid.WalkSpeed), LASH_MAX_TRAIL_SPEED)
 	if not Core.ValidVector(origin) or (origin - root.Position).Magnitude > 6 + speed * (0.35 + lag) then
 		Core.CountShot("lash_rej_origin")
 		return
@@ -1256,42 +1181,6 @@ watchVictim = function(humanoid)
 	end)
 end
 
-----------------------------------------------------------------------------------------------------
--- per frame: Heat, and the shields running out
-----------------------------------------------------------------------------------------------------
-RunService.Heartbeat:Connect(function(dt)
-	local now = os.clock()
-	local H = T.HeatRush
-	for player, h in pairs(heat) do
-		if not h.Character.Parent then
-			heat[player] = nil
-		else
-			if h.Holding then
-				local v = (h.Root and h.Root.Parent) and h.Root.AssemblyLinearVelocity or Vector3.zero
-				if v.X * v.X + v.Z * v.Z > H.MinMoveSpeed * H.MinMoveSpeed then
-					h.Heat = math.min(1, h.Heat + dt / H.BuildTime)
-				end
-				-- held to its longest: SpellshotService ends it exactly as a release would, in the slot holding it
-				-- (either Technique slot may hold Heat Rush since v0.7, 2026-09-24)
-				if now - h.HoldStart >= H.MaxHold then
-					releaseHold:Fire(player, VFXLibrary.TechniqueSlot(player, "HeatRush") or "Mobility")
-				end
-			elseif h.Heat > 0 and now - h.ReleasedAt >= H.DecayDelay then
-				h.Heat = math.max(0, h.Heat - H.DecayRate * dt)
-			end
-			publishHeat(h)
-		end
-	end
-	for player, sh in pairs(shields) do
-		local hum = sh.Character:FindFirstChildOfClass("Humanoid")
-		if not (sh.Character.Parent and hum and hum.Health > 0) or now >= sh.Expires then
-			-- expiring (or its caster falling) releases nothing: the shield simply goes
-			shields[player] = nil
-			clearShield(sh.Character)
-			broadcast("CinderShieldEnd", { Character = sh.Character })
-		end
-	end
-end)
 
 ----------------------------------------------------------------------------------------------------
 -- dispatch
@@ -1299,8 +1188,6 @@ end)
 local casts = {
 	Fireball = castFireball,
 	Immolate = castImmolate,
-	HeatRush = castHeatRush,
-	CinderShield = castCinderShield,
 	RingOfFire = castRingOfFire,
 	Detonate = castDetonate,                 -- Pyro's own Mobility slot (2026-09-23)
 	ScorchingLash = castScorchingLash,       -- a Technique (2026-09-23; held, either slot, since round 2)
@@ -1337,13 +1224,6 @@ local function watch(player)
 		task.defer(refreshKit, player)
 		task.defer(publishTarget, player)          -- a new body carries the Detonate note's DetonateUntil too
 	end)
-	player.CharacterRemoving:Connect(function(character)
-		heat[player] = nil
-		if shields[player] then
-			shields[player] = nil
-			broadcast("CinderShieldEnd", { Character = character })
-		end
-	end)
 	player:GetAttributeChangedSignal("Element"):Connect(function()
 		refreshKit(player)
 	end)
@@ -1358,8 +1238,9 @@ end
 Players.PlayerRemoving:Connect(function(player)
 	shots[player] = nil
 	buckets[player] = nil
-	heat[player] = nil
-	shields[player] = nil
+	-- (2026-10-19, audit P3-07) a ring still being drawn never erupts, even if this runs before OnClear's (which then finds
+	-- no ring to cancel)
+	if rings[player] then rings[player].Cancelled = true end
 	rings[player] = nil
 	-- Detonate and Scorching Lash (2026-09-23): a leaver's live mark fizzles, and lash burns credited to them go out.
 	-- They are GONE first (review r1, 2026-09-24): a mark still on its way to its Trigger fizzles there instead of
@@ -1374,8 +1255,7 @@ Players.PlayerRemoving:Connect(function(player)
 	putOutLashes(player)
 end)
 
--- Leaving the arena, or a duel round being reset (CombatCore.ClearPlayer). Heat Rush ends the way a release ends it and
--- its Heat is gone; the Cinder Shield goes, releasing nothing; a Ring of Fire still being drawn never erupts; fireballs
+-- Leaving the arena, or a duel round being reset (CombatCore.ClearPlayer). A Ring of Fire still being drawn never erupts; fireballs
 -- in flight land nowhere; and burning and Immolate's charged throws come off the player. Burns they set on others, and
 -- a haze already on its way, check the epoch and stop.
 -- 2026-09-23: their live Detonate mark fizzles and their Detonate note goes; a whip they hold goes without a crack
@@ -1401,22 +1281,6 @@ end
 
 Core.OnClear(function(player)
 	local character = player.Character
-	local h = heat[player]
-	if h then
-		h.Heat, h.ReleasedAt = 0, 0
-	end
-	local rushSlot = VFXLibrary.TechniqueSlot(player, "HeatRush")      -- Q or E since v0.7 (2026-09-24)
-	if character and rushSlot and character:GetAttribute("Holding_" .. rushSlot) == "HeatRush" then
-		releaseHold:Fire(player, rushSlot)            -- SpellshotService starts the cooldown; the release clears the rush
-	elseif h then
-		publishHeat(h, true)
-	end
-	local sh = shields[player]
-	if sh then
-		shields[player] = nil
-		clearShield(sh.Character)
-		broadcast("CinderShieldEnd", { Character = sh.Character })
-	end
 	local ring = rings[player]
 	if ring then
 		ring.Cancelled = true

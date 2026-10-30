@@ -69,7 +69,8 @@
 
 	SETTINGS.
 	  * Reduce Flashing: every Beam x0.85 (CalmBeam); flashes x0.6, eased in; no Bloom; the slow snap bag (0.20-0.40 s)
-	    whose snaps DISSOLVE (the old route at 50 % for a frame, not an ember); crackle and micro-arcs halved; no snap flash.
+	    whose snaps DISSOLVE (the old route at 50 % for a frame, not an ember); crackle and micro-arcs halved; no snap flash;
+	    (2026-10-19, audit P5D-04) a steady tendril Brightness (no per-frame Flicker) and the pulse's whitening halved.
 	  * Thin (Kit.thin: Reduce Enemy VFX, low quality): 5 launch arcs, 4 landing arcs, one streak fragment a frame and no
 	    forks; the tendrils lose the haze, the micro-arcs and every minor light (dash, tendrils, climb), run at jag
 	    depth 1 (one sub-point a span: 11 main points, not 21; the forks one level shallower; showcase flag 7) and
@@ -1386,6 +1387,8 @@ function Tell:shape(S, fno, tq)
 	local fl = Random.new(self.seed * 13 + S.sign * 7 + fno * 131)
 	S.kk = self.kb * (1 + T.Flicker * fl:NextNumber(-1, 1)) * ((S.snapNow and not self.calm) and T.SnapBoost or 1)
 	S.flick = 1 + 0.1 * fl:NextNumber(-1, 1)
+	-- (2026-10-19, audit P5D-04) Reduce Flashing: a steady tendril, no +-Flicker re-rolled every frame
+	if self.calm then S.kk, S.flick = self.kb, 1 end
 	S.pulseAt = self:pulseStart(S.sign, tq)
 	S.geoF = fno
 end
@@ -1498,7 +1501,7 @@ function Tell:drawSide(S, fno, tq, t, c)
 		local base = (i == 1 or i == n) and cw * 0.25 or cw * (1 + 0.25 * us[i])
 		cwl[i] = base * (1 + T.PulseCore * bump[i])
 		ks[i] = 0.75 + 0.25 * ku[i]
-		whs[i] = T.PulseWhite * bump[i]
+		whs[i] = T.PulseWhite * bump[i] * (self.calm and 0.5 or 1)   -- (2026-10-19, audit P5D-04) halved under calm
 		gwk[i] = 1 + T.PulseGlow * bump[i]
 	end
 	local haze = (self.thin or fp) and 0 or T.Haze

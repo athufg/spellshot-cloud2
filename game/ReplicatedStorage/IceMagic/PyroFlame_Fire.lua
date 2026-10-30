@@ -43,9 +43,10 @@
 	WIRING (PyroFX): a lazy loader that requires this module, calls Fire.Init({ PyroFX = PyroFX, AddEffect = addEffect,
 	MoteControllers = moteControllers }) once, and at the top of Charge / FireFireball / Burst / Immolate / EmberRefund:
 	`if look() == "flame" then return flame().X(...) end`. With MoteControllers shared, a re-cast stops the other look's
-	motes exactly as it stops its own. EmberRefund's streak needs where the enemy fell: the broadcast carries only the
-	caster, so without `from` (a Vector3, a part or a model) it looks for the nearest humanoid at 0 health; with neither
-	it draws the ring alone, at once, as live.
+	motes exactly as it stops its own. EmberRefund's streak needs where the enemy fell: the broadcast carries it as `From`
+	(PyroHandler, since 2026-10-05: the victim's position on the server; AbilityFX passes d.From). Only when that is
+	missing (the victim had no root on the server) does it look for the nearest humanoid at 0 health; with neither it
+	draws the ring alone, at once, as live. (Doc corrected 2026-10-19, audit GB-05.)
 ]]
 
 local Players = game:GetService("Players")
@@ -298,7 +299,7 @@ function Fire.Charge(character, side, hot, ownView, startClock)
 	-- as live: on the viewmodel's fist only when the camera is in the head, otherwise on the body's hand
 	local fp = own and firstPerson()
 	hot = hot and true or false
-	local cv = PD.new("PyroCharge", { own = own, hot = hot })
+	local cv = PD.new("PyroCharge", { own = own or PD.Spared(character), hot = hot })   -- (2026-10-19, audit P5F-06) a teammate's: whole
 	local start = startClock or os.clock()
 	local handName = (side == "L") and "LeftHand" or "RightHand"
 	local peak = fp and F.ChargePeakFP or F.ChargePeakTP
@@ -455,7 +456,9 @@ function Fire.FireFireball(origin, dir, exclude, visualFrom, onHit, hot)
 	local offset = visualFrom and (visualFrom - origin) or nil
 	local cam = workspace.CurrentCamera
 	local camStart = cam and cam.CFrame.Position or origin
-	local thin = (Settings.EffectDensity or 1) < 0.75 or (Settings.ThinEnemyVFX and not own)
+	-- (2026-10-19, audit P5F-06) Reduce Enemy VFX spares a teammate's ball too (the thrower is exclude[1], both callers)
+	local spare = own or PD.Spared(exclude and exclude[1])
+	local thin = (Settings.EffectDensity or 1) < 0.75 or (Settings.ThinEnemyVFX and not spare)
 
 	shotSeq = (shotSeq + 1) % 64
 	local fwd = v0.Unit
@@ -464,7 +467,7 @@ function Fire.FireFireball(origin, dir, exclude, visualFrom, onHit, hot)
 	local share = thin and 0.5 or 1
 	local st
 	st = {
-		cv = PD.new("PyroFireball", { own = own, hot = hot }),
+		cv = PD.new("PyroFireball", { own = spare, hot = hot }),
 		own = own, hot = hot, thin = thin, seed = shotSeq, off = false,
 		offset = offset, cam = cam, camStart = camStart, travel = ZERO,
 		-- where the ball is SEEN at flight time tq: the line, eased onto from the fist (the live Merge)
@@ -495,7 +498,7 @@ function Fire.FireFireball(origin, dir, exclude, visualFrom, onHit, hot)
 			if hit then
 				-- the hit report first: nothing cosmetic may stand between a hit and the server hearing of it
 				if onHit then task.spawn(onHit, hit) end
-				local ok, err = pcall(Fire.Burst, hit.Position + hit.Normal * 0.3, hot, back, own, wrap)
+				local ok, err = pcall(Fire.Burst, hit.Position + hit.Normal * 0.3, hot, back, spare, wrap)   -- (P5F-06)
 				if not ok then warnOnce("burst", "the burst failed: " .. tostring(err)) end
 			end
 			afterglow(st, t)
@@ -543,7 +546,7 @@ function Fire.Immolate(character, serverT0)
 	registry[character] = ctl
 	local start = localClock(serverT0) + I.Trigger
 	local own = isLocal(character)
-	local cv = PD.new("PyroImmolate", { own = own, hot = true })
+	local cv = PD.new("PyroImmolate", { own = own or PD.Spared(character), hot = true })   -- (2026-10-19, audit P5F-06)
 	local seed = 30
 	local orbitIn = I.OrbitAt - I.Trigger
 	local wispRate = V.MoteWispRate * clamp(cv.Density, 0.3, 1)
@@ -837,7 +840,7 @@ end
 --- upward, the last tongues tear off as wisps. The arc AHEAD of the caster stays low (the crosshair's lane).
 local function refundRing(character, t0, own)
 	local R = T.EmberRefund.Ring
-	local cv = PD.new("PyroRefundRing", { own = own, hot = true })
+	local cv = PD.new("PyroRefundRing", { own = own or PD.Spared(character), hot = true })   -- (2026-10-19, audit P5F-06)
 	local shape = getRingShape()
 	local n = shape.n
 	local radius, length, clear = T.Immolate.OrbitRadius, V.RingLength, V.RingClear
@@ -962,7 +965,7 @@ end
 --- faster and faster, to the near half of the orbit. A FIXED flight time whatever the distance (`dist` studs): from
 --- farther than the design's StreakRef the flames' tails are held to the length they have there.
 local function refundStreak(character, src, born, own, dist)
-	local cv = PD.new("PyroRefundStreak", { own = own, hot = true })
+	local cv = PD.new("PyroRefundStreak", { own = own or PD.Spared(character), hot = true })   -- (2026-10-19, audit P5F-06)
 	local seed = V.StreakSeed
 	local n = V.StreakLeaders
 	local t0 = born + V.StreakDelay
@@ -1039,7 +1042,8 @@ local function positionOf(from)
 	return nil
 end
 
---- Where the enemy this kill felled is, when nobody said (the broadcast names the caster only): a body at 0 health
+--- Where the enemy this kill felled is, when the broadcast's From is missing (the fallback; From is the normal path,
+--- 2026-10-19 audit GB-05 -- and the heuristic below can pick a teammate or a dummy in a team mode): a body at 0 health
 --- (players' characters and the Training Ground's dummies), the caster's own aside. With PyroFX's book of when each
 --- watched body fell (Fire.Init's Fallen) it is the one that fell LAST, and only within FallenFresh seconds: a body
 --- the watcher has not seen at 0 health yet fell this very frame. An older corpse lying nearer is not taken, and with

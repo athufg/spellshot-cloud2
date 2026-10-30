@@ -562,11 +562,9 @@ end
 
 local function arches(cv, F, level, u, heads, t, sc)
 	if u <= 0 then return end
-	if sc then
-		-- (Devil) the aureole -> the horn dome: rising out of the floor with u, its seams on the arch level
-		Devil.F.HornDome(sc, F, level, u, t)
-		return
-	end
+	-- (Devil) the aureole -> the horn dome: rising out of the floor with u, its seams on the arch level. (2026-10-19,
+	-- audit P5C-02) while the dome's mesh is still building, or failed, the Default arches below are drawn instead
+	if sc and Devil.F.Drawn(Devil.F.HornDome, sc, F, level, u, t) then return end
 	local AS = Config.ArchSamples
 	if u >= 1 then
 		local n = 0
@@ -640,10 +638,8 @@ end
 local GRO = { rigid = true, w = 0.05 }
 local function ground(cv, F, s, level, sc)
 	if s <= 0.01 then return end
-	if sc then                                       -- (Devil) the floor ring -> the carved pentagram plate
-		Devil.F.SealPlate(sc, F, s, level)
-		return
-	end
+	-- (Devil) the floor ring -> the carved pentagram plate; (2026-10-19, audit P5C-02) the ring while it is not built
+	if sc and Devil.F.Drawn(Devil.F.SealPlate, sc, F, s, level) then return end
 	GRO.w = lw(level) * 1.1
 	cv:Ring(Vector3.new(F.x, F.fy + Config.FloorLift, F.z), S_RF * s * F.s, UP, level, GRO)
 end
@@ -896,9 +892,9 @@ end
 
 --- rings -> dashes (duty shrinking), each dash a mote into the chest at its TC (overflow_light_r2._dashes)
 local function overflowDashes(st, cv, F, to, duty, K, KF)
-	if st.dsc then
+	if st.dsc and Devil.F.Drawn(Devil.F.HornDome, st.dsc, F, lvl("arches", to), 1, to, duty) then
 		-- (Devil) no dashes: the horn dome crumbles to ash, tips first (frag = the duty), while the motes stream in
-		Devil.F.HornDome(st.dsc, F, lvl("arches", to), 1, to, duty)
+		-- (2026-10-19, audit P5C-02: a dome not built, or failed, gets the Default dashes below instead)
 	else
 		local c, r = X(F, gc(F)), S_GR * F.s
 		local a0 = math.rad(F.turn)
@@ -1147,6 +1143,7 @@ local function newShield(target, caster, T0, phase)
 	end, {
 		Clock = st.clock,
 		MaxLife = Config.BlessMaxLife,
+		Owner = caster,                                  -- (2026-10-19, audit P5F-05) thinned as an enemy's by RadiantDraw
 		OnEnd = function()
 			live[st] = nil
 			staffRelease(st)
@@ -1208,6 +1205,9 @@ local trades = setmetatable({}, { __mode = "k" })   -- [caster model] = its trad
 
 -- Position Trade's helpers live in their own function: Studio's compiler refused this chunk past 200 locals
 -- ("Out of local registers", Phase 5 integration). It runs once, here; Hand.TradeOut / TradeIn are defined inside.
+-- (2026-10-19, audit P5C-19) THE MAIN CHUNK HOLDS 192 OF LUAU'S 200 LOCALS. Add nothing new at file scope: a further
+-- skin's helpers go in the existing `Devil` table (or a sibling `Hand.Skins[name]` table), a new piece's in a function
+-- like this one.
 local function tradeHelpers()
 --- the kit's burst: n glints fly out of p (ease-out Quint), turning and shrinking out over life (hash-seeded)
 local function burst(cv, p, t, t0, n, seed, dist, life, size, level)
@@ -1371,7 +1371,9 @@ local function bodyGlow(st, i, level)
 	if not h then
 		h = Instance.new("Highlight")
 		h.Name = "RadiantTradeGlow"
-		h.FillColor = devilTint(st) and Config.DevilTint or Config.GlowColor
+		local lpal = st.h and st.h.Canvas and st.h.Canvas.Palette        -- (2026-10-25: a ladder wrap's BodyGlow)
+		local bg = lpal and lpal.Look and lpal.Look.BodyGlow
+		h.FillColor = devilTint(st) and Config.DevilTint or bg or Config.GlowColor
 		h.OutlineTransparency = 1
 		h.FillTransparency = 1
 		h.DepthMode = Enum.HighlightDepthMode.Occluded       -- never through walls
@@ -1379,6 +1381,15 @@ local function bodyGlow(st, i, level)
 		h.Parent = fxFolder()
 		st.hl[i] = h
 		st.hlFT[i] = 1
+	end
+	-- (2026-10-19, audit P5C-07) Reduce Flashing: the body flash at half its level (FillTransparency 0.2 -> ~0.65)
+	local cvs = st.h and st.h.Canvas
+	if cvs and cvs.Calm then level *= 0.5 end
+	local clk = cvs and cvs.Palette and cvs.Palette.Look
+	if clk and clk.Cycle and not devilTint(st) then          -- (2026-10-25) Prism Bloom: the body flash runs the cycle
+		local x = (2 * (cvs.LookPH or 0)) % 2
+		local c = cvs.Palette.At(x <= 1 and x or 2 - x)
+		if h.FillColor ~= c then h.FillColor = c end
 	end
 	local ft = 1 - (devilTint(st) and Config.DevilTintMax or Config.HighlightMax) * level ^ 1.2
 	if abs(st.hlFT[i] - ft) > 0.004 then
@@ -1480,8 +1491,9 @@ local function tradeFrame(st, cv, t)
 		if sc then
 			-- (Devil) the gather, the cage, the axis line and the apex glint -> a fanged maw + four claws (the clip's own
 			-- schedule: rise, close at the flash, sink, rise at the swapped spot, release); embers boil from it. Its id
-			-- is the PLACE (a spot follows its body, so it changes place at the swap)
-			Devil.F.Maw(sc, swapped and (3 - i) or i, c0, t)
+			-- is the PLACE (a spot follows its body, so it changes place at the swap). (2026-10-19, audit P5C-02) a maw
+			-- not built yet, or failed, gets the Default cage instead
+			if not Devil.F.Drawn(Devil.F.Maw, sc, swapped and (3 - i) or i, c0, t) then cageSpot(cv, c0, t) end
 		else
 			cageSpot(cv, c0, t)
 		end
@@ -1569,7 +1581,7 @@ function Hand.TradeOut(d)
 	live[st] = true
 	st.h = RD.Play("RadiantTrade", function(cv, t)
 		return tradeFrame(st, cv, t)
-	end, { Clock = st.clock, MaxLife = 6, OnEnd = function() tradeEnd(st) end })
+	end, { Clock = st.clock, MaxLife = 6, Owner = c, OnEnd = function() tradeEnd(st) end })   -- Owner: audit P5F-05
 	-- THE GATE: the canvas took the caster's Position Trade palette (WithPalette); Devil -> a forge scope, else nil
 	st.dsc = Devil.Scope(st.h.Canvas, "RadiantTrade", Devil.TradeWarm)
 	return st

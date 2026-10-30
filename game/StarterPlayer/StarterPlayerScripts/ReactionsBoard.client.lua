@@ -35,14 +35,17 @@
 	    the tablet. It reads input and sinks nothing, so the camera turns as before. Casting is off in the Hub
 	    (Zone "Hub"), so the left click that opens the tablet fires no M1.
 	  * THE CURSOR. While the tablet is up the mouse is won back from first person the way Quick Play and the Loadout
-	    do it (a render step at Camera + 10), and ReactionsOpen is published on the player like QuickPlayOpen. Another
+	    do it (a render step at Camera + 10), and ReactionsOpen is published on the player like QuickPlayOpen
+	    ((2026-10-19, audit GA-20) the Shop closes for it; the input scripts do not read it yet). Another
 	    screen opening (Settings, Loadout, Quick Play, the Shop) puts the tablet away, as the Shop does for those.
 	  * ESCAPE closes the tablet even though Roblox's own menu takes the same key (it arrives gameProcessed, so a
 	    gameProcessed check would never see it); Roblox's menu opens as well, as it does over any screen.
 
 	THE LIST is the design manual's Elemental Reactions table (v0.23, lines 485-495), in its order, each row's words
 	put plainly (SPELLSHOT_Backup/hub/observatory_2026_10_07/v25_reactions/REACTIONS.md), without Toxic Squall (the
-	owner, 2026-10-15). None of the ten is in the game's code yet; the board no longer says so.
+	owner, 2026-10-15); (2026-10-19, audit P6A-20) each Line states the code's rule (ElementalReactions' header). (2026-10-19, audit GA-19) The ten are in the game now (ElementalReactions), but two and a half
+	can never fire yet: Dust Storm needs Cracked and Windswept needs Wet, which nothing applies, and Frozen's "Cryo on a
+	Wet target" half the same; their lines say so.
 
 	The chips are SpellshotConfig.Elements' own Base colours and IconAssets.Element's logos. An Element whose logo is
 	still Zephyr's placeholder (Aqua, 2026-10-15) shows its colour and name and no logo, rather than Zephyr's.
@@ -77,23 +80,24 @@ local REACTIONS = {
 	{ Name = "Melt", A = "Pyro", B = "Cryo",
 		Line = "Cryo on a Burning target, or Pyro on a Chilled or Rooted one: bonus burst damage, and the status is used up." },
 	{ Name = "Combustion", A = "Pyro", B = "Toxin",
-		Line = "A Burning target inside a poison cloud (or the other way round) ignites the cloud: a one-time AoE burst." },
+		-- (2026-10-19, audit P6A-20) Combustion, Wildfire and Shatter state ElementalReactions' rules (were the manual's ideas)
+		Line = "Pyro on a Poisoned target, or Toxin on a Burning one: a burst that burns away any poison cloud they stand in; the status is used up." },
 	{ Name = "Wildfire", A = "Pyro", B = "Zephyr",
-		Line = "Zephyr on a Burning target: the Burn lasts longer or stacks higher, or a weaker Burn spreads to enemies nearby." },
+		Line = "Zephyr on a Burning target: one more Burn stack, and the Burn's clock starts again." },
 	{ Name = "Windchill", A = "Cryo", B = "Zephyr",
 		Line = "Zephyr on a Chilled target: bonus Chill stacks." },
 	{ Name = "Shatter", A = "Cryo", B = "Voltaic",
-		Line = "Voltaic on a Rooted target breaks the Root early, in exchange for Voltaic's bonus damage on stationary targets." },
+		Line = "Voltaic on a Rooted target breaks the Root early, for bonus damage." },
 	{ Name = "Overload", A = "Pyro", B = "Voltaic",
 		Line = "Voltaic on a Burning target, or Pyro on a Charged one: a bonus burst with knockback / stagger, and the status is used up." },
 	{ Name = "Frozen", A = "Cryo", B = "Aqua",
-		Line = "Cryo on a Wet target, or Aqua on a Chilled one: Wet and Chill end in a longer, surer Root." },
+		Line = "Aqua on a Chilled target: the Chill ends in a longer, surer Root. (Cryo on Wet: coming later.)" },
 	{ Name = "Storm Surge", A = "Voltaic", B = "Zephyr",
 		Line = "Zephyr on a Charged target: bonus Charged stacks." },
 	{ Name = "Dust Storm", A = "Terra", B = "Zephyr",
-		Line = "Zephyr on a Cracked target: bonus Cracked stacks." },
+		Line = "Zephyr on a Cracked target: bonus Cracked stacks. Coming later: nothing applies Cracked yet." },
 	{ Name = "Windswept", A = "Aqua", B = "Zephyr",
-		Line = "Zephyr on a Wet target: bonus Wet stacks." },
+		Line = "Zephyr on a Wet target: bonus Wet stacks. Coming later: nothing applies Wet yet." },
 }
 
 ----------------------------------------------------------------------------------------------------
@@ -718,6 +722,10 @@ local function bind(part)
 	local click = part:FindFirstChild(CLICK) or part:WaitForChild(CLICK, 10)
 	if click and click:IsA("ClickDetector") then
 		click.MouseClick:Connect(function()
+			-- 2026-10-23: the same check as a picked click (pickAt): not over Settings, Loadout, Quick Play or the Shop
+			for _, a in ipairs(OTHER_SCREENS) do
+				if player:GetAttribute(a) then return end
+			end
 			setOpen(true)
 		end)
 	end

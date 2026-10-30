@@ -164,6 +164,10 @@ end
 --- Set by the HUD: pulses the health-bar border for the zone warning when no shield is up.
 R.HealthBorderPulse = nil
 
+--- (2026-10-19, audit GA-07) the Pulse kinds the HUD may ask for that older copies of this script did not draw; PopArtHUD
+--- sends "Damage" (any HP loss) instead of "BurnTick" once Handles.Damage is here.
+R.Handles = { Damage = true }
+
 --- The HUD publishes the on-screen rectangle of each surface it owns, so this script never has to
 --- guess where the bars ended up. If the HUD is not up yet these stay nil and every bar treatment
 --- simply does not render, which is the correct failure mode.
@@ -512,12 +516,17 @@ local function startShielded(opts)
 			ring.Image = Art.Shield.Ring[frame]
 		end
 		-- R2: with a shield up the zone warning rides the RING, not the bar border
-		if State.zoneWarning then
+		-- (2026-10-19, audit P3-23) only the Shielded ring carries it: R.Apply / R.Clear move the warning for kind
+		-- "Shielded" alone, so a Blessed ring that glowed too drew it twice (ring and bar border) under a Blessed
+		if State.zoneWarning and rec.kind == "Shielded" then
 			glow.Visible = true
 			local g = math.floor(pad * 0.55)
 			glow.Position = UDim2.fromOffset(rx - g, ry - g)
 			glow.Size = UDim2.fromOffset(rw + g * 2, rh + g * 2)
-			glow.ImageTransparency = 0.25 + 0.35 * math.abs(math.sin(os.clock() * 7))
+			-- (2026-10-19, audit P3-23) Reduce Flashing holds the glow steady: this pulse is on the BAR layer, which
+			-- applyReactionStrength leaves out of the flashing cut
+			glow.ImageTransparency = Settings.Get("ReduceFlashing") and 0.45
+				or 0.25 + 0.35 * math.abs(math.sin(os.clock() * 7))
 		else
 			glow.Visible = false
 		end
@@ -680,10 +689,14 @@ local STARTERS = {
 	Poisoned = startPoisoned,
 	Charged = startShocked,
 	-- BLESSED (Radiant, run by StatusEffects since 2026-09-24) borrows the shield ring until the status HUD gets its own art;
-	-- a kind of its own, so it never switches off a Cinder Shield / Bedrock ring that RX_Shielded holds up
+	-- a kind of its own, so it never switches off a Bedrock ring that RX_Shielded holds up
 	Blessed = function(opts)
+		-- (2026-10-19, audit P3-23) startShielded claims State.shield; a Blessed ring must not, or clearing it (R.Clear
+		-- resets State.shield for "Shielded" only) left State.shield on a destroyed record
+		local prevShield = State.shield
 		local rec = startShielded(opts)
 		rec.kind = "Blessed"
+		State.shield = prevShield
 		return rec
 	end,
 	Shielded = startShielded,
@@ -793,6 +806,10 @@ function R.Pulse(kind, data)
 	if kind == "Reaction" then
 		popBurst(barLayer, "rbxassetid://88718198034720", cx + 50, cy - 24, 190, 1.0, data.Word,
 			typeof(data.Color) == "Color3" and data.Color or nil)
+		return
+	end
+	if kind == "Damage" then   -- (2026-10-19, audit GA-07) any HP loss: the kit's plain burst, not the burn tick
+		popBurst(barLayer, Art.Overlay.Burst, cx + 40, cy, 76, 0.45, data.Amount and ("-" .. tostring(data.Amount)) or nil)
 		return
 	end
 	if kind == "BurnTick" then

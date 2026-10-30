@@ -126,4 +126,8 @@ ToxinClient.Handlers.ToxinPZMiss = function()
 	if bound.Flash then pcall(bound.Flash, "Ultimate", true) end
 end
 
+-- (2026-10-20) ToxinFX also keeps Witch's Brew's worn cauldron on every wearer's back from spawn, before any Toxin
+-- broadcast: load it a moment after start, off the load path (need is pcall-guarded; nothing here waits)
+task.delay(3, function() need("ToxinFX") end)
+
 return ToxinClient

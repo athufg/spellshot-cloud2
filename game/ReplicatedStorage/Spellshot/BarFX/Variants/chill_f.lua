@@ -197,7 +197,8 @@ function V.mount(fx)
 	local root = {}
 	for i, row in ipairs(ROOT) do root[i] = crystal(fx.front, row, 3) end
 	local shards = mkShards(fx.front, 24, { 104, 90, 480, 180 }, 300, 140, 13)
-	local wZ = mkWord("FREEZE!", 420, 46, 190, 74, -6, "chill-f/wZ", C.cryo)
+	-- (2026-10-19, audit GA-01) max Chill stacks are the deepest SLOW since 2026-10-08, not a root or a freeze: the word says so
+	local wZ = mkWord("CHILLED!", 420, 46, 190, 74, -6, "chill-f/wZ", C.cryo)
 	local wK = mkWord("KRSH!", 300, 64, 160, 78, 6, "chill-f/wK", C.white)
 
 	local gRoot = shown()

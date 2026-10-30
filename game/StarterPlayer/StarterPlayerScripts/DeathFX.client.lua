@@ -14,7 +14,7 @@
 
 	EFFECT. One flat comic stamp: the kit's plain white impact burst (PopArtAssets.Overlay.Burst, the
 	image behind the training dummies' KO! callout) pops once over the body and cuts. Same for every
-	Element. Fired from Humanoid.Died, which every client already receives -- no remote, no server
+	Element. Under Reduce Flashing it is half the size and half the opacity, with no pop (2026-10-19). Fired from Humanoid.Died, which every client already receives -- no remote, no server
 	change.
 
 	EXACTLY ONCE. One hook per character model, and Died:Once on it. Nothing is written to any
@@ -27,6 +27,8 @@ local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Art = require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("PopArtAssets"))
+-- (2026-10-19, audit P6B-19 / P5F-03) Reduce Flashing calms the stamp (see stamp)
+local Settings = require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("SpellshotSettings"))
 
 local STAMP_LIFE = 0.45   -- seconds the burst is on screen
 local STAMP_SIZE = 5.6    -- studs across once settled: about one character tall
@@ -62,15 +64,23 @@ local function stamp(root)
 	pe.Texture = Art.Overlay.Burst
 	pe.LightEmission = 0          -- alpha-blended, so the ink rim stays ink
 	pe.LightInfluence = 0         -- unlit: flat colour
-	pe.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, STAMP_SIZE * 0.4),
-		NumberSequenceKeypoint.new(0.2, STAMP_SIZE * 1.15),   -- overshoot
-		NumberSequenceKeypoint.new(0.5, STAMP_SIZE),          -- settle
-		NumberSequenceKeypoint.new(1, STAMP_SIZE),
-	})
+	-- (2026-10-19, audit P6B-19 / P5F-03) Reduce Flashing: half the size and half the opacity, held flat -- no scale pop
+	-- (FrostDragonKillFX's calm rule)
+	local calm = Settings.Get and Settings.Get("ReduceFlashing")
+	if calm then
+		pe.Size = NumberSequence.new(STAMP_SIZE * 0.5)
+	else
+		pe.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, STAMP_SIZE * 0.4),
+			NumberSequenceKeypoint.new(0.2, STAMP_SIZE * 1.15),   -- overshoot
+			NumberSequenceKeypoint.new(0.5, STAMP_SIZE),          -- settle
+			NumberSequenceKeypoint.new(1, STAMP_SIZE),
+		})
+	end
+	local base = calm and 0.5 or 0
 	pe.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0),
-		NumberSequenceKeypoint.new(0.92, 0),
+		NumberSequenceKeypoint.new(0, base),
+		NumberSequenceKeypoint.new(0.92, base),
 		NumberSequenceKeypoint.new(1, 1),                     -- hard cut, no tail
 	})
 	pe.Lifetime = NumberRange.new(STAMP_LIFE)

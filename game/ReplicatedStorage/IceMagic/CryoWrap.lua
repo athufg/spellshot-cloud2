@@ -1,9 +1,10 @@
 --[[
 	CryoWrap  (ModuleScript)  ->  ReplicatedStorage/IceMagic/CryoWrap
 
-	Cryo's colour WRAPS (2026-10-15; the first: Mint Rime, Uncommon). A wrap recolours the DEFAULT Cryo shapes only: no
-	geometry, particle count, timing or gameplay value changes, and the skins (Frostblade, Frost Lotus, Snow Globe) are
-	never touched. A wrap is one data entry in SkinCatalog.Skins: { Wrap = "Cryo", Rarity, Palette = { Main, Shadow,
+	Cryo's colour WRAPS (2026-10-15; the first: Mint Rime, Uncommon). A wrap recolours Cryo's shapes: no geometry,
+	particle count, timing or gameplay value changes. Over a Cryo SKIN (Frostblade, Frost Lotus, Snow Globe, Frost Dragon)
+	the skin keeps its shapes and the wrap paints its pieces (W.PaintKit). (2026-10-19, audit P5A-23: was "the skins are
+	never touched".) A wrap is one data entry in SkinCatalog.Skins: { Wrap = "Cryo", Rarity, Palette = { Main, Shadow,
 	Highlight, Accent } }.
 
 	How it draws: today's Default Cryo draws every crystal through a SpecialMesh (CryoFX kitPart, VFXLibrary ffKitPart),
@@ -14,11 +15,14 @@
 	           VFXLibrary's FF2 / IS2) hold the wrap's colours, and are put back the moment it returns.
 	  MAP      each Default colour goes to the wrap's ramp at the same lightness (IceDeep -> Shadow, IceMid -> Main,
 	           IceLight -> Highlight, white stays white); the Frost Line takes Main, its flash Main-to-Highlight, the line
-	           at rest and the soft cracks Accent. Near-greys stay. The frozen-body status colours stay Default.
+	           at rest and the soft cracks Accent. Near-greys stay. The frozen body's fill, shade and rim follow the wrap
+	           too (owner, 2026-10-16; FrozenFill / FrozenShade / FrozenRim), tagged by whoever froze it (CryoWrapBy).
+	           (2026-10-19, audit P5A-23: was "the frozen-body status colours stay Default".)
 	  POOLS    a pooled look (the shard, the Flash Freeze set, the burst rig) is kept per wrap, so a pooled piece never
 	           carries one caster's colours to another's cast.
 	For(caster): the wrap that caster's Cryo draws in -- nil unless their Element is Cryo (a borrowed Cryo Technique
-	stays Default) and their Cryo skin is Default. Studio only: a WrapStudio attribute on a test dummy.
+	stays Default); a skinned caster gets it too, over the skin's shapes (2026-10-19, audit P5A-23). Studio only: a
+	WrapStudio attribute on a test dummy.
 ]]
 
 local Players = game:GetService("Players")
@@ -172,9 +176,11 @@ local depth, current = 0, nil
 -- near-black colour (their transparency stays Default's: hit-honest). Low Graphics Quality keeps only the colour.
 local solidSaved, rimSaved, kindSaved = {}, nil, {}
 local function solidOn(P)
-	local q = 10
-	pcall(function() q = UserSettings().GameSettings.SavedQualityLevel.Value end)
-	return P.Solid and (q == 0 or q >= 4)                  -- (0: Automatic)
+	-- (2026-10-19, audit P5A-19) the game's own Graphics Quality (SpellshotSettings.EffectDensity: LOW 0.45, MEDIUM 0.75),
+	-- not Roblox's quality slider (SavedQualityLevel), which the game's menu never touches
+	local d = 1
+	pcall(function() d = require(game:GetService("ReplicatedStorage").Spellshot.SpellshotSettings).EffectDensity or 1 end)
+	return P.Solid and d >= 0.75
 end
 -- the material and Reflectance a solid piece takes: the pick, or at low Graphics Quality plain smooth black (no material
 -- texture, a faint sheen)
@@ -661,10 +667,17 @@ local AssetService = game:GetService("AssetService")
 local vtxBase = setmetatable({}, { __mode = "k" })     -- [part] = its own mesh, while it wears a wrap's copy
 local vtxPend = setmetatable({}, { __mode = "k" })     -- [part] = { P, Tint } it waits for
 local vtxHold = setmetatable({}, { __mode = "k" })     -- [own mesh] = a MeshPart carrying it (to put a part back)
-local vtxSet = {}                                      -- [wrap id][own mesh] = { Holder, Mesh } | retry time (failed) | true (building)
+local vtxSet = {}                                      -- [wrap id][own mesh] = { Holder, Mesh, P, White } | retry time (failed) | true (building)
 local vtxNeed = setmetatable({}, { __mode = "k" })     -- [own mesh] = any ice-blue vertex (else the part's tint alone does it)
 local vtxIn = setmetatable({}, { __mode = "k" })       -- [own mesh] = { Id = the wrap it is recoloured IN PLACE to, Orig }
-W._vtx = { Built = 0, Worn = 0, Failed = 0 }
+W._vtx = { Built = 0, Worn = 0, Failed = 0, Freed = 0 }
+-- (2026-10-19) the copies are optional (a piece painted in place looks the same on its own), a worn skin's kit is not
+-- (MeshBudget): no new copy while one builds, or before copyHold (room was asked for, or a copy was refused)
+local MeshBudget = require(script.Parent:WaitForChild("MeshBudget"))
+local copyHold = 0
+local function copiesAllowed()
+	return os.clock() >= copyHold and not MeshBudget.Busy()
+end
 
 local function vtxColour(c, P, white)
 	local h, s = c:ToHSV()
@@ -770,7 +783,7 @@ local function vtxSwap(p, P, tint, white)
 	local h = byP[own]
 	if type(h) == "table" then vtxPend[p] = nil return vtxWear(p, h, tint) end
 	if type(h) == "number" and os.clock() >= h then h = nil byP[own] = nil end   -- (a failed copy: tried again later)
-	if h == nil then
+	if h == nil and copiesAllowed() then
 		byP[own] = true
 		task.spawn(function()
 			local ok, copy = pcall(function() return AssetService:CreateEditableMeshAsync(Content.fromObject(own), { FixedSize = true }) end)
@@ -781,7 +794,15 @@ local function vtxSwap(p, P, tint, white)
 				local ok3, mo = pcall(function() return AssetService:CreateMeshPartAsync(Content.fromObject(own)) end)
 				if ok2 and mp and ok3 and mo then holder = mp vtxHold[own] = vtxHold[own] or mo end
 			end
-			byP[own] = holder and { Holder = holder, Mesh = copy } or (os.clock() + 30)
+			if holder and os.clock() < copyHold then         -- (room was asked for while it was made: it goes)
+				pcall(function() holder:Destroy() end)
+				pcall(function() copy:Destroy() end)
+				holder = nil
+			elseif not holder then
+				if ok and copy then pcall(function() copy:Destroy() end) end
+				copyHold = math.max(copyHold, os.clock() + 30)   -- (the budget is full: no other mesh tries for a while)
+			end
+			byP[own] = holder and { Holder = holder, Mesh = copy, P = P, White = white } or (os.clock() + 30)
 			if not holder then W._vtx.Failed += 1 return end
 			W._vtx.Built += 1
 			for part, w in pairs(vtxPend) do                         -- (the pieces painted in place move onto the copy)
@@ -800,6 +821,36 @@ local function vtxSwap(p, P, tint, white)
 	end
 	return false
 end
+
+--- MeshBudget's Optional (2026-10-19): a worn skin's kit was refused by the client's EditableMesh budget. Every
+--- vertex-colour copy is freed and its pieces go back onto their kit's own mesh, painted in place (the budget-full look),
+--- and no new copy is made for 30 s, nor while that kit still builds.
+function W.MakeRoom()
+	copyHold = math.max(copyHold, os.clock() + 30)
+	for _, byP in pairs(vtxSet) do
+		for own, h in pairs(byP) do
+			if type(h) == "table" then
+				for part, base in pairs(vtxBase) do
+					if base == own then
+						pcall(function()
+							if part.MeshContent.Object ~= h.Mesh then return end
+							vtxBase[part] = nil
+							local holder = vtxHold[own]
+							if holder then vtxPut(part, holder) end
+							vtxInPlace(own, h.P, h.White)
+							vtxPend[part] = { P = h.P, Tint = part.Color }   -- (a copy made later moves it back on)
+						end)
+					end
+				end
+				pcall(function() h.Holder:Destroy() end)
+				pcall(function() h.Mesh:Destroy() end)
+				byP[own] = nil
+				W._vtx.Freed += 1
+			end
+		end
+	end
+end
+MeshBudget.Optional(W.MakeRoom)
 
 --- a SKIN kit piece (FrostLotusKit / FrostbladeKit / SnowGlobeKit object, or a shot look made of one) in the active wrap,
 --- or put back to its own colours when there is none (a pooled piece can come back to a Default caster): a white
@@ -839,10 +890,18 @@ function W.PaintKit(o)
 			end
 			if P and P.Glow and not p:GetAttribute("CryoFrost") and vtxSwap(p, P, glowTint, white) then
 				-- (a mesh with its colours in the vertices now wears the wrap's copy: the part glows neutral, the vertices pink)
+			elseif P and P.Glow and p:GetAttribute("CryoFrost") then
+				-- (2026-10-19, audit P5A-11) the frozen crust: blue baked into its vertex colours, which no tint undoes. It
+				-- used to be hidden, which left FROZEN reading by the pink fill alone; it keeps its Default look instead
+				-- (the shape cue: plates, mound, caps), the pink fill over the body still names the wrap
+				vtxBack(p)
+				if bm and p.Material ~= mat then p.Material = mat end
+				if p.LocalTransparencyModifier == 1 then p.LocalTransparencyModifier = 0 end
+				local rf = p:GetAttribute("WrapBaseRefl")
+				if type(rf) == "number" and p.Reflectance ~= rf then p.Reflectance = rf end
+				if typeof(base) == "Color3" and p.Color ~= base then p.Color = base end
 			elseif P and P.Glow and mat ~= Enum.Material.Neon then          -- (a Glow wrap: kit pieces glow pink, like the panels)
 				p.Color, p.Material, p.Reflectance = Color3.new(pink.R * k, pink.G * k, pink.B * k), Enum.Material.Neon, 0
-				-- (the frozen crust: blue baked into its vertex colours, which no tint undoes -- hidden; the pink fill shows the freeze)
-				if p:GetAttribute("CryoFrost") then p.LocalTransparencyModifier = 1 end
 			elseif P and P.Solid then
 				vtxBack(p)
 				-- a solid wrap (Black Ice): the white mesh bodies (their colours in the vertices) and every dark piece are
@@ -928,7 +987,10 @@ function W.For(caster)
 	if typeof(caster) ~= "Instance" then return nil end
 	if RunService:IsStudio() and caster:GetAttribute("WrapStudio") then return palette(caster:GetAttribute("WrapStudio")) end
 	local plr = Players:GetPlayerFromCharacter(caster)
-	if not plr then return nil end
+	if not plr then                                     -- (2026-10-27) a showcase model's wrap (the Loadout Altar), live too
+		local sw = caster:GetAttribute("ShowcaseWrap")
+		return sw and palette(sw) or nil
+	end
 	if (plr:GetAttribute("Element") or "Cryo") ~= "Cryo" then return nil end       -- a borrowed Cryo Technique: Default
 	-- (a wrap goes over a Cryo skin too: the skin keeps its shapes, the wrap gives the colours -- PaintKit)
 	return palette(SkinCatalog.ElementWrap and SkinCatalog.ElementWrap(plr, "Cryo"))
@@ -1015,6 +1077,9 @@ local function setting(k)
 	local ok, v = pcall(function()
 		local s = require(game:GetService("ReplicatedStorage").Spellshot.SpellshotSettings)
 		if k == "Density" then return s.EffectDensity or 1 end
+		-- (2026-10-19, audit P5F-15) Reduce Enemy VFX is the plain field SettingsRuntime sets, not a setting id: Get()
+		-- answered nil for it, so it never thinned a wrap's extras
+		if k == "ThinEnemyVFX" then return s.ThinEnemyVFX == true end
 		return s.Get and s.Get(k)
 	end)
 	return ok and v or nil
@@ -1117,7 +1182,10 @@ local function motes(P, pos, n, caster)
 	end
 	local d = setting("Density") or 1
 	if setting("ReduceFlashing") == true then d *= 0.5 end
-	if setting("ThinEnemyVFX") == true and caster ~= (Players.LocalPlayer and Players.LocalPlayer.Character) then d *= 0.5 end
+	-- (2026-10-19, audit P5F-06) an ENEMY's motes only (VFXLibrary.IsEnemy, as CryoAurora's Curtains): a teammate's whole
+	local V = W._VFX
+	if setting("ThinEnemyVFX") == true and (if typeof(caster) == "Instance" and type(V.IsEnemy) == "function"
+		then V.IsEnemy(caster) else caster ~= (Players.LocalPlayer and Players.LocalPlayer.Character)) then d *= 0.5 end
 	local k = math.floor(n * d + 0.5)
 	if k <= 0 then return end
 	e.Parent.CFrame = CFrame.new(pos)
@@ -1394,6 +1462,9 @@ do
 		local root = typeof(ch) == "Instance" and ch:FindFirstChild("HumanoidRootPart")
 		if not root then return end
 		local mine = Players.LocalPlayer and ch == Players.LocalPlayer.Character
+		-- (2026-10-19, audit P5F-06) Reduce Enemy VFX drops an ENEMY's ribbon only (VFXLibrary.IsEnemy): a teammate's stays
+		local V = W._VFX
+		if not mine and V and type(V.IsEnemy) == "function" then mine = not V.IsEnemy(ch) end
 		if (setting("Density") or 1) < 0.6 or (not mine and setting("ThinEnemyVFX") == true) then return end
 		local r = ribbons[ch]
 		if not (r and r.T.Parent) then

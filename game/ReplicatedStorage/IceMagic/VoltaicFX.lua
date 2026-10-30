@@ -1076,6 +1076,9 @@ end
 function VoltaicFX.CascadeEnd(data)
 	if not RunService:IsClient() then return end
 	local C = cascadeMod                                 -- an End never loads the module: nothing to end without it
+	-- (2026-10-19, audit P5D-15) ...but one heard while the first Gather is still loading it waits for that load, so the
+	-- storm it ends is not drawn whole
+	if not C and cascadeLoading then C = cascadeFX() end
 	if C and C.End then C.End(data) end
 end
 

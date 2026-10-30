@@ -146,8 +146,8 @@ end
 --- of a moving player trailing the real one (Icicle Shard's and Wind Blade's rule).
 local function eyeNear(player, character, humanoid, root, origin)
 	local head = character:FindFirstChild("Head")
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	local allowance = T.ChainBolt.OriginSlack + speed * (0.35 + pingOf(player))
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	local allowance = T.ChainBolt.OriginSlack + speed * (0.35 + Core.Lag(pingOf(player)))
 	return (origin - (head and head.Position or root.Position)).Magnitude <= allowance
 end
 
@@ -185,6 +185,45 @@ end
 local function groundBelow(from, reach)
 	local hit = castThroughBodies(from, Vector3.new(0, -reach, 0), worldParams(nil, true))
 	return hit and hit.Position or nil
+end
+
+--- (2026-10-19, audit P1-09) LINE OF SIGHT for an aimed spot (ZephyrGustPadServer's sightPoint, copied): the honest client
+--- can only pick a spot its camera sees, so the server asks the same -- from the caster's eye to the spot, or to a point a
+--- few studs over it (low cover in front of the spot does not hide it), nothing solid in between. Bodies never count; a
+--- Bulwark Wall does (Core.Blocked's rule). Returns the spot when seen, else the point just short of the first thing in the way.
+local SIGHT_RISES = { 0.5, 3, 5 }
+local function sightPoint(character, root, spot)
+	local head = character:FindFirstChild("Head")
+	local eye = head and head.Position or (root.Position + Vector3.new(0, 1.5, 0))
+	local list = { character }
+	local fx = Core.FxFolder()
+	if fx then list[#list + 1] = fx end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.RespectCanCollide = true
+	local stop
+	for _, rise in ipairs(SIGHT_RISES) do
+		local d = spot + Vector3.new(0, rise, 0) - eye
+		local len = d.Magnitude
+		if len < 0.5 then return spot end
+		local dir = d / len
+		stop = nil
+		for _ = 1, 8 do
+			params.FilterDescendantsInstances = list
+			local hit = workspace:Raycast(eye, d, params)
+			if not hit then break end
+			local depth = (hit.Position - eye):Dot(dir)
+			if depth >= len - Core.SameSurface then break end
+			local model = hit.Instance:FindFirstAncestorOfClass("Model")
+			if not (model and model:FindFirstChildOfClass("Humanoid")) or model:GetAttribute("WallOwner") then
+				stop = eye + dir * math.max(0, depth - 1)
+				break
+			end
+			list[#list + 1] = model
+		end
+		if not stop then return spot end
+	end
+	return stop
 end
 
 local function onPart(part, position, pad)
@@ -289,8 +328,8 @@ local function castOvercharge(player, character, humanoid, root, payload, role)
 	-- where the dash started: the client's claim, if the server's copy of the body could have been there. Anything else
 	-- is a dash that never happened here: the cast is handed back whole.
 	local start = payload.Start
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	if not Core.ValidVector(start) or (start - root.Position).Magnitude > O.StartSlack + speed * (0.35 + pingOf(player)) then
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	if not Core.ValidVector(start) or (start - root.Position).Magnitude > O.StartSlack + speed * (0.35 + Core.Lag(pingOf(player))) then
 		giveBack:Fire(player, role or "Primary", true)
 		return
 	end
@@ -446,6 +485,13 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	end
 	if not eyeNear(player, character, humanoid, root, origin) then
 		Core.CountShot("rej_origin")
+		if wasPrimed then clearPrimed(player, "Refused") end
+		return
+	end
+	-- only a PAID bolt fires (2026-10-19, audit P1-12 / GC-14): the client sends its M1 CastRequest first (VoltaicClient),
+	-- so the bolt's mana has been taken by the time this arrives; one that skipped it deals nothing
+	if not Core.TakePaidM1(player) then
+		Core.CountShot("rej_unpaid")
 		if wasPrimed then clearPrimed(player, "Refused") end
 		return
 	end
@@ -960,6 +1006,12 @@ local function castCascade(player, character, humanoid, root, payload, role)
 	-- the ground under the crosshair's spot, straight down through bodies; over a drop nothing happens and the Ultimate
 	-- is given back (Cyclone's arrangement)
 	local point = groundBelow(aim + Vector3.new(0, 6, 0), K.GroundProbe)
+	-- (2026-10-19, audit P1-09) ...a spot the caster can see: behind a wall, or on the storey above or below, the storm
+	-- comes back to the floor under where the sight line stops -- or, with none on this side, the Ultimate is given back
+	if point then
+		local seen = sightPoint(character, root, point)
+		if seen ~= point then point = groundBelow(seen, K.GroundProbe) end
+	end
 	if not point then
 		addUltCharge:Fire(player, 1)
 		return

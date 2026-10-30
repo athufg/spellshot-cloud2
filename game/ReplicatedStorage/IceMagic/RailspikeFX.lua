@@ -953,7 +953,8 @@ function Canvas:initCanvas(name, character, at)
 		density = tonumber(S.EffectDensity) or 1
 		thinEnemy = S.ThinEnemyVFX == true
 	end
-	self.pk = math.clamp(density, 0, 1) * ((thinEnemy and not self.own) and 0.5 or 1)
+	-- (2026-10-19, audit P5F-06) an ENEMY's cast: a teammate's is not halved
+	self.pk = math.clamp(density, 0, 1) * ((thinEnemy and not self.own and (character == nil or kitFlag(Kit.isEnemy, character))) and 0.5 or 1)
 end
 
 function Canvas:group(name)

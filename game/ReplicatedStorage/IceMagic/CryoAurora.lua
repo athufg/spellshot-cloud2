@@ -15,7 +15,10 @@
 	                   follows a slow wave of light that wanders through the zone in world space (A.FieldTint), so
 	                   neighbours are loosely alike and no two are in step. Built one at a time in the background (the
 	                   first cast draws the stepped fallback meanwhile; then the wrap drops its pools so the next cast
-	                   takes them); released once nobody has worn the wrap for a minute.
+	                   takes them); released once nobody has worn the wrap for a minute. (2026-10-20, CF: the v9 cells
+	                   are off -- a Flash Freeze draws ~780 crystals in 36 shapes and wanted ~960 cells against a cap of
+	                   400, built one a frame, so ~85% of the crystal-frames showed the unpainted grey ramp and the rest
+	                   popped into a cell mid-life. Every crystal wears its shape's copy, which flows as described here.)
 	  SHATTER SLABS    Clean frosted ice: a pale aurora-tinted Ice copy, its top a soft pale, its thin sides lit.
 	  CAGE PLATES      A thin bright edge round each face (CryoWrap insets a ring), a faint flowing inner glow.
 	  FLOOR            A calm base laid over the zone's own disc (FF_Sheet / CryoDisc), one of three looks (A.FLOORS):
@@ -211,7 +214,8 @@ local function flowCol(P, v, h, t)
 	local L = (TUNE.l0 + TUNE.l1 * noise(u * 2.1 + 5.3, v.Seed + 9.1, t * 0.08)) * (0.72 + 0.28 * h)   -- (pockets of light)
 	local w = 0
 	if v.TwOn then                                                                          -- (a twinkle, travelling up)
-		local d = (h - v.TwH) / 0.05                                                       -- (soft: a glint, not a white band)
+		local d = (h - v.TwH) / 0.12                                                       -- (soft: a glint, not a white band)
+		-- (2026-10-20, CF: was 0.05, under the LV = 5 level spacing of 0.2: the glint blinked level by level instead of travelling)
 		local k = math.exp(-d * d)
 		L += 0.22 * k
 		w = 0.25 * k
@@ -228,9 +232,9 @@ local function moveVariant(v, dt, now, twinkles)
 	v.Ph += 0.16 * (0.45 + 1.5 * noise(FLD.t * 0.045, v.Seed, 1.7)) * dt
 	if v.TwOn then
 		v.TwH += dt * 0.6
-		if v.TwH > 1.15 or not twinkles then v.TwOn = false v.TwNext = now + 2.5 + 5 * math.random() end
+		if v.TwH > 1.4 or not twinkles then v.TwOn = false v.TwNext = now + 2.5 + 5 * math.random() end   -- (in and out off the ends)
 	elseif twinkles and now > v.TwNext then
-		v.TwOn, v.TwH = true, -0.1
+		v.TwOn, v.TwH = true, -0.35
 	end
 end
 local function paintLevels(P, v, t)
@@ -344,7 +348,10 @@ local function step()
 		end
 	end
 	for _, c in pairs(copies) do
-		if type(c) == "table" and c.Kind == "plate" then
+		-- (2026-10-20, CF) a crystal shape's copy flows (pockets, twinkle, tip) while any of its pieces has shown in the last
+		-- second: every piece wears it from its first frame, nothing swaps under it
+		local crystal = type(c) == "table" and c.Kind == "crystal" and now - (c.Live or 0) < 1
+		if type(c) == "table" and (c.Kind == "plate" or crystal) then
 			for _, v in ipairs(c.V) do
 				if still then
 					if v.TwOn then v.TwOn, v.Held = false, false end
@@ -352,7 +359,7 @@ local function step()
 					moveVariant(v, dt, now, q > 0 and c.Kind == "crystal")
 				end
 				if paintNow and not (still and v.Held) then
-					paintPlate(P, v, t)
+					if crystal then paintLevels(P, v, t) else paintPlate(P, v, t) end
 				end
 				v.Held = still
 			end
@@ -619,7 +626,8 @@ function A.KitCopy(P, template)
 		p:SetAttribute("AuroraGrad", true)
 		p:SetAttribute("AuroraKey", key)
 		p:SetAttribute("AuroraVar", 1)
-		lockColour(p, Enum.Material.Neon, HOLD, Enum.Material.Snow)          -- (a collar the kit cools to snow stays snow)
+		local g = TUNE.g0 + TUNE.g1 * 0.5                                      -- (the wave's middle: FieldTint eases it on)
+		lockColour(p, Enum.Material.Neon, Color3.new(g, g, g), Enum.Material.Snow)   -- (a collar the kit cools to snow stays snow)
 	end
 	return p
 end
@@ -731,6 +739,11 @@ local function wearing()
 	for _, pl in ipairs(Players:GetPlayers()) do
 		if pl:GetAttribute("ElementWrap_Cryo") == id then return true end
 	end
+	if RunService:IsStudio() then                                          -- (2026-10-20, CF: a tester's own body)
+		for _, pl in ipairs(Players:GetPlayers()) do
+			if pl.Character and pl.Character:GetAttribute("WrapStudio") == id then return true end
+		end
+	end
 	local st = RunService:IsStudio() and workspace:FindFirstChild("WrapStage")
 	if st then for _, m in ipairs(st:GetChildren()) do if m:GetAttribute("WrapStudio") == id then return true end end end
 	return false
@@ -785,7 +798,10 @@ end
 function A.Curtains(P, g, R, life, caster)
 	local C = P.Curtains
 	local s = settingsMod()
-	local mine = Players.LocalPlayer and caster == Players.LocalPlayer.Character
+	-- (2026-10-19, audit P5F-06) "mine" for Reduce Enemy VFX: not an enemy's (yours or a teammate's), as emitter()
+	local V = W and W._VFX
+	local mine = if typeof(caster) == "Instance" and V and type(V.IsEnemy) == "function" then not V.IsEnemy(caster)
+		else (Players.LocalPlayer and caster == Players.LocalPlayer.Character)
 	local n = C.Ribbons or 6
 	if s and (s.EffectDensity or 1) < 0.6 then n = math.ceil(n / 2) end
 	if s and s.ThinEnemyVFX and not mine then n = math.ceil(n / 2) end
@@ -1196,6 +1212,22 @@ function A.FieldTint(p)
 	local want = FLD.mask and BLACK or HOLD                                   -- (Studio: the test stage's crystal mask)
 	local c = type(lc) == "table" and lc.Kind == "crystal" and lc.hOf and lc or nil
 	local q = p.Position
+	if c then
+		-- (2026-10-20, CF) the v9 cells below are off (see the header): the hue flows in the shape's copy, the piece's own
+		-- Color is its brightness on the wave of light, eased so a piece placed or re-used settles without a pop
+		A.HotUntil = math.max(A.HotUntil or 0, os.clock() + 1)                 -- (shown: its copy keeps flowing)
+		if not FLD.mask then
+			local g = TUNE.g0 + TUNE.g1 * waveAt(q.X, q.Z)
+			local cur = desired[p]
+			if cur then g = cur.R + math.clamp(g - cur.R, -0.035, 0.035) end
+			want = Color3.new(g, g, g)
+		end
+		local cur = desired[p]
+		if not cur or math.abs(cur.R - want.R) > 0.002 or math.abs(cur.G - want.G) > 0.002 or math.abs(cur.B - want.B) > 0.002 then
+			A.SetTint(p, want)
+		end
+		return
+	end
 	if c and A.P and A.P._lut then
 		local cx, cz = math.floor(q.X / CELL), math.floor(q.Z / CELL)
 		local ck = cellKeyOf[p]                                                  -- (its key, made once per cell it stands in)

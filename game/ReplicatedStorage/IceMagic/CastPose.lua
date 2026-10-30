@@ -195,43 +195,33 @@ local function stride(armSwing, elbowClose, legSwing, kneeFlex)
 	end
 end
 
-local walkCycle = stride(14, 9, 24, 30)
-local sprintCycle = stride(24, 18, 38, 52)
+-- (2026-10-27, the owner: arms straight down, never curved) elbowClose is 0: the arms swing straight from the
+-- shoulder, no bend on the forward half-stride. Was stride(14, 9, ...) and stride(24, 18, ...).
+local walkCycle = stride(14, 0, 24, 30)
+local sprintCycle = stride(24, 0, 38, 52)
 
--- Ready is the resting posture for EVERY character, not just the local one: this is a game about
--- holding magic, and hands-at-your-sides is the one posture that cannot read as "armed". It is
--- also what puts the hands into the bottom-centre of the first-person frame -- an avatar's
--- shoulders sit at roughly the camera's own depth, so without a forward reach you would see
--- nothing of yourself at all.
---
--- THESE ARE SILHOUETTE NUMBERS. An earlier version of this table was solved against the
--- first-person viewport -- hands pulled hard inward (In = 38) so they would converge on the
--- crosshair. That is the viewmodel's job now, and read from outside it just looked like the
--- character was clutching something to their chest. Re-judged for the only view that uses them:
--- hands up and forward enough to read as "armed" at range, with the arms still clearly separate.
+-- ARMS STRAIGHT DOWN IN EVERY STANCE (2026-10-27, the owner: "dont make their arms curve in third
+-- person ... remove the holding arms posture thing, make them straight down"). The old raised
+-- "holding magic" posture is gone: Arm, Elbow and In are 0, so both arms hang at the sides and only
+-- the cycles below swing them, straight. Casts still raise the arm (clips override the stance) and
+-- blend back down to this. Old Arm/Elbow/In: Ready 38/48/16, Sprint 44/62/12, Crouch 36/54/20,
+-- Slide -18/34/-14 (ServerStorage.ArmsDownSuperseded_2026_10_27 holds the old module).
 --
 -- Every stance carries a cycle, because with the stock Animate script off nothing else is going
 -- to move the legs. Cycles are gated on the humanoid actually moving, so standing still in any
 -- stance is a clean static pose rather than a march on the spot.
 CastPose.Stances = {
-	Ready  = { Arm = 38, Elbow = 48, In = 16, Waist = -3,
+	Ready  = { Arm = 0, Elbow = 0, In = 0, Waist = -3,
 		Cycle = walkCycle, Cadence = 8.5 },
-	-- Running: hands driven in a little tighter, torso pitched into the run.
-	Sprint = { Arm = 44, Elbow = 62, In = 12, Waist = -12,
+	-- Running: torso pitched into the run.
+	Sprint = { Arm = 0, Elbow = 0, In = 0, Waist = -12,
 		Cycle = sprintCycle, Cadence = 12.5 },
-	Crouch = { Arm = 36, Elbow = 54, In = 20, Waist = -16, Hip = 6, Knee = -22,
+	Crouch = { Arm = 0, Elbow = 0, In = 0, Waist = -16, Hip = 6, Knee = -22,
 		Cycle = walkCycle, Cadence = 6.0 },
-	-- Feet-first slide: legs swung forward under the body, torso leaned back over them, arms swept
-	-- back and out for balance. Hip does the real work -- this is the one pose where the legs carry
-	-- the silhouette, and a slide has to be identifiable from across the map at a glance.
-	Slide  = { Arm = -18, Elbow = 34, In = -14, Waist = 24, Hip = 56, Knee = -34 },
-	-- Heat Rush (Build Prompt #21): the held sprint -- upright and easy at low Heat, hunched over with the fists
-	-- tight and a longer, faster, harder stride at full Heat. Not one fixed pose: stanceTarget blends Low to
-	-- High by the character's replicated Heat every frame. Chosen while its HeatRush attribute is set.
-	HeatRush = {
-		Low  = { Arm = 40, Elbow = 58, In = 12, Waist = -6, Hip = 0, Knee = 0, Stride = { 22, 16, 36, 50 }, Cadence = 12.5 },
-		High = { Arm = 28, Elbow = 90, In = 8, Waist = -30, Hip = 10, Knee = -14, Stride = { 34, 20, 46, 62 }, Cadence = 14.5 },
-	},
+	-- Feet-first slide: legs swung forward under the body, torso leaned back over them, arms down
+	-- along it. Hip does the real work -- this is the one pose where the legs carry the silhouette,
+	-- and a slide has to be identifiable from across the map at a glance.
+	Slide  = { Arm = 0, Elbow = 0, In = 0, Waist = 24, Hip = 56, Knee = -34 },
 }
 
 -- MoveState is the server's vocabulary ("None" | "Sprint" | "Crouch" | "Slide"); this maps it onto
@@ -431,21 +421,11 @@ CastPose.Clips = {
 			key(0.52, { Stance = true, Easing = Enum.EasingStyle.Quad }),
 		},
 	},
-	-- Heat Rush let go above a third of Heat: the chest lifts, the shoulders drop back, the arms fall loose.
-	HeatRushExhale = {
-		Trigger = 0.14, Both = true, StanceLegs = true,
-		Keys = {
-			key(0.00, { Stance = true }),
-			key(0.14, { Arm = 6, Elbow = 20, Wrist = -8, In = -8, Waist = 12, Easing = Enum.EasingStyle.Quad }),
-			key(0.32, { Arm = 12, Elbow = 26, In = -4, Waist = 8 }),
-			key(0.62, { Stance = true, Easing = Enum.EasingStyle.Sine }),
-		},
-	},
-	-- Defense, Cinder Shield: both fists wind apart and PUNCH EACH OTHER in front of the chest (In is measured:
-	-- a blocky hand is a stud wide, and the knuckles meet at 37), the shield bursts out of that impact
-	-- (Trigger), and the right hand holds it up over the body while the left drops out of the way. Hold: it is
-	-- also the shield's BASE pose (SetBase), which a left-hand Fireball leaves from and comes back to.
-	CinderShieldCast = {
+	-- Aqua's SIDEARM draw (2026-10-27: this was Cinder Shield's cast, CinderShieldCast, which the Sidearm borrowed;
+	-- the shield left the game): both fists wind apart and meet in front of the chest (In is measured: a blocky hand
+	-- is a stud wide, and the knuckles meet at 37), then the right hand comes up over the body while the left drops
+	-- out of the way. Hold: it may also be a BASE pose (SetBase).
+	SidearmDraw = {
 		Trigger = 5 / 30, Hold = true, OffKeys = true, Rate = 40, StanceLegs = true,
 		Keys = {
 			key(0.00, { Stance = true }),
@@ -457,16 +437,6 @@ CastPose.Clips = {
 				Off = { Arm = 78, Elbow = 36, Wrist = 0, In = 37 } }),
 			key(0.34, { Arm = 90, Elbow = 30, Wrist = -40, In = 24, Waist = -2,
 				Off = { Arm = -4, Elbow = 12, Wrist = 0, In = 4 }, Easing = Enum.EasingStyle.Quad }),
-		},
-	},
-	-- the burst: both arms punch out, palms forward, leaning into it, as the heat haze leaves the shield
-	CinderShieldBurst = {
-		Trigger = 0.06, Both = true, Rate = 45, StanceLegs = true,
-		Keys = {
-			key(0.00, { Stance = true }),
-			key(0.06, { Arm = 92, Elbow = 0, Wrist = -64, In = -16, Waist = -12, Easing = Enum.EasingStyle.Quad }),
-			key(0.20, { Arm = 88, Elbow = 4, Wrist = -58, In = -16, Waist = -10 }),
-			key(0.55, { Stance = true, Easing = Enum.EasingStyle.Sine }),
 		},
 	},
 	-- Ultimate, Ring of Fire. While the hand draws the circle, the right arm is solved live to point at the drawing
@@ -657,8 +627,7 @@ CastPose.Clips.WindBladeRise = {
 	},
 }
 -- SOLO: the slashing arm only, the other arm left to its stance -- for a shot that does not chain (the first of a
--- burst: the last shot is older than the hold) and for a shot thrown over the Cinder Shield's hold, whose right arm
--- must stay on the shield. AbilityFX picks it.
+-- burst: the last shot is older than the hold). AbilityFX picks it.
 local function wbSolo(clip)
 	local out = table.clone(clip)
 	out.Keys = {}
@@ -1094,9 +1063,6 @@ do
 	}
 end
 -- ===== end GUST PAD =========================================================================================
--- thrown while the Cinder Shield is up (the right hand is holding it): the right arm swings the shield
--- aside like a door by the time the charge is up, holds it there through the release, and brings it back
-CastPose.Clips.FireballShieldL = leftHanded(CastPose.Clips.FireballR, { Arm = 66, Elbow = 48, Wrist = -28, In = -58 })
 
 ----------------------------------------------------------------------------------------------------------------- Umbra (Phase 4)
 -- UMBRA'S THIRD-PERSON CLIPS (Phase 4 stage A, 2026-09-28). The owner's approved Phase 3 poses, key for key:
@@ -1106,9 +1072,8 @@ CastPose.Clips.FireballShieldL = leftHanded(CastPose.Clips.FireballR, { Arm = 66
 -- Every body clip is played by UmbraAnim (ReplicatedStorage.IceMagic.UmbraAnim), never from here; see TRIGGERS.md for
 -- which broadcast plays which, and on which clock.
 --
--- INSTALL: paste this whole block into CastPose.lua on the line AFTER
---     CastPose.Clips.FireballShieldL = leftHanded(CastPose.Clips.FireballR, { Arm = 66, Elbow = 48, Wrist = -28, In = -58 })
--- (the last clip statement before the "rig adapters" banner; it occurs exactly once). It needs, and finds in scope
+-- INSTALL: paste this whole block into CastPose.lua on the line AFTER the "end GUST PAD" banner (2026-10-27: it
+-- followed CastPose.Clips.FireballShieldL, which left with the Cinder Shield). It needs, and finds in scope
 -- there: key(), leftHanded() and the CastPose table. No other line of CastPose changes -- every field used below is one
 -- step() already reads:
 --   Turn            the torso's yaw (keyBody, buildOffsets' Waist joint)
@@ -1517,6 +1482,157 @@ do
 end
 -- ===== end UPDRAFT ==========================================================================================
 
+-- WITCH'S BREW (Toxin Epic skin, 2026-10-23): the caster's body acting with the worn cauldron. Generated from
+-- vfx_blocking/toxin/witchs_brew_2026_10_20/blender/wb_body.py (previewed in wb_body_anim.py), keyed to WitchsBrewFX's
+-- beats; played by WitchsBrewFX from the hooks that move the pot.
+CastPose.Clips.WBSplash = {
+	Rate = 50, Repeat = true, StanceLegsFrom = 0,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.04, { Arm = 176, Elbow = 142, Wrist = 10, In = -16, Waist = 5, Turn = -12, Easing = Enum.EasingStyle.Quad }),
+		key(0.07, { Arm = 184, Elbow = 150, Wrist = 40, In = -18, Waist = 7, Turn = -14, Easing = Enum.EasingStyle.Quad }),
+		key(0.11, { Arm = 84, Elbow = 12, Wrist = -25, In = 14, Waist = -10, Turn = 14, Easing = Enum.EasingStyle.Quint }),
+		key(0.2, { Arm = 72, Elbow = 22, Wrist = -10, In = 14, Waist = -6, Turn = 8, Easing = Enum.EasingStyle.Quad }),
+		key(0.4, { Arm = 172, Elbow = 138, Wrist = 10, In = -14, Waist = 3, Turn = -8, Easing = Enum.EasingStyle.Quad }),
+		key(0.58, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+}
+CastPose.Clips.WBDirect = {
+	Rate = 22, StanceLegsFrom = 0,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.18, { Arm = 72, Elbow = 24, Wrist = -12, In = 18, Waist = -4, Turn = 8, Easing = Enum.EasingStyle.Quad }),
+		key(0.6, { Arm = 76, Elbow = 20, Wrist = -16, In = 20, Waist = -5, Turn = 10, Easing = Enum.EasingStyle.Sine }),
+		key(0.95, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+}
+CastPose.Clips.WBPulse = {
+	Rate = 18, Repeat = true, FromCurrent = true, StanceLegsFrom = 0,
+	Keys = {
+		key(0, { From = true, FromBody = true }),
+		key(0.14, { From = true, Waist = 3, Easing = Enum.EasingStyle.Sine }),
+		key(0.34, { From = true, Waist = -5, Easing = Enum.EasingStyle.Quad }),
+		key(0.6, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+}
+CastPose.Clips.WBLaunch = {
+	Rate = 26, Both = true, StanceLegsFrom = 0.5,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.08, { Arm = 150, Elbow = 96, Wrist = 10, In = -10, Hip = 20, Knee = -40, Waist = 8, Drop = 0.12, Easing = Enum.EasingStyle.Quad }),
+		key(0.22, { Arm = 128, Elbow = 10, Wrist = 30, In = 6, Hip = 10, Knee = -20, Waist = -12, Drop = 0.05, Easing = Enum.EasingStyle.Quint }),
+		key(0.4, { Arm = 96, Elbow = 14, Wrist = 24, In = 10, Waist = -6, Easing = Enum.EasingStyle.Quad }),
+		key(0.75, { Arm = 24, Elbow = 34, In = 6, Waist = 5, Easing = Enum.EasingStyle.Sine }),
+		key(4, { Arm = 26, Elbow = 36, In = 6, Waist = 6 }),
+	},
+}
+CastPose.Clips.WBCatch = {
+	Rate = 30, Both = true, FromCurrent = true, StanceLegsFrom = 0,
+	Keys = {
+		key(0, { From = true, FromBody = true }),
+		key(0.4, { Arm = 150, Elbow = 100, Wrist = 10, In = -8, Waist = 4, Easing = Enum.EasingStyle.Quad }),
+		key(0.6, { Arm = 140, Elbow = 110, Wrist = 10, In = -8, Hip = 24, Knee = -50, Waist = -14, Drop = 0.16, Cam = Vector3.new(0, -0.18, 0), Easing = Enum.EasingStyle.Quint }),
+		key(0.8, { Arm = 60, Elbow = 60, In = 10, Hip = 10, Knee = -20, Waist = -6, Drop = 0.06, Easing = Enum.EasingStyle.Quad }),
+		key(1.15, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+}
+CastPose.Clips.WBHerb = {
+	Rate = 34, StanceLegsFrom = 0,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.14, { Arm = 168, Elbow = 110, Wrist = 20, In = -20, Waist = 3, Turn = -10, Easing = Enum.EasingStyle.Quad }),
+		key(0.3, { Arm = 176, Elbow = 118, Wrist = 30, In = -24, Waist = 4, Turn = -12 }),
+		key(0.45, { Arm = 150, Elbow = 90, Wrist = -10, In = -14, Turn = -6, Easing = Enum.EasingStyle.Quad }),
+		key(0.58, { Arm = 178, Elbow = 60, Wrist = -30, In = -30, Waist = 6, Turn = -14, Easing = Enum.EasingStyle.Quint }),
+		key(0.95, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+}
+CastPose.Clips.WBTip = {
+	Rate = 20, Both = true, StanceLegsFrom = 0.4,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.3, { Arm = 64, Elbow = 118, Wrist = 10, In = 34, Hip = 14, Knee = -28, Waist = 16, Drop = 0.08, Easing = Enum.EasingStyle.Quad }),
+		key(4.3, { Arm = 62, Elbow = 120, Wrist = 10, In = 34, Hip = 14, Knee = -28, Waist = 18, Drop = 0.08 }),
+		key(4.8, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+	Tremble = { Turn = 0.6, Arm = 1.2, Waist = 0.8, From = 0.3, Full = 0.6, Until = 4.3 },
+}
+
+-- HYDRA (Toxin Mythic skin, 2026-10-23): the caster's body performing with the creature. Generated from
+-- vfx_blocking/toxin/hydra_2026_10_21/helm/hydra_body.py (previewed there through a copy of this module's evaluation),
+-- timed to the kit's Blender animations; played by HydraFX from the same hooks that start the creature.
+CastPose.Clips.HydraSpit = {
+	Rate = 40, Repeat = true, StanceLegsFrom = 0,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.06, { Arm = 20, Elbow = 72, In = 10, Waist = 6, Turn = -12, Easing = Enum.EasingStyle.Quad }),
+		key(0.11, { Arm = 78, Elbow = 18, Wrist = 40, In = 14, Hip = 12, Knee = -24, Waist = -15, Turn = 16, Shift = 0.14, Easing = Enum.EasingStyle.Quint }),
+		key(0.2, { Arm = 62, Elbow = 30, Wrist = 20, In = 14, Hip = 8, Knee = -16, Waist = -7, Turn = 9, Shift = 0.08, Easing = Enum.EasingStyle.Quad }),
+		key(0.48, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+}
+CastPose.Clips.HydraExhale = {
+	Rate = 30, Both = true, StanceLegsFrom = 0,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.18, { Arm = -26, Elbow = 40, In = -10, Hip = 10, Knee = -20, Waist = 24, Turn = -8, Drop = 0.05, Easing = Enum.EasingStyle.Quad }),
+		key(0.3, { Arm = 58, Elbow = 22, Wrist = 30, In = 22, Hip = 24, Knee = -50, Waist = -14, Turn = 6, Drop = 0.19, Shift = 0.1, Easing = Enum.EasingStyle.Back }),
+		key(0.4, { Arm = 50, Elbow = 28, Wrist = 20, In = 20, Hip = 24, Knee = -50, Waist = 8, Drop = 0.19, Easing = Enum.EasingStyle.Quad }),
+		key(0.6, { Arm = 48, Elbow = 30, Wrist = 20, In = 20, Hip = 24, Knee = -50, Waist = 10, Drop = 0.19 }),
+		key(0.95, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+	Tremble = { Turn = 1.5, Arm = 2.5, Waist = 1.5, From = 0.3, Full = 0.4, Until = 0.6 },
+}
+CastPose.Clips.HydraGulp = {
+	Rate = 30, Repeat = true, StanceLegsFrom = 0,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.14, { Arm = 40, Elbow = 56, In = 20, Waist = 5, Turn = -8, Easing = Enum.EasingStyle.Quad }),
+		key(0.22, { Arm = 46, Elbow = 98, Wrist = 20, In = 36, Hip = 10, Knee = -20, Waist = -11, Turn = 4, Drop = 0.03, Easing = Enum.EasingStyle.Quint }),
+		key(0.38, { Arm = 44, Elbow = 90, Wrist = 10, In = 32, Waist = 3, Easing = Enum.EasingStyle.Quad }),
+		key(0.65, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+}
+CastPose.Clips.HydraRain = {
+	Rate = 32, Both = true, StanceLegsFrom = 0,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.12, { Arm = -36, Elbow = 30, In = -16, Hip = 30, Knee = -60, Waist = -26, Drop = 0.27, Easing = Enum.EasingStyle.Quint }),
+		key(0.22, { Arm = 150, Elbow = 24, Wrist = 20, In = -6, Hip = 20, Knee = -40, Waist = 16, Drop = 0.12, Easing = Enum.EasingStyle.Back }),
+		key(0.4, { Arm = 156, Elbow = 18, Wrist = 20, In = -6, Hip = 20, Knee = -40, Waist = 20, Drop = 0.12 }),
+		key(0.68, { Arm = 60, Elbow = 40, In = 10, Waist = 4, Easing = Enum.EasingStyle.Sine }),
+		key(0.85, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+	Tremble = { Turn = 0, Arm = 2, From = 0.22, Full = 0.3, Until = 0.4 },
+}
+CastPose.Clips.HydraPZ = {
+	Rate = 26, Both = true, StanceLegsFrom = 0.6,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.1, { Arm = 30, Elbow = 10, Wrist = -30, In = 10, Hip = 30, Knee = -60, Waist = -26, Drop = 0.27, Easing = Enum.EasingStyle.Quint }),
+		key(0.16, { Arm = 62, Elbow = 20, In = 14, Hip = 24, Knee = -50, Waist = -10, Drop = 0.19, Easing = Enum.EasingStyle.Quad }),
+		key(0.3, { Arm = 86, Elbow = 6, Wrist = 40, In = 22, Hip = 24, Knee = -50, Waist = -18, Drop = 0.19, Cam = Vector3.new(0, -0.2, 0), Easing = Enum.EasingStyle.Quint }),
+		key(0.42, { Arm = 80, Elbow = 10, Wrist = 30, In = 22, Hip = 24, Knee = -50, Waist = -16, Drop = 0.19 }),
+		key(0.6, { Arm = 50, Elbow = 112, Wrist = 10, In = 40, Hip = 30, Knee = -60, Waist = -12, Drop = 0.27, Easing = Enum.EasingStyle.Quad }),
+		key(3.15, { Arm = 52, Elbow = 118, Wrist = 10, In = 42, Hip = 30, Knee = -60, Waist = -15, Drop = 0.27 }),
+		key(3.4, { Arm = 168, Elbow = 20, Wrist = 10, In = -4, Hip = 10, Knee = -20, Waist = 18, Drop = 0.03, Easing = Enum.EasingStyle.Quad }),
+		key(3.5, { Arm = 40, Elbow = 12, Wrist = -20, In = 12, Hip = 35, Knee = -70, Waist = -44, Drop = 0.36, Cam = Vector3.new(0, -0.6, 0), Easing = Enum.EasingStyle.Quint }),
+		key(3.85, { Arm = 36, Elbow = 14, Wrist = -16, In = 12, Hip = 35, Knee = -70, Waist = -40, Drop = 0.36 }),
+		key(4.4, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+	Tremble = { Turn = 1.2, Arm = 2.4, Waist = 1.2, From = 0.6, Full = 3, Until = 3.15 },
+}
+CastPose.Clips.HydraVent = {
+	Rate = 40, StanceLegsFrom = 0,
+	Keys = {
+		key(0, { Stance = true }),
+		key(0.05, { Arm = 150, Elbow = 100, Wrist = 10, In = 30, Waist = 4, Easing = Enum.EasingStyle.Quad }),
+		key(0.27, { Arm = 72, Elbow = 62, Wrist = 0, In = 30, Hip = 14, Knee = -28, Waist = -10, Drop = 0.06, Cam = Vector3.new(0, -0.22, 0), Easing = Enum.EasingStyle.Quint }),
+		key(0.36, { Arm = 66, Elbow = 58, In = 28, Hip = 8, Knee = -16, Waist = -4, Drop = 0.03, Easing = Enum.EasingStyle.Quad }),
+		key(0.7, { Stance = true, Easing = Enum.EasingStyle.Sine }),
+	},
+}
+
 ----------------------------------------------------------------------------------------------------
 -- rig adapters
 ----------------------------------------------------------------------------------------------------
@@ -1650,23 +1766,9 @@ end
 
 --- The stance pose for this frame, including its cycle. Called once per character per frame --
 --- the phase advances inside, so a second call would double-step it.
-local HEAT_CHANNELS = { "Arm", "Elbow", "In", "Waist", "Hip", "Knee" }
-
---- Heat Rush's stance for this frame: Low to High by the character's smoothed Heat, and the stride's four
---- amplitudes and its cadence along with them.
-local function heatStance(def, h)
-	local lo, hi = def.Low, def.High
-	local out = { Cadence = lerp(lo.Cadence, hi.Cadence, h) }
-	for _, ch in ipairs(HEAT_CHANNELS) do out[ch] = lerp(lo[ch] or 0, hi[ch] or 0, h) end
-	local a, b = lerp(lo.Stride[1], hi.Stride[1], h), lerp(lo.Stride[2], hi.Stride[2], h)
-	local c, d = lerp(lo.Stride[3], hi.Stride[3], h), lerp(lo.Stride[4], hi.Stride[4], h)
-	out.Cycle = function(phase, amt) return strideSample(a, b, c, d, phase, amt) end
-	return out
-end
 
 local function stanceTarget(state, dt)
 	local def = CastPose.Stances[state.Stance] or CastPose.Stances.Ready
-	if def.Low then def = heatStance(def, state.Heat or 0) end
 	local over = tuning[state.Stance]
 	local out = blankPose()
 	for _, ch in ipairs(LIMB) do
@@ -1715,7 +1817,7 @@ local function keyOff(k, ch, restArm, fromArm)
 	return k.Off[ch] or 0
 end
 
---- A BASE clip's held pose (the Cinder Shield hold): its last key's arms and torso, over the stance's legs.
+--- A BASE clip's held pose (the Scorching Lash hold): its last key's arms and torso, over the stance's legs.
 local function basePose(clip, stance)
 	local last = clip.Keys[#clip.Keys]
 	local out = blankPose()
@@ -1803,9 +1905,6 @@ local function step(dt)
 				state.Written = {}
 			end
 
-			-- Heat Rush's stance answers to Heat, smoothed here: it arrives as a replicated attribute in steps
-			state.Heat = (state.Heat or 0)
-				+ ((character:GetAttribute("Heat") or 0) - (state.Heat or 0)) * math.clamp(6 * dt, 0, 1)
 			local stance = stanceTarget(state, dt)
 			-- the Frostblade runner's Naruto run: the upper body over the stance (legs and stride its own), never over a cast
 			local fb = frostblade()
@@ -1824,8 +1923,8 @@ local function step(dt)
 					warn("[CastPose] Frost Lotus hold: " .. tostring(err))
 				end
 			end
-			-- REST is what the body settles on between clips: the stance, or a BASE clip's held pose (the Cinder
-			-- Shield hold), which a clip played over it leaves from and comes back to. Legs stay the stance's.
+			-- REST is what the body settles on between clips: the stance, or a BASE clip's held pose (the Scorching
+			-- Lash hold), which a clip played over it leaves from and comes back to. Legs stay the stance's.
 			local rest = stance
 			if state.Base and state.Clip ~= state.Base then rest = basePose(state.Base, stance) end
 			local restRate = state.Base and (state.Base.Rate or CastPose.Config.BlendIn) or CastPose.Config.StanceBlend
@@ -2012,13 +2111,9 @@ end
 ----------------------------------------------------------------------------------------------------
 -- character registry
 ----------------------------------------------------------------------------------------------------
---- Which stance a character is on: its MoveState's, except that holding Heat Rush (the HeatRush attribute)
---- runs on the Heat Rush stance unless crouched or sliding.
+--- Which stance a character is on: its MoveState's.
 local function stanceFor(character)
 	local moveState = character:GetAttribute("MoveState") or "None"
-	if character:GetAttribute("HeatRush") and moveState ~= "Slide" and moveState ~= "Crouch" then
-		return "HeatRush"
-	end
 	return STANCE_FOR_STATE[moveState] or "Ready"
 end
 
@@ -2041,7 +2136,6 @@ local function stateFor(character)
 		Cur = blankPose(),
 		Cam = ZERO,
 		CyclePhase = 0, CycleAmt = 0,
-		Heat = 0,            -- Heat Rush's Heat, smoothed
 		Base = nil,          -- a held clip the body rests on instead of the stance (SetBase)
 		Aim = nil,           -- a world point the right arm points at (SetAim)
 	}
@@ -2095,7 +2189,6 @@ function CastPose.Start()
 			cur.Stance = stanceFor(character)
 		end
 		character:GetAttributeChangedSignal("MoveState"):Connect(restance)
-		character:GetAttributeChangedSignal("HeatRush"):Connect(restance)
 		-- Earthen Tomb: the SMASH while the server's TombPhase says the cast is live, then the RAISE for as long as the
 		-- platform climbs -- clocked by the climb itself (TombRiseAt / TombRiseFor, set with the phase on the same server
 		-- line). Both let go the instant the phase says the Tomb is over: the catch, a miss, a death, a round reset.
@@ -2192,7 +2285,7 @@ function CastPose.PlayClocked(character, clipName, clock)
 	end
 end
 
---- Rest a character's body on a HELD clip's final pose instead of its stance (the Cinder Shield hold): clips
+--- Rest a character's body on a HELD clip's final pose instead of its stance (the Scorching Lash hold): clips
 --- played over it leave from it and come back to it, and the legs keep the stance's stride. nil lets go.
 function CastPose.SetBase(character, clipName)
 	local s = stateFor(character)

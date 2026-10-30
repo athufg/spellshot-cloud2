@@ -14,11 +14,15 @@
 	                 the next Heartbeat; a new body the first Heartbeat it exists.
 	  AIRBORNE       ZephyrUpdraft.Airborne(character): MinClearance studs of air under the feet by a short downward sphere
 	                 cast, and not climbing, swimming or seated. Each Heartbeat notes every holder that is airborne
-	                 (ZephyrUpdraft.NoteAirborne), so a hit or a knock within AirGrace of it still counts.
+	                 (ZephyrUpdraft.NoteAirborne), so a hit or a knock within AirGrace of it still counts. NOT air someone
+	                 else put the body in (2026-10-19, audit P4-04: `thrown`, below): held by an Earthen Tomb (RX_Entombed),
+	                 or still carried by a knock, a launch or an enemy Cyclone (KnockedUntil, server time, written by
+	                 whoever threw it) -- crowd control must not buff its victim.
 	  DAMAGE         CombatCore.AddModifier(ModifierPriority = -6): x DamageMult on every hit an airborne holder lands --
-	                 after Mark (-10) and Toxin's amplifier (-8), before Bedrock (1), Bulwark Charge (5), Heat Rush (10)
+	                 after Mark (-10) and Toxin's amplifier (-8), before Bedrock (1), Bulwark Charge (5)
 	                 and every soak, so a shield in front of the victim soaks the raised amount. Not a burn tick
-	                 (info.DoT), not the holder's own body, and not a hit whose info says NoUpdraft = true. A hit whose
+	                 (info.DoT), a reaction's bonus, a chain or a status's damage (info.Reaction / Chain / Status:
+	                 2026-10-19, audit P3-17), not the holder's own body, and not a hit whose info says NoUpdraft = true. A hit whose
 	                 info carries UpdraftAir (a boolean: airborne at the shot's RELEASE) is judged by that instead of
 	                 by the moment the hit lands -- Wind Blade's, whose report comes a flight and a round trip later.
 	  THE HIT        CombatCore.OnHitLanded: a hit this modifier raised broadcasts UpdraftHit { Character = the holder's
@@ -42,6 +46,14 @@ local Core = require(script.Parent:WaitForChild("CombatCore"))
 
 local T = Updraft.Tuning
 
+--- (2026-10-19, audit P4-04) Air that is not the holder's own: an Earthen Tomb holds the body up on a pillar only the clients
+--- draw (the server sees nothing under it), and a knock, a launch or an enemy Cyclone throws it. Each thrower stamps
+--- KnockedUntil (server time) on the body for the throw and its fall; the Tomb's RX_Entombed lasts its whole hold.
+local function thrown(character)
+	return character:GetAttribute("RX_Entombed") == true
+		or workspace:GetServerTimeNow() < (character:GetAttribute("KnockedUntil") or 0)
+end
+
 ----------------------------------------------------------------------------------------------------
 -- who holds it, and who is airborne (every Heartbeat)
 ----------------------------------------------------------------------------------------------------
@@ -59,7 +71,7 @@ RunService.Heartbeat:Connect(function()
 			end
 			if holds then
 				local ok, air = pcall(Updraft.Airborne, character, false)
-				if ok and air then Updraft.NoteAirborne(player, now) end
+				if ok and air and not thrown(character) then Updraft.NoteAirborne(player, now) end
 			end
 		end
 	end
@@ -76,7 +88,8 @@ local raised = setmetatable({}, { __mode = "k" })
 Core.AddModifier(T.ModifierPriority, function(victim, amount, info, caster)
 	raised[victim] = nil
 	if typeof(caster) ~= "Instance" or not caster:IsA("Player") then return amount end
-	if type(info) == "table" and (info.DoT or info.NoUpdraft) then return amount end
+	-- (2026-10-19, audit P3-17) nor a reaction's bonus, a chain's arc or a status's own damage: not the holder's shot
+	if type(info) == "table" and (info.DoT or info.NoUpdraft or info.Reaction or info.Chain or info.Status) then return amount end
 	local character = caster.Character
 	if not character or victim.Parent == character then return amount end      -- never on your own body
 	if not Updraft.Holds(caster) then return amount end
@@ -85,7 +98,8 @@ Core.AddModifier(T.ModifierPriority, function(victim, amount, info, caster)
 	-- hand (up to 0.33 s + ping), far past AirGrace: judged at the hit, a blade thrown in the air just before landing lost
 	-- the bonus, and one thrown from the floor just before a jump got it.
 	local air = type(info) == "table" and info.UpdraftAir
-	if type(air) ~= "boolean" then air = Updraft.IsAirborne(caster) end
+	-- (a release's snapshot already asked `thrown`: ZephyrHandler.updraftAirborne)
+	if type(air) ~= "boolean" then air = Updraft.IsAirborne(caster) and not thrown(character) end
 	if not air then return amount end
 	raised[victim] = caster
 	return amount * T.DamageMult

@@ -231,7 +231,7 @@ local Tuning = {
 	WipeTime = 0.06,                         -- s a stopped crescent takes to go (ZephyrFX's WipeTime)
 	-- KNOTS per piece (one Beam per span = knots - 1). The kit samples 11-30 points; these hold the budget above.
 	Knots = { Lens = 5, LensRows = 5, Core = 5, Rim = 5, Accent = 3, Wake = 4, Spiral = 4, Swirl = 7, Cut = 3, Scratch = 2 },
-	MaxDrawn = 16,                           -- blades drawn at once (the oldest beyond fly and hit, undrawn)
+	MaxDrawn = 16,                           -- blades drawn at once, by priority (drawFrame; the rest fly and hit, undrawn)
 	CanvasKeep = 8,                          -- idle canvases kept per pool
 	MaxLife = 3,                             -- s: a blade's look is dropped this long after its release, whatever it is doing
 	-- studs over which a blade that leaves a hand off its line (the demo's third person) eases onto it: the kit's MERGE
@@ -403,7 +403,9 @@ local bodies = {}                   -- [model] = true
 local function watchBody(d)
 	if d:IsA("Humanoid") then
 		local m = d.Parent
-		if m and m:IsA("Model") then bodies[m] = true end
+		-- (2026-10-19, audit GC-05) a model stamped WallOwner (Terra's Bulwark Wall carries a Humanoid) is a wall, not a
+		-- body: the blade stops on it rather than spending a pierce and flying on through
+		if m and m:IsA("Model") and m:GetAttribute("WallOwner") == nil then bodies[m] = true end
 	end
 end
 -- ZephyrFX built this when it was required; it is built here when this is (the ZephyrFX stub warms this module up on
@@ -461,7 +463,7 @@ local function pushBurst(bl, kind, pos, n, spec, dir, sizeMul)
 	local size = spec.Size
 	if size and sizeMul and sizeMul ~= 1 then size = { size[1] * sizeMul, size[2] * sizeMul } end
 	pending[#pending + 1] = {
-		Kind = kind, Pos = pos, N = n, Own = bl.Own == true,
+		Kind = kind, Pos = pos, N = n, Own = bl.Own == true or bl.Friendly == true,   -- the canvas: audit P5F-06 below
 		O = { speed = spec.Speed, life = spec.Life, size = size, dir = dir, cone = spec.Cone, grow = spec.Grow,
 			up = spec.Up or Tuning.Debris.Up, seed = burstSerial },
 	}
@@ -526,7 +528,8 @@ local function sweep(bl, from, to)
 		if delta.Magnitude < 1e-3 then return nil end
 		local solid = workspace:Raycast(from, delta, bl.Params)
 		local solidModel = solid and solid.Instance:FindFirstAncestorOfClass("Model")
-		local solidHum = solidModel and solidModel:FindFirstChildOfClass("Humanoid")
+		local solidHum = solidModel and solidModel:GetAttribute("WallOwner") == nil   -- (2026-10-19, GC-05) a wall is world
+			and solidModel:FindFirstChildOfClass("Humanoid")
 		local wide = nil
 		if radius > 0 and bl.WideParams and bl.WideList and #bl.WideList > 0 then
 			wide = workspace:Spherecast(from, radius, delta, bl.WideParams)
@@ -1132,8 +1135,23 @@ local function drawFrame(now, scale, cam)
 	end
 	local softFlash = reduceFlashing()
 	local camPos = cam and cam.CFrame.Position
-	local drawn = 0
-	for i = #blades, 1, -1 do                    -- newest first: past MaxDrawn the oldest go undrawn
+	-- (2026-10-19, audit P5E-07) the MaxDrawn slots go by PRIORITY, not age: other players' blades still flying (the
+	-- only telegraph of a hit coming at you), then yours still flying, then the stopped ones kept only for their hit's
+	-- look -- each newest first. What is left over flies and hits, undrawn.
+	local left = Tuning.MaxDrawn
+	for _, bl in ipairs(blades) do bl.DrawOK = false end
+	for pass = 1, 3 do
+		for i = #blades, 1, -1 do
+			if left <= 0 then break end
+			local bl = blades[i]
+			local flying = bl.StopT == nil
+			if not bl.DrawOK and ((pass == 1 and flying and not bl.Own) or (pass == 2 and flying) or pass == 3) then
+				bl.DrawOK = true
+				left -= 1
+			end
+		end
+	end
+	for i = #blades, 1, -1 do
 		local bl = blades[i]
 		local t = (now - bl.T0) * scale
 		bl.Travel = (bl.Own and bl.Offset and camPos and bl.CamStart) and (camPos - bl.CamStart) or ZERO
@@ -1141,8 +1159,7 @@ local function drawFrame(now, scale, cam)
 			local ok, err = pcall(kickFloor, bl)
 			if not ok then warnOnce("kick", "the Wind Blade floor debris failed: " .. tostring(err)) end
 		end
-		drawn += 1
-		if drawn <= Tuning.MaxDrawn and bl.UpS then
+		if bl.DrawOK and bl.UpS then
 			bl.Canvas = bl.Canvas or takeCanvas("WindBlade")
 			if bl.Canvas then paint(bl.Canvas, t, drawBlade, bl, t, bl.Dist, bl.StopT, bl.Travel) end
 			if #bl.Hits > 0 then
@@ -1269,6 +1286,11 @@ local function prepareLook(bl, opts)
 	bl.KickAt = 1
 	-- the first blade of a burst (v4 flashes the first hit of each burst)
 	local key = bl.Own and "own" or casterKey(bl.Exclude)
+	-- (2026-10-19, audit P5F-06) a teammate's blade bursts on the Own canvas too: Reduce Enemy VFX thins an enemy's only
+	do
+		local Z = zd()
+		bl.Friendly = typeof(key) == "Instance" and Z ~= nil and type(Z.Friendly) == "function" and Z.Friendly(key) == true
+	end
 	local last = lastFire[key]
 	bl.BurstFirst = (last == nil) or ((bl.T0 - last) * timeScale() > T.Light.BurstGap)
 	if not bl.Planned then lastFire[key] = bl.T0 end

@@ -12,10 +12,17 @@
 	"Hitbox". They stay at Transparency 1 -- this script puts back anything that changes it, as HitboxGuard does on each
 	client -- or at Config.Hitbox.ShowAlpha while workspace's "ShowHitboxes" attribute is true (for testing).
 	A body part replaced later (UniformAvatar's ApplyDescription) gets a new twin; a twin goes with its part.
+	AREA EFFECTS TOO (2026-10-19, audit P3-16: written down, not changed -- the owner's call). A twin is CanQuery, so every
+	area check that asks for parts in a radius (CombatCore.HumanoidsNear: Flash Freeze, Fireball splash, Volt Orb, Charged
+	discharge and Chain Bolt legs, the clouds, pads and zones) reaches a body up to (Scale - 1) x half a part further out;
+	the checks that measure root distance (Cascade, Combustion, Deep Freeze, Blizzard) do not, and nor do raycasts that
+	respect CanCollide (twins never collide). To keep areas at 1x, HumanoidsNear would skip parts tagged "Hitbox".
+	A DEAD PLAYER's body stops answering queries (2026-10-19, audit P6B-10): CanQuery off on its parts and twins.
 	To take it out: Config.Hitbox.Scale = 1 (nothing is built), or delete this and StarterPlayerScripts.HitboxGuard.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("SpellshotConfig"))
@@ -86,6 +93,19 @@ local function setup(model)
 			end)
 		end
 	end)
+	-- (2026-10-19, audit P6B-10 / GC-01) a body is scenery, not cover (manual, Section 3): once a PLAYER's character is
+	-- dead, no part of it -- the twins above all -- answers a ray or an overlap, so in a team round the body (which stays
+	-- until the next round's LoadCharacter) no longer eats shots. Dummies are left alone: they refill rather than die.
+	-- (Roblox ignores CanQuery on a part that still collides, so a corpse's own colliding parts keep answering; the 2x
+	-- twins, which never collide, were the wide blocker.)
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if humanoid and Players:GetPlayerFromCharacter(model) then
+		humanoid.Died:Once(function()
+			for _, d in model:GetDescendants() do
+				if d:IsA("BasePart") then pcall(function() d.CanQuery = false end) end
+			end
+		end)
+	end
 end
 
 local function onHumanoid(humanoid)

@@ -28,10 +28,45 @@ local SkinCatalog = require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForC
 local FB = {}
 FB.Id = "Frostblade"
 
+-- (2026-10-26) THE SHOWCASE CONVENTION: a client-only model no player owns, with the attribute ShowcaseSkin = "<SkinId>"
+-- (the Loadout Altar's dummies, the pedestal's held M1), wears that skin -- live and in Studio. Every such model asked
+-- about (On) or seen entering the workspace (the lazy block below) is kept here wherever it sits (the showcases parent
+-- theirs in their own folders), so the lazy build and its release count it until it leaves the workspace.
+local showcase = {}
+--- whether `m` is a showcase stand-in wearing Frostblade (one wearing any skin is kept)
+function FB.Showcase(m)
+	local id = typeof(m) == "Instance" and m:GetAttribute("ShowcaseSkin")
+	if type(id) ~= "string" or Players:GetPlayerFromCharacter(m) then return false end
+	if not showcase[m] then                            -- (2026-10-26) pruned on insert: destroyed stand-ins don't pile up
+		for k in pairs(showcase) do
+			if not k:IsDescendantOf(workspace) then showcase[k] = nil end
+		end
+		showcase[m] = true
+	end
+	return id == FB.Id
+end
+--- the showcase stand-ins in the workspace wearing Frostblade now
+function FB.Showcased()
+	local out = {}
+	for m in pairs(showcase) do
+		if not m:IsDescendantOf(workspace) then
+			showcase[m] = nil
+		elseif m:GetAttribute("ShowcaseSkin") == FB.Id then
+			out[#out + 1] = m
+		end
+	end
+	return out
+end
+
 --- Whether `character`'s player wears Frostblade (their Cryo skin, while Cryo is their Element).
 function FB.On(character)
 	if typeof(character) ~= "Instance" then return false end
 	local plr = Players:GetPlayerFromCharacter(character)
+	-- (2026-10-26) a showcase stand-in (ShowcaseSkin), live too; it starts the build (FB.Build: one at a time)
+	if not plr and FB.Showcase(character) then
+		if not (FB.Built or FB.Failed) then FB.Build() end
+		return true
+	end
 	-- Studio only: a dummy with StudioSkin stands in for a caster (the skins' side-by-side test); never live
 	if not plr then return game:GetService("RunService"):IsStudio() and character:GetAttribute("StudioSkin") == FB.Id end
 	if (plr:GetAttribute("Element") or "Cryo") ~= "Cryo" then return false end
@@ -215,10 +250,15 @@ local function vkey(v)
 	return string.format("%d,%d,%d", math.floor(v.X * 4000 + 0.5), math.floor(v.Y * 4000 + 0.5), math.floor(v.Z * 4000 + 0.5))
 end
 
+-- (2026-10-19) the shared EditableMesh budget's order: this kit's meshes come first (MeshBudget)
+local MeshBudget = require(script.Parent:WaitForChild("MeshBudget"))
+
 local function retry(make)
-	for _ = 1, 40 do
+	for i = 1, 40 do
 		local ok, m = pcall(make)
 		if ok and m then return m end
+		if i % 8 == 1 then MeshBudget.MakeRoom() end       -- (refused: the optional holders let go of what they can;
+		                                                  -- asked again every 2 s, as one still in use may be free by then)
 		task.wait(0.25)
 	end
 	error("EditableMesh budget: gave up", 0)
@@ -233,40 +273,51 @@ local function meshPart(tris)
 	end
 	local c = (lo + hi) / 2
 	local em = retry(function() return AssetService:CreateEditableMesh() end)
-	local verts, cols, norms = {}, {}, {}
-	local uv = nil
-	pcall(function() uv = em:AddUV(Vector2.zero) end)
-	local function vtx(p)
-		local k = vkey(p)
-		local id = verts[k]
-		if not id then id = em:AddVertex(p) verts[k] = id end
-		return id
+	-- (2026-10-19, audit GB-01) the writes and the fixed copy guarded, FrostDragonKit's way: the resizable mesh is freed
+	-- on every path, not left allocated (and the shared budget lowered) when a step raises
+	local okB, errB = pcall(function()
+		local verts, cols, norms = {}, {}, {}
+		local uv = nil
+		pcall(function() uv = em:AddUV(Vector2.zero) end)
+		local function vtx(p)
+			local k = vkey(p)
+			local id = verts[k]
+			if not id then id = em:AddVertex(p) verts[k] = id end
+			return id
+		end
+		local function col(cl)
+			local k = cl:ToHex()
+			local id = cols[k]
+			if not id then id = em:AddColor(cl, 1) cols[k] = id end
+			return id
+		end
+		local function nrm(n)
+			local k = vkey(n)
+			local id = norms[k]
+			if not id then id = em:AddNormal(n) norms[k] = id end
+			return id
+		end
+		for _, t in ipairs(tris) do
+			local a, b, cc = t[1] - c, t[2] - c, t[3] - c
+			local ca, cb, ccl, n = t[4], t[5], t[6], t[7]
+			-- a front face's corners run counter-clockwise seen from outside (its edges' cross product points out)
+			if (b - a):Cross(cc - a):Dot(n) < 0 then b, cc, cb, ccl = cc, b, ccl, cb end
+			local f = em:AddTriangle(vtx(a), vtx(b), vtx(cc))
+			em:SetFaceColors(f, { col(ca), col(cb), col(ccl) })
+			local ni = nrm(n)
+			em:SetFaceNormals(f, { ni, ni, ni })
+			if uv then pcall(em.SetFaceUVs, em, f, { uv, uv, uv }) end
+		end
+	end)
+	if not okB then
+		em:Destroy()
+		error(errB, 0)
 	end
-	local function col(cl)
-		local k = cl:ToHex()
-		local id = cols[k]
-		if not id then id = em:AddColor(cl, 1) cols[k] = id end
-		return id
-	end
-	local function nrm(n)
-		local k = vkey(n)
-		local id = norms[k]
-		if not id then id = em:AddNormal(n) norms[k] = id end
-		return id
-	end
-	for _, t in ipairs(tris) do
-		local a, b, cc = t[1] - c, t[2] - c, t[3] - c
-		local ca, cb, ccl, n = t[4], t[5], t[6], t[7]
-		-- a front face's corners run counter-clockwise seen from outside (its edges' cross product points out)
-		if (b - a):Cross(cc - a):Dot(n) < 0 then b, cc, cb, ccl = cc, b, ccl, cb end
-		local f = em:AddTriangle(vtx(a), vtx(b), vtx(cc))
-		em:SetFaceColors(f, { col(ca), col(cb), col(ccl) })
-		local ni = nrm(n)
-		em:SetFaceNormals(f, { ni, ni, ni })
-		if uv then pcall(em.SetFaceUVs, em, f, { uv, uv, uv }) end
-	end
-	local fixed = retry(function() return AssetService:CreateEditableMeshAsync(Content.fromObject(em), { FixedSize = true }) end)
+	local okF, fixed = pcall(retry, function()
+		return AssetService:CreateEditableMeshAsync(Content.fromObject(em), { FixedSize = true })
+	end)
 	em:Destroy()
+	if not okF then error(fixed, 0) end
 	keep[#keep + 1] = fixed
 	local ok, mp = pcall(function()
 		return AssetService:CreateMeshPartAsync(Content.fromObject(fixed), { CollisionFidelity = Enum.CollisionFidelity.Box })
@@ -315,16 +366,54 @@ local function buildKind(name)
 end
 
 local ORDER = { "Shard", "Bolt", "Big", "Small", "Edge", "Frag", "Nick", "Hand", "Trap", "Tiny", "Ring" }
+local attempts = 0                -- builds tried: a failed one is tried again later, a few times
+local usedAt = 0                  -- the last New / Place / Get (a kit nobody wears lets go of its meshes, below)
+local releaseHooks = {}           -- the pools of this kit's pieces elsewhere (OnRelease): emptied with it
+function FB.OnRelease(fn) releaseHooks[#releaseHooks + 1] = fn end
+local wanted = function() return true end   -- whether anybody here still wears the skin (the lazy block's, below)
 function FB.Build()
-	if building then return end
+	if building or FB.Built then return end
 	building = true
+	FB.Failed = nil
+	attempts += 1
+	MeshBudget.Essential(FB.Id, true)         -- (while it builds, no optional mesh starts)
 	task.spawn(function()
+		-- (2026-10-19, audit P5A-08) all or nothing, FrostDragonKit's rule: Built only when every kind built; else Failed,
+		-- the templates and meshes freed, and On() stays false so every piece draws the Default (as the header promises)
+		local failed = false
 		for _, name in ipairs(ORDER) do
 			local ok, err = pcall(buildKind, name)
-			if not ok then warn("[FrostbladeKit] " .. name .. ": " .. tostring(err)) end
+			if not ok then
+				failed = true
+				warn("[FrostbladeKit] " .. name .. ": " .. tostring(err))
+				break                                       -- (the rest would only wait on the same budget)
+			end
 			task.wait()
 		end
+		if failed then
+			for _, k in pairs(kinds) do
+				for _, key in ipairs({ "Body", "Core", "Line" }) do
+					local mp = k[key]
+					if mp then pcall(function() mp:Destroy() end) end
+				end
+			end
+			for _, m in ipairs(keep) do pcall(function() m:Destroy() end) end
+			table.clear(kinds)
+			table.clear(keep)
+			FB.Failed = true
+			MeshBudget.Essential(FB.Id, false)
+			-- not for good (2026-10-19): the budget frees as wraps and other effects let go of theirs, so the build is tried
+			-- again while somebody still wears the skin -- after 15, 30, 60 and 120 s -- before the Default stays
+			building = false
+			if attempts < 5 then
+				task.delay(15 * 2 ^ (attempts - 1), function() if wanted() then FB.Build() end end)
+			end
+			return
+		end
 		FB.Built = true
+		building = false                          -- (2026-10-27) left true, releaseKit never let a built kit go: the Loadout's
+		                                          -- browsed skins held their meshes all session and starved every later build
+		MeshBudget.Essential(FB.Id, false)
 	end)
 end
 
@@ -337,6 +426,7 @@ end
 -- a kunai in the world: New(kind) -> { Body, Core?, Line? }; Place it at its frame K (scale `s`, `sy` along its length)
 ----------------------------------------------------------------------------------------------------
 function FB.New(name, parent)
+	usedAt = os.clock()
 	local k = kinds[name]
 	if not k then return nil end
 	local o = { Kind = k, Body = k.Body:Clone(), S = 1, SY = 1, F = -1 }
@@ -372,6 +462,7 @@ function FB.Fade(o, f)
 end
 
 function FB.Place(o, K, parts, cframes, s, sy)
+	usedAt = os.clock()
 	s, sy = s or 1, sy or 1
 	local k = o.Kind
 	local sv = Vector3.new(s, s * sy, s)
@@ -701,22 +792,69 @@ end
 -- LAZY build (2026-10-17, as FrostDragonKit): only once a player in the server wears this skin, or -- in Studio -- a test
 -- dummy stands in for it (StudioSkin). Every Cryo skin and wrap shares one EditableMesh budget per client; a kit nobody
 -- in the server wears takes none of it (eager builds of all four overran it, and the worn skin fell back to the Default).
+--- MeshBudget's Optional (2026-10-19): a built kit nobody here wears right now -- no player is Cryo in this skin, no Studio
+--- stand-in -- and that placed no piece for 10 s lets go of every mesh, so another Element's worn wrap (Terra's Obsidian
+--- Magma) can have the budget; the next player to be Cryo in the skin builds it again. Its pooled pieces elsewhere go
+--- with it (OnRelease). Built goes false first, so whatever asks from now on draws the Default.
+local function releaseKit()
+	if building or not FB.Built or os.clock() - usedAt < 10 then return end
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr.Character and FB.On(plr.Character) then return end
+	end
+	if RunService:IsStudio() then
+		for _, m in ipairs(workspace:GetChildren()) do
+			if m:IsA("Model") and m:GetAttribute("StudioSkin") == FB.Id then return end
+		end
+	end
+	if #FB.Showcased() > 0 then return end              -- (2026-10-26) a showcase stand-in wears it, live and in Studio
+	FB.Built = false
+	for _, fn in ipairs(releaseHooks) do pcall(fn) end
+	for _, k in pairs(kinds) do
+		for _, key in ipairs({ "Body", "Core", "Line" }) do
+			local mp = k[key]
+			if mp then pcall(function() mp:Destroy() end) end
+		end
+	end
+	for _, m in ipairs(keep) do pcall(function() m:Destroy() end) end
+	table.clear(kinds)
+	table.clear(keep)
+	attempts = 0
+end
+MeshBudget.Optional(releaseKit)
+--- (2026-10-26) the same let-go without the 10 s idle wait: the Altar showcase calls it on a swap, once the piece that
+--- showed this skin is gone (still nothing if a player wears it, a stand-in still shows it, or it is building)
+function FB.ReleaseNow()
+	usedAt = 0
+	releaseKit()
+end
+
 do
-	local lazyStarted = false
+	-- (2026-10-19) one build at a time; after a failed one, the next player to put the skin on starts another
 	local function go()
-		if lazyStarted then return end
-		lazyStarted = true
 		FB.Build()
 	end
 	local attr = SkinCatalog.ElementSkinAttr("Cryo")
 	local function check(plr)
-		if lazyStarted then return end
+		if FB.Built then return end
 		local ok, id = pcall(SkinCatalog.ElementSkin, plr, "Cryo")
-		if ok and id == FB.Id then go() end
+		if ok and id == FB.Id and (plr:GetAttribute("Element") or "Cryo") == "Cryo" then go() end
+	end
+	wanted = function()
+		for _, plr in ipairs(Players:GetPlayers()) do
+			local ok, id = pcall(SkinCatalog.ElementSkin, plr, "Cryo")
+			if ok and id == FB.Id and (plr:GetAttribute("Element") or "Cryo") == "Cryo" then return true end
+		end
+		if RunService:IsStudio() then
+			for _, m in ipairs(workspace:GetChildren()) do
+				if m:IsA("Model") and m:GetAttribute("StudioSkin") == FB.Id then return true end
+			end
+		end
+		return #FB.Showcased() > 0                         -- (2026-10-26) a showcase stand-in, live and in Studio
 	end
 	local function watch(plr)
 		check(plr)
 		plr:GetAttributeChangedSignal(attr):Connect(function() check(plr) end)
+		plr:GetAttributeChangedSignal("Element"):Connect(function() check(plr) end)   -- (back to Cryo: a released kit again)
 	end
 	for _, plr in ipairs(Players:GetPlayers()) do watch(plr) end
 	Players.PlayerAdded:Connect(watch)
@@ -724,6 +862,11 @@ do
 		local function dummy(m) if m:IsA("Model") and m:GetAttribute("StudioSkin") == FB.Id then go() end end
 		for _, m in ipairs(workspace:GetChildren()) do dummy(m) end
 		workspace.ChildAdded:Connect(function(m) task.defer(dummy, m) end)
+	end
+	-- (2026-10-26) a showcase stand-in (ShowcaseSkin, live and in Studio) builds it too, wherever in the workspace it is put
+	if RunService:IsClient() then
+		local function stand(m) if m.Parent and FB.Showcase(m) then go() end end
+		workspace.DescendantAdded:Connect(function(m) if m:IsA("Model") then task.defer(stand, m) end end)
 	end
 end
 return FB

@@ -1187,7 +1187,9 @@ function Ring.RingOfFire(character, center, radius, hot, serverT0, startAngle, o
 	end
 
 	local handle = D.Play("PyroRing", frame, {
-		Clock = function() return os.clock() - t0 end, own = own, hot = hot, density = bound.Density,
+		-- (2026-10-19, audit P5F-06) thinned only for an ENEMY's ring (S.own keeps "the local player's" for the view)
+		Clock = function() return os.clock() - t0 end, own = own or (type(D.Spared) == "function" and D.Spared(character)) or false,
+		hot = hot, density = bound.Density,
 		MaxLife = tSnap + V.BurnDown + 5,
 		OnEnd = function()
 			if drawing then

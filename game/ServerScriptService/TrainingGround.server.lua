@@ -3,6 +3,12 @@
 
 	Runs the test range in workspace.TrainingGround.
 
+	Since 2026-10-20 it is THE one practice space, about 360 x 400 at the origin, for both SOLO TEST and the Hub's Training
+	portal (both land on the spawn facing -Z, on map "TrainingGround"). Three zones run downrange (-Z) from the firing line
+	at z 0: CLOSE (0-40, the dense cluster), MID + BOARDS (40-150, the boards' lane at x 80-130) and OPEN (150-350, the
+	movers). The plain floor, the 25-stud distance lines and the low walls are TrainingGround.Set; the gate back to the Hub
+	is TrainingGround.Interact.TG_ReturnPortal_Pane (HubServer wires it). How to undo: maps\training_grounds\CHANGES.md.
+
 	DUMMIES  (Models with a Humanoid and the TrainingDummy attribute)
 	  * take real damage from every ability, and pop each hit's number above the head (callouts then
 	    grow and shrink with each viewer's distance -- PopupScaler, client)
@@ -13,12 +19,18 @@
 	  * refill to full REFILL_AFTER seconds after the last hit
 	  * a dummy with StrafeA / StrafeB attributes walks back and forth between them, for practising
 	    leading a moving target
+	  * a dummy with PatrolA, PatrolB, PatrolC (and PatrolD) loops them in order at PatrolSpeed (2026-10-20)
+	  * an anchored dummy with FlickerRadius / FlickerEvery jumps to a new spot in that disc every FlickerEvery
+	    seconds, for flick-aim practice (2026-10-20)
 	  * a dummy with the Thrower attribute throws a plain practice shot (the "snowball") at you, and the SNOWBALLS pad in
 	    the range (ThrowerSwitch) pauses and starts it -- see THE THROWER and THE THROWER SWITCH below
 
 	BOARDS  (Models with the TargetBoard attribute; the plate with the rings is the part "Face")
 	  AbilityHandler fires ServerStorage.ShotImpact for every M1 impact. A hit on a board leaves a mark
 	  where it landed and pops the ring score: 10 in the bull, then 8 / 6 / 4 / 2 outward.
+	  (2026-10-20) So do the other kits' M1 handlers: Pyro, Zephyr, Terra, Voltaic and Umbra already did, and Aqua's
+	  Riptide (and Sidearm) and Toxin's bubble now do too. Radiant's Light Lance claims bodies only, never a world point,
+	  so it cannot score a board. A board scores only inside workspace.TrainingGround.
 
 	THE CALLOUTS THEMSELVES ARE NOT THIS SCRIPT'S ANY MORE. They were, and that was a bug: every
 	damage number and KO! in the game was built here and attached only to dummies, so hitting a real
@@ -85,7 +97,9 @@ local shots = {}          -- [id] = the live shot
 local shotSerial = 0
 
 local function inRange(player)
+	-- never a duellist (2026-10-19, audit P1-04): the thrower is the Solo Test's, and its TakeDamage skips every shield
 	return player:GetAttribute("Zone") == "Arena" and player:GetAttribute("Map") == "TrainingGround"
+		and player:GetAttribute("DuelMatch") == nil
 end
 
 local function broadcast(action, shot, extra)
@@ -157,7 +171,8 @@ local function land(shot, position, body)
 	elseif humanoid and humanoid.Health > 0 then
 		local amount = shot.Damage
 		if shot.State == "Out" then
-			amount = math.min(amount, math.max(0, humanoid.Health - PT.HitFloor))
+			-- 2026-10-23: nothing once the target has left the range (a shot still in flight after the Hub refill)
+			amount = inRange(shot.Target) and math.min(amount, math.max(0, humanoid.Health - PT.HitFloor)) or 0
 		end
 		if amount > 0 then humanoid:TakeDamage(amount) end
 	end
@@ -184,7 +199,8 @@ end)
 --- THE PARRY: a catch claim, checked against where the SERVER has the shot. It must be aimed at them, still on its way
 --- out, near, and not already past them (ServerSlack allows for frame timing). A claim that fails catches nothing --
 --- the shot carries on and lands. Only CombatCore.TryParry calls this, from a cast the server has already accepted;
---- nothing a client fires reaches it directly. Returns whether it caught.
+--- nothing a client fires reaches it directly. Returns whether it caught. (2026-10-19, audit P3-24) Nothing calls TryParry
+--- today -- Deflect Gust was retired on 2026-10-06 (see HISTORY above) -- so this is kept for whatever parries next.
 local function tryParry(player, claim)
 	if type(claim) ~= "table" or type(claim.Id) ~= "number" then return false end
 	local shot = shots[claim.Id]
@@ -382,26 +398,95 @@ local function setupDummy(model)
 		if c.Name == "IceFrozenState" then task.defer(freezeChanged) end
 	end)
 
-	-- the strafer
-	local a, b = model:GetAttribute("StrafeA"), model:GetAttribute("StrafeB")
-	if typeof(a) == "Vector3" and typeof(b) == "Vector3" then
+	-- THE WALKERS (the strafer, the patroller) share one setup: unanchored, walking at their pace, the server owning
+	-- their physics. A slow or a root (from any ability) caps their speed; nothing puts a non-player's speed back, so the
+	-- pace is restored here whenever the cap changes or clears. (2026-10-20: was the strafer's alone.)
+	local function walker(speed)
 		root.Anchored = false
-		humanoid.WalkSpeed = model:GetAttribute("StrafeSpeed") or 16
-		-- a slow or a root (from any ability) caps its speed; nothing puts a non-player's speed back,
-		-- so restore the strafing pace here when the cap changes or clears
-		local pace = humanoid.WalkSpeed
+		humanoid.WalkSpeed = speed
+		local pace = speed
 		model:GetAttributeChangedSignal("SpeedCapSlow"):Connect(function()
 			local cap = model:GetAttribute("SpeedCapSlow")
 			humanoid.WalkSpeed = cap and math.min(pace, cap) or pace
 		end)
 		pcall(function() root:SetNetworkOwner(nil) end)
+	end
+
+	-- 2026-10-23: MoveTo, then MoveToFinished with a timeout. A walker destroyed mid-walk never fires MoveToFinished, so a
+	-- bare :Wait() held its loop forever; this gives up after 9 s (Roblox's own MoveTo timeout is 8). Returns whether it got there.
+	local function walkTo(goal)
+		humanoid:MoveTo(goal)
+		local thread = coroutine.running()
+		local timeout
+		local finished = humanoid.MoveToFinished:Once(function(reached)
+			task.cancel(timeout)
+			task.spawn(thread, reached)
+		end)
+		timeout = task.delay(9, function()
+			finished:Disconnect()
+			task.spawn(thread, false)
+		end)
+		return coroutine.yield() == true
+	end
+
+	-- the strafer: StrafeA <-> StrafeB
+	local a, b = model:GetAttribute("StrafeA"), model:GetAttribute("StrafeB")
+	local path = {}
+	for _, key in ipairs({ "PatrolA", "PatrolB", "PatrolC", "PatrolD" }) do
+		local p = model:GetAttribute(key)
+		if typeof(p) == "Vector3" then path[#path + 1] = p end
+	end
+	if typeof(a) == "Vector3" and typeof(b) == "Vector3" then
+		walker(model:GetAttribute("StrafeSpeed") or 16)
 		task.spawn(function()
 			local goal = b
 			while model.Parent do
-				humanoid:MoveTo(goal)
-				humanoid.MoveToFinished:Wait()
+				walkTo(goal)
 				goal = (goal == b) and a or b
 				task.wait(0.2)
+			end
+		end)
+	elseif #path >= 3 then
+		-- (2026-10-20) THE PATROLLER: PatrolA, B, C (and D) in order, round and round, at PatrolSpeed. A MoveTo that gives
+		-- up (Roblox's 8-second timeout, or held still by a root) is sent to the same point once more before going on.
+		walker(model:GetAttribute("PatrolSpeed") or 16)
+		task.spawn(function()
+			local i = 1
+			while model.Parent do
+				local goal = path[i]
+				if not walkTo(goal) and model.Parent then
+					walkTo(goal)
+				end
+				i = i % #path + 1
+				task.wait(0.2)
+			end
+		end)
+	end
+
+	-- (2026-10-20) THE FLICKER: an anchored dummy that jumps to a new spot every FlickerEvery seconds, for flick-aim
+	-- practice. Its pivot at setup is the centre; each new spot is in the FlickerRadius disc round it, at least 0.4 x the
+	-- radius from where it stands, at the same height and facing. It holds still while frozen (IceFrozenState), rooted
+	-- (SpeedCapSlow 0) or down, so FROZEN! and a root still read. The hitbox twins are welded and go with it; CombatCore
+	-- keeps a second of where it was, so a shot fired at the old spot just before a hop still counts.
+	local radius, every = model:GetAttribute("FlickerRadius"), model:GetAttribute("FlickerEvery")
+	if type(radius) == "number" and radius > 0 and type(every) == "number" and every > 0 then
+		local centre = model:GetPivot()
+		task.spawn(function()
+			while model.Parent do
+				task.wait(every)
+				local held = knockedOut or model:FindFirstChild("IceFrozenState") ~= nil
+					or model:GetAttribute("SpeedCapSlow") == 0
+				if not held and model.Parent then
+					local here = model:GetPivot().Position
+					for _ = 1, 12 do
+						local angle, r = math.random() * 2 * math.pi, radius * math.sqrt(math.random())
+						local spot = centre.Position + Vector3.new(math.cos(angle) * r, 0, math.sin(angle) * r)
+						if (spot - here).Magnitude >= 0.4 * radius then
+							model:PivotTo(centre.Rotation + spot)
+							break
+						end
+					end
+				end
 			end
 		end)
 	end

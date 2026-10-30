@@ -7,7 +7,8 @@
 
 	EVERY NUMBER HERE IS A STAND-IN PROPOSAL FOR THE OWNER TO TUNE. None was set by the owner. They were picked at build
 	time against the live kits (D:\voltkit_scratch\design.md section 1, "Calibration against the existing kits"):
-	  * Chain Bolt 8 per 0.32 s = 25 damage/s, against Icicle Shard 24, Wind Blade 25, Fireball 30;
+	  * Chain Bolt 8 per 0.32 s = 25 damage/s at build time (10 since 2026-10-18, handoff #7: ~31 damage/s), against
+	    Icicle Shard 24, Wind Blade 25, Fireball 30; (2026-10-19, audit P5D-18)
 	  * Railspike 30 per pierced body, against Bulwark Charge 35 and Aftershock 20;
 	  * Volt Orb peaks at 28 + 8 (a direct hit at the centre);
 	  * Cascade 5 x 14 = 70 at most on one body, against Maw's 65 bite and Tomb's 75 crit.

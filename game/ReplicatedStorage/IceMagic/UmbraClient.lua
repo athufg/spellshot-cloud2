@@ -247,7 +247,8 @@ end
 ----------------------------------------------------------------------------------------------------
 -- MARK: the TEMP placeholder anchor (the owner: keep it until Mark's own look)
 ----------------------------------------------------------------------------------------------------
-local anchors = {}
+-- (2026-10-19, audit P5C-17) weak-keyed: a victim model gone from memory takes its entry with it
+local anchors = setmetatable({}, { __mode = "k" })
 local function anchorFor(victim, stacks)
 	local head = victim and victim:FindFirstChild("Head")
 	if not head then return end
@@ -263,16 +264,57 @@ local function anchorFor(victim, stacks)
 		anchors[victim] = a
 		local conn
 		conn = RunService.RenderStepped:Connect(function()
-			if not (a.Parent and head.Parent) then conn:Disconnect() return end
+			if not (a.Parent and head.Parent) then
+				-- (2026-10-19, audit P5C-17) a MarkEnd that never comes (the victim left or streamed out): the anchor goes
+				-- with the head, and predictHeadshot stops counting the model as marked
+				conn:Disconnect()
+				if anchors[victim] == a then anchors[victim] = nil end
+				if a.Parent then a:Destroy() end
+				return
+			end
 			a.CFrame = CFrame.new(head.Position + Vector3.new(0, 2.2, 0)) * CFrame.Angles(math.rad(45), os.clock() * 1.5, math.rad(45))
+			local gl = a:FindFirstChild("UmbraMarkGlow")            -- an Epic+ wrap's marker light, breathing (UR 2026-10-19)
+			if gl then
+				local k = fx("MarkPulse", player.Character)
+				gl.Brightness = (a:GetAttribute("GlowLight") or 0) * (type(k) == "number" and k or 1)
+			end
 		end)
 	end
 	local s = 0.35 + 0.15 * (stacks or 1)
 	a.Size = Vector3.new(s, s, s)
-	-- the marker wears its owner's Mark wrap (SkinCatalog, through UmbraFX.Palette), else Umbra's own colours
-	local pal = fx("Palette", player.Character, "Mark")
+	-- the marker wears its owner's Umbra wrap (an Element wrap, through UmbraFX.Palette), else Umbra's own colours
+	local pal = fx("Palette", player.Character)
 	if typeof(pal.Dusk) ~= "Color3" then pal = T.Color end
 	a.Color = (stacks or 1) >= T.Mark.MaxStacks and pal.Shade or pal.Dusk
+	-- a Rare wrap's finish on the marker once it turns light (full stacks): its own display input and gloss; a dark
+	-- marker stays matte (a glossy black mirrors the sky)
+	local fin = (stacks or 1) >= T.Mark.MaxStacks and fx("MarkFinish", player.Character) or nil
+	local lit = type(fin) == "table" and typeof(rawget(fin, "Lit")) == "Color3"
+	if lit then a.Color = fin.Lit end
+	a.Reflectance = (lit and type(rawget(fin, "Reflectance")) == "number") and fin.Reflectance or 0
+	-- (Mark.Material, R2U 2026-10-19: the lit marker in a real material, e.g. veined stone; none: SmoothPlastic as before)
+	local mat = lit and rawget(fin, "Material")
+	a.Material = (type(mat) == "string" and Enum.Material[mat]) or Enum.Material.SmoothPlastic
+	-- an Epic+ wrap's glow (UmbraFX.MarkGlow = { Light, Range }): the marker self-lit (Neon) with a light in the wrap's
+	-- Shade, breathing with its Pulse (above); a lower-tier wrap or Default keeps the plain marker
+	local mg = fx("MarkGlow", player.Character)
+	if type(rawget(mg, "Light")) == "number" then
+		a.Material = Enum.Material.Neon
+		a.Reflectance = 0
+		-- (Neon renders far brighter and bluer than its input: the wrap's own Neon display inputs, Lit at full stacks)
+		local nl = (stacks or 1) >= T.Mark.MaxStacks and rawget(mg, "Lit") or rawget(mg, "Dim")
+		if typeof(nl) == "Color3" then a.Color = nl end
+		local gl = a:FindFirstChild("UmbraMarkGlow")
+		if not gl then
+			gl = Instance.new("PointLight")
+			gl.Name = "UmbraMarkGlow"
+			gl.Shadows = false
+			gl.Parent = a
+		end
+		gl.Color = typeof(rawget(mg, "Color")) == "Color3" and mg.Color or pal.Shade
+		gl.Range = rawget(mg, "Range") or 8
+		a:SetAttribute("GlowLight", mg.Light)
+	end
 end
 
 --- whether a contact on `part` is, as far as this client can tell, the Mark HEADSHOT payoff: the head of a body carrying
@@ -640,7 +682,11 @@ H.EclipseEnd = function(d)
 		h:End(os.clock())
 	end
 	if key ~= nil then undarken(key) end
-	if d.Character == player.Character then fx("RevealStop") end
+	-- (2026-10-19, audit P5C-13) by UserId too: a body already replaced by the time EclipseEnd lands still stops it
+	if d.Character == player.Character or d.Caster == player.UserId then fx("RevealStop") end
 end
+
+-- (2026-10-19, audit P5C-13) a new body of ours never keeps an old Eclipse's through-walls outlines
+player.CharacterAdded:Connect(function() fx("RevealStop") end)
 
 return UmbraClient

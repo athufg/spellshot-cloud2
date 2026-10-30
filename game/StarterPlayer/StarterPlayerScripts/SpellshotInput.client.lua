@@ -128,6 +128,13 @@ end
 -- HUD feedback
 ----------------------------------------------------------------------------------------------------
 local function slotFrame(role)
+	-- (2026-10-19, audit P6A-09) PopArtHUD's slot first (OpacityLayer.BottomRight.<role>, the path TouchControls uses): the
+	-- retired SpellshotHUD below is destroyed by PopArtHUD, so every flash was a silent no-op
+	local pop = playerGui:FindFirstChild("PopArtHUD")
+	local layer = pop and pop:FindFirstChild("OpacityLayer")
+	local group = layer and layer:FindFirstChild("BottomRight")
+	local slot = group and group:FindFirstChild(role)
+	if slot then return slot end
 	local hud = playerGui:FindFirstChild("SpellshotHUD")
 	local cluster = hud and hud:FindFirstChild("AbilityCluster")
 	return cluster and cluster:FindFirstChild(role)
@@ -136,7 +143,23 @@ end
 local function flash(role, denied)
 	local frame = slotFrame(role)
 	local st = frame and frame:FindFirstChildOfClass("UIStroke")
-	if not st then return end
+	if not st then
+		-- (2026-10-19, audit P6A-09) a PopArtHUD slot has no stroke of its own: a refused press tints its plate red for the
+		-- same 0.16 s (an accepted one already shows on the slot as its cooldown veil). The plate's own colour is kept in
+		-- an attribute, so a second refusal inside the flash never leaves it red.
+		local plate = denied and frame and frame:FindFirstChild("Plate")
+		if not (plate and plate:IsA("ImageLabel")) then return end
+		local base = plate:GetAttribute("FlashBase")
+		if typeof(base) ~= "Color3" then
+			base = plate.ImageColor3
+			plate:SetAttribute("FlashBase", base)
+		end
+		plate.ImageColor3 = Color3.fromRGB(226, 76, 76)
+		task.delay(0.16, function()
+			if plate.Parent then plate.ImageColor3 = base end
+		end)
+		return
+	end
 	local original = st.Color
 	st.Color = denied and Color3.fromRGB(226, 76, 76) or Color3.new(1, 1, 1)
 	st.Thickness = 4
@@ -218,6 +241,13 @@ local function canCast(role, character)
 	-- it (nil) while the target is beyond Range, so this sees the range too, a replication late.
 	if ability and ability.Id == "Detonate"
 		and (character:GetAttribute("DetonateUntil") or 0) <= workspace:GetServerTimeNow() then
+		return false
+	end
+	-- (2026-10-19, audit GC-07; the coordinator's call: roots WIN over Shadow Step) a rooted, caged or Deep-Frozen body
+	-- (slow cap 0), a Frozen one or an Entombed one cannot blink -- refused here as the server refuses it, before it is paid
+	if ability and ability.Id == "ShadowStep"
+		and ((character:GetAttribute("SpeedCapSlow") or math.huge) <= 0 or character:FindFirstChild("IceFrozenState")
+			or character:GetAttribute("RX_Entombed")) then
 		return false
 	end
 	local cost = ability and ability.ManaCost or 0
@@ -305,7 +335,11 @@ local function tryChargeCast(role, character, ability)
 		flash(role, false)
 		Viewmodel.Play(ability.Id)
 		castRemote:FireServer(role, { Seq = nextChargeSeq(role), Start = startPos, Dir = dir, Dist = dist })
-		VFXLibrary.FrostSlideDashFX(character, startPos, dir, dist, seedRng:NextInteger(1, 2 ^ 30))
+		-- (2026-10-19, audit GB-04) the frost lines are Frost Slide's own (retired): a future ability with Charges, of any
+		-- Element, would otherwise dash on Cryo ice
+		if ability.Id == "FrostSlide" then
+			VFXLibrary.FrostSlideDashFX(character, startPos, dir, dist, seedRng:NextInteger(1, 2 ^ 30))
+		end
 	end)
 end
 
@@ -404,16 +438,6 @@ local LOCAL_CAST = {
 			setChanneling(false)                                     -- M1 and the dash are not left locked
 			if Viewmodel.CurrentClip() == "CryoBeamCharge" then Viewmodel.Stop() end
 		end)
-	end,
-	-- Heat Rush has no cast clip: the arms simply run hotter while it is held (PyroFX feeds Viewmodel.SetHeat)
-	HeatRush = function() end,
-	-- Cinder Shield: the fists punch each other on both arms at once over the hold, and your own full-size
-	-- shield forms on the keypress rather than a round trip later
-	CinderShield = function(character)
-		Viewmodel.Play("CinderShieldHold")
-		Viewmodel.PlayShot("R", "CinderShieldBump")
-		Viewmodel.PlayShot("L", "CinderShieldBump")
-		PyroFX.Shield(character)
 	end,
 	-- Detonate (Pyro's Mobility, 2026-09-23): the backhand flick, on the right arm, and no M1 until it is over. The
 	-- mark itself is the server's (PyroHandler); the flick's look plays from its broadcast (AbilityFX).
@@ -879,6 +903,14 @@ local function tryBulwarkCharge(role, character, ability)
 		TerraFX.BulwarkTrail(character, function()
 			return os.clock() < until_ and DashMotor.IsActive()
 		end)
+		-- (2026-10-19, audit P1-10) the server shortens the charge's window to what this client actually ran
+		-- (TerraHandler's BulwarkChargeEnd; the report can only shorten it)
+		task.spawn(function()
+			local asked = os.clock()
+			while os.clock() - asked < 0.2 and not DashMotor.IsActive() do task.wait() end   -- a dash only asked for is not active yet
+			while DashMotor.IsActive() and os.clock() < until_ do task.wait() end
+			iceRemote:FireServer("BulwarkChargeEnd")
+		end)
 	end, {
 		Dir = dir, Distance = C.Distance, Speed = C.Distance / C.Time, MaxTime = C.MaxTime,
 		MinCap = C.MinCap, ThroughCharacters = true,
@@ -1254,6 +1286,9 @@ local function tryCast(role)
 	-- VOLT ORB (2026-10-13): HOLD TO AIM. The press shows the arc (VoltaicClient.AimStart) and sends nothing; the key
 	-- coming up throws it (releaseVoltOrb, below, comes back through here with orbFire set).
 	if ability.Id == "VoltOrb" and not orbFire and VoltaicClient and VoltaicClient.AimStart then
+		-- (2026-10-19, audit P5D-10) the arc was cleared without a key-up (death, respawn, Element change, focus loss):
+		-- the held role is stale, so this press starts a new aim instead of being swallowed
+		if orbAimRole and VoltaicClient.Aiming and not VoltaicClient.Aiming() then orbAimRole = nil end
 		if not orbAimRole then
 			orbAimRole = role
 			VoltaicClient.AimStart(function() return aimPoint(ability.Range or 60) end)
@@ -1326,22 +1361,13 @@ local function shotInterval()
 end
 
 --- M1, Fireball: the punch on the click, the fire gathering on the fist, and the fireball leaving it at full
---- extension, straight down the crosshair. Hands alternate -- except with the Cinder Shield up, when the right hand
---- is holding it: the left throws, and the right swings the shield aside until the release. The hit is
+--- extension, straight down the crosshair. Hands alternate. The hit is
 --- reported the way Icicle Shard's is: what your own fireball stops on, checked by the server (PyroHandler).
 local function fireFireball(character, ability)
 	if Viewmodel.Tracing() then return end
-	local shielded = character:GetAttribute("CinderShield") == true or Viewmodel.CurrentClip() == "CinderShieldHold"
-	if ultChanneling or (Viewmodel.IsPlaying() and not shielded) then return end
-	local side
-	if shielded then
-		side = "L"
-		Viewmodel.PlayShot("R", "CinderShieldAside")
-		PyroFX.ShieldAside(character)
-	else
-		side = nextSide
-		nextSide = (side == "R") and "L" or "R"
-	end
+	if ultChanneling or Viewmodel.IsPlaying() then return end
+	local side = nextSide
+	nextSide = (side == "R") and "L" or "R"
 	local hot = (character:GetAttribute("Stacks_Primary") or 0) > 0
 	PyroFX.Charge(character, side, hot, true)
 	Viewmodel.PlayShot(side, "Fireball", function(releaseSide)
@@ -1369,9 +1395,8 @@ end
 --- the RIGHT hand's. A hand fires every second blade, so the four-stroke cycle carries on for clicks under
 --- WIND_HOLD / 2 apart (0.525 s); slower than that every blade is a down-stroke from a hand that has let go, the hands
 --- still taking turns, and at WIND_HOLD apart or slower every blade is the right hand's opening slash.
---- A hand holds only while the viewmodel still plays that shot: a clip that takes the arm (Cross-Slash, the Cinder
---- Shield's hold, a Technique's own arms) ends the hold early, and that hand's next stroke is a down-stroke.
---- With the Cinder Shield up the right hand is holding it, so the left slashes every blade, down and up in turn. The
+--- A hand holds only while the viewmodel still plays that shot: a clip that takes the arm (Cross-Slash, a
+--- Technique's own arms) ends the hold early, and that hand's next stroke is a down-stroke. The
 --- hits are reported the way Icicle Shard's are -- what your own blade passes through (it pierces), checked by the
 --- server (ZephyrHandler).
 local WIND_HOLD = Viewmodel.ArmClips.WindSlashDown.HoldUntil
@@ -1389,19 +1414,16 @@ local function windHolding(side, now, scale)
 end
 local function fireWindBlade(character, ability)
 	if Viewmodel.Tracing() then return end
-	local shielded = character:GetAttribute("CinderShield") == true or Viewmodel.CurrentClip() == "CinderShieldHold"
-	if ultChanneling or (Viewmodel.IsPlaying() and not shielded) then return end
+	if ultChanneling or Viewmodel.IsPlaying() then return end
 	local now = os.clock()
 	local scale = VFXLibrary.ShotTimeScale()
 	local side
-	if shielded then
-		side = "L"
-	elseif windHolding("R", now, scale) or windHolding("L", now, scale) then
+	if windHolding("R", now, scale) or windHolding("L", now, scale) then
 		side = windSide
 	else
 		side = "R"                  -- both holds are over: a new burst, on the right
 	end
-	windSide = (side == "R") and "L" or "R"     -- after a shielded blade too: the right hand comes back next
+	windSide = (side == "R") and "L" or "R"
 	local hand = windHand[side]
 	local stroke = (windHolding(side, now, scale) and hand.Stroke == "Down") and "Up" or "Down"
 	hand.At, hand.Stroke = now, stroke
@@ -1468,18 +1490,12 @@ local function fireShard()
 		castRemote:FireServer("M1", { Side = side, Dir = camera.CFrame.LookVector })
 		return
 	end
-	-- a two-handed cast owns the arms -- except the Cinder Shield's hold, over which the left hand throws while the
-	-- right swings the shield aside (a Cryo player can run Cinder Shield too)
-	local shielded = Viewmodel.CurrentClip() == "CinderShieldHold"
-	if ultChanneling or (Viewmodel.IsPlaying() and not shielded) or Viewmodel.Tracing() then return end
+	-- a two-handed cast owns the arms
+	if ultChanneling or Viewmodel.IsPlaying() or Viewmodel.Tracing() then return end
 	local side = nextSide
 	local fl = frostLotus()
-	local lotus = not shielded and fl ~= nil and fl.On(character) and fl.PluckOn()
-	if shielded then
-		side = "L"
-		Viewmodel.PlayShot("R", "CinderShieldAside")
-		PyroFX.ShieldAside(character)
-	elseif lotus then
+	local lotus = fl ~= nil and fl.On(character) and fl.PluckOn()
+	if lotus then
 		-- Frost Lotus: the left hand holds the lotus (low, clear of the crosshair) and the right throws every shot; it is
 		-- let go 1 s after the last (FrostLotusKit.ViewShot draws the lotus on the left fist and the petal in the right)
 		side = "R"
@@ -1744,7 +1760,8 @@ end)
 local function onInputBegan(input, gameProcessed, fromTouch)
 	if gameProcessed then return end
 	if player:GetAttribute("SettingsOpen") or player:GetAttribute("LoadoutOpen")
-		or player:GetAttribute("QuickPlayOpen") or player:GetAttribute("ShopOpen") then return end
+		or player:GetAttribute("QuickPlayOpen") or player:GetAttribute("ShopOpen")
+		or player:GetAttribute("ReactionsOpen") then return end   -- (2026-10-19, audit GA-20) the Reactions tablet too
 	-- the Hub is not a fight: no casting there (HubServer sets Zone; the server refuses Hub casts too)
 	if player:GetAttribute("Zone") == "Hub" then return end
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -1780,15 +1797,22 @@ local function onInputEnded(input)
 		if boulder.On then releaseBoulder() end
 		if RadiantClient then RadiantClient.ReleaseM1() end                -- Light Lance: letting go ends the channel
 	end
-	-- a held ability (Heat Rush) ends when its key comes up, wherever the pointer is; a Cross-Slash charge launches
+	-- a held ability (Scorching Lash) ends when its key comes up, wherever the pointer is; a Cross-Slash charge launches
 	local role = BINDS[input.KeyCode] or TOUCH_ROLES[input.KeyCode]
 	if role then
 		if orbAimRole == role then                                             -- Volt Orb: letting go throws it
 			orbAimRole = nil
+			-- 2026-10-23: the release throws only an aim still up (a death, respawn or new Element took the arc down: no
+			-- throw from the new body) and with no menu open; otherwise the aim is cancelled
+			local live = not (VoltaicClient and VoltaicClient.Aiming) or VoltaicClient.Aiming()
+			local menu = player:GetAttribute("SettingsOpen") or player:GetAttribute("LoadoutOpen")
+				or player:GetAttribute("QuickPlayOpen") or player:GetAttribute("ShopOpen") or player:GetAttribute("ReactionsOpen")
 			if VoltaicClient and VoltaicClient.AimStop then VoltaicClient.AimStop() end
-			orbFire = true
-			tryCast(role)
-			orbFire = false
+			if live and not menu then
+				orbFire = true
+				tryCast(role)
+				orbFire = false
+			end
 		end
 		releaseLash(role)                                                      -- Scorching Lash cracks (round 2)
 		releaseHeld(role)
@@ -1817,6 +1841,7 @@ end
 -- ability lets go here, as the key coming up would. Else a held Benediction ran on with the caster rooted until the bar
 -- emptied, and the first press after coming back was swallowed (heldRole still set).
 UserInputService.WindowFocusReleased:Connect(function()
+	orbAimRole = nil   -- (2026-10-19, audit P5D-10) VoltaicClient clears the arc on focus loss; the key-up never comes
 	local roles = {}
 	for role in pairs(heldRole) do roles[#roles + 1] = role end
 	for _, role in ipairs(roles) do releaseHeld(role) end

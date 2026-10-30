@@ -10,7 +10,9 @@
 	CascadeFX).
 
 	THE API (D:\voltkit_scratch\castable\CONTRACT.md section 6)
-	  Windup(character, opts) -> handle   the 0.31 s in the hand. opts.Own (the local caster's own cast), opts.T0 (the
+	  Windup(character, opts) -> handle   the orb in the hand until ReleaseAt (0.12 s after the release since 2026-10-13's
+	                                      hold-to-aim; 0.31 before -- 2026-10-19, audit P5D-18).
+	                                      opts.Own (the local caster's own cast), opts.T0 (the
 	                                      press in server time; default now). handle:Stop() pops it, handle:Destroy()
 	                                      removes it at once (VoltaicClient stops an own windup the server never threw).
 	  Throw(data)    VoltOrbThrow { Character, From, Vel, T0, ReleaseAt, Gravity, Fuse, Seed }: the flight on the
@@ -82,7 +84,8 @@
 
 	SETTINGS. Reduce Flashing: CalmStrikes / CalmAirStrikes (one restrike, no dark gap; a single strike in the air),
 	bolts x0.65, flash and bolt lights x0.6, the contact sprite x0.75, no Bloom, no camera punch, the surge (and each
-	face's shimmer) at most 4 Hz and 12 % deep. Thin enemy VFX (VoltaicKit.thin): half the crackle slots, trail and
+	face's shimmer) at most 4 Hz and 12 % deep; (2026-10-19, audit P5D-04) the crackle and the bolts re-rolled at 10 Hz,
+	not 60 / 30; (audit P5D-05) somebody else's orb kicks Bloom and the punch at half under Reduce Enemy VFX. Thin enemy VFX (VoltaicKit.thin): half the crackle slots, trail and
 	sheds, 4 windup arcs, 0.6 of the bolts and no forks (bar the one into a body), 3 burned cracks without forks, the
 	violet core cracks' core layer only, the shards without their depth; particle counts halved by VFXLibrary. Flat-lit
 	maps: no PointLights (VoltaicKit.light returns nil), Beams and emitters toned down by the Kit / VFXLibrary.
@@ -756,7 +759,7 @@ end
 local function burstFx(O, parent, kind, count, extra)
 	local V = vfx()
 	if not (V and V.GroundSurgeBurst and parent) then return nil end
-	local ok, pe = pcall(V.GroundSurgeBurst, parent, kind, count, O.Thin, extra)
+	local ok, pe = pcall(V.GroundSurgeBurst, parent, kind, count, O.Enemy, extra)
 	if not ok then
 		warnOnce("burst:" .. kind, "VFXLibrary.GroundSurgeBurst(" .. kind .. ") failed: " .. tostring(pe))
 		return nil
@@ -768,7 +771,7 @@ end
 local function emitterFx(O, parent, kind, extra)
 	local V = vfx()
 	if not (V and V.GroundSurgeEmitter and parent) then return nil end
-	local ok, pe = pcall(V.GroundSurgeEmitter, parent, kind, O.Thin, extra)
+	local ok, pe = pcall(V.GroundSurgeEmitter, parent, kind, O.Enemy, extra)
 	if not ok then
 		warnOnce("emit:" .. kind, "VFXLibrary.GroundSurgeEmitter(" .. kind .. ") failed: " .. tostring(pe))
 		return nil
@@ -1011,6 +1014,9 @@ local function newOrb(character, opt)
 	local okCalm, calm = pcall(K.reduceFlashing)
 	local O = {
 		Character = character, Own = opt.Own == true, Thin = okThin and thin == true, Calm = okCalm and calm == true,
+		-- (2026-10-19, audit P5D-07) VFXLibrary's own `thin` argument: somebody else's cast. O.Thin (Kit.thin: also LOW
+		-- quality) stays for this module's own geometry tiers; passed to VFXLibrary it halved your own particles twice
+		Enemy = K.isEnemy(character),     -- (2026-10-19, audit P5F-06) an ENEMY's, not just somebody else's
 		Folder = folder, T0w = opt.T0, Seed = seed, Rng = Random.new(seed), Late = opt.Late == true, Ts = 1,
 		angle = Random.new(seed + 3):NextNumber(0, TAU), phase = -math.pi / 2, p = 0, glow = 1, hotRate = 0,
 		rot = CFrame.identity, view = nil, lt = 0, LastOs = os.clock(), fired = {},
@@ -1167,7 +1173,8 @@ local function orbStep(O, t, f, dt, spinRate, wild, want, viewW)
 	if #slots > 0 and not any then slots[1].arc = crackleArc(O, t, f) end
 	-- this frame's arcs, and the faces they land on flaring
 	local up = (1 + T.CrackleUp * f) * (1 + 0.4 * wild)
-	local fi = math.floor(t * 60)
+	-- (2026-10-19, audit P5D-04) Reduce Flashing: crackle shapes and brightness re-rolled at 10 Hz, not every 60 Hz frame
+	local fi = math.floor(t * (O.Calm and 10 or 60))
 	local flare = O.flare
 	for i = 1, #flare do flare[i] = 0 end
 	table.clear(O.touches)
@@ -2189,9 +2196,16 @@ local function bloomScale(F, pos)
 	return k
 end
 
+--- (2026-10-19, audit P5D-05) Cascade's rule: somebody else's orb kicks your screen at half under Reduce Enemy VFX
+local function enemyShare(O)
+	if not O.Enemy then return 1 end
+	local _, _, S = Kit.libs()
+	return (S and S.ThinEnemyVFX == true) and 0.5 or 1
+end
+
 local function kick(O, F, pos, share)
 	if O.Calm then return end
-	local k = bloomScale(F, pos) * share
+	local k = bloomScale(F, pos) * share * enemyShare(O)
 	if k <= 0.02 then return end
 	local B = T.Bloom
 	local thr = F.dayK < 1 and 0 or -B[5] * k                 -- a bright sky sits near the threshold: no drop by day
@@ -2396,7 +2410,7 @@ local function shardDraw(O, I, i, S, sd)
 end
 
 local function drawBolts(O, I, d)
-	local n = math.floor(d / T.Reroll)
+	local n = math.floor(d / (O.Calm and math.max(T.Reroll, 0.1) or T.Reroll))   -- (2026-10-19, audit P5D-04) calm: 10 Hz
 	local used = 0
 	for w, S in ipairs(I.Strikes) do
 		local a, b, k = S[1], S[2], S[3]
@@ -2465,7 +2479,7 @@ local function stepImpact(O, F, dt)
 			spriteFx(O, att, 0.6 * (O.Calm and 0.75 or 1), 1.4 * (O.Calm and 0.75 or 1), { { 0, 0.2 }, { 1, 1 } }, 0.05,
 				COL.Light, 0.25, 3.0)
 			kick(O, F, I.C0, 0.5)
-			if not O.Calm then pcall(Kit.punchNear, I.C0, T.Punch[1], T.Punch[2]) end
+			if not O.Calm then pcall(Kit.punchNear, I.C0, T.Punch[1] * enemyShare(O), T.Punch[2]) end   -- audit P5D-05
 		end
 	else
 		if not I.broke then
@@ -2601,7 +2615,7 @@ local function stepImpact(O, F, dt)
 			if I.Smolder and d >= I.smolderAt then
 				I.smolderAt = d + 0.1
 				local V = vfx()
-				if V and V.GroundSurgeRate then pcall(V.GroundSurgeRate, I.Smolder, T.SmolderRate * (1 - d / T.SmolderFor), O.Thin) end
+				if V and V.GroundSurgeRate then pcall(V.GroundSurgeRate, I.Smolder, T.SmolderRate * (1 - d / T.SmolderFor), O.Enemy) end
 			end
 		elseif I.Smolder then
 			I.Smolder.Enabled = false
@@ -2683,7 +2697,7 @@ fizzleOrb = function(O, at)
 	end
 	O.Fizz = { t = 0, at = pos, s = O.s or 1 }
 	local V = vfx()
-	if V and V.VoltSparkBurst then pcall(V.VoltSparkBurst, pos, Vector3.yAxis, O.Thin, 5) end
+	if V and V.VoltSparkBurst then pcall(V.VoltSparkBurst, pos, Vector3.yAxis, O.Enemy, 5) end
 	O.Hand.CFrame = CFrame.new(pos)
 	spriteFx(O, O.HandAtt, 0.4 * O.Fizz.s, 1.1 * O.Fizz.s, { { 0, 0.3 }, { 1, 1 } }, 0.08, COL.Light, 0.25, 2.5)
 	if O.OrbLight then O.OrbLight.Brightness = 0 end
@@ -2856,8 +2870,8 @@ function VoltOrbFX.Fizzle(data)
 	end
 	if at then
 		local V = vfx()
-		local okThin, thin = pcall(Kit.thin, c)
-		if V and V.VoltSparkBurst then pcall(V.VoltSparkBurst, at, Vector3.yAxis, okThin and thin, 5) end
+		-- (2026-10-19, audit P5D-07) VFXLibrary's `thin` = somebody else's cast (it applies the settings itself)
+		if V and V.VoltSparkBurst then pcall(V.VoltSparkBurst, at, Vector3.yAxis, Kit.isEnemy(c), 5) end   -- audit P5F-06
 	end
 end
 

@@ -1,4 +1,6 @@
 -- TEMPORARY Aurora v8 test stage (Claude, 2026-10-17): remove when done
+-- (2026-10-19, audit P1-05) Studio only: on a live server this stage froze players, hid every HUD and cloned bodies
+if not game:GetService("RunService"):IsStudio() then return end
 local plr = game.Players.LocalPlayer
 local ch = plr.Character or plr.CharacterAdded:Wait()
 ch:WaitForChild("HumanoidRootPart").Anchored = true

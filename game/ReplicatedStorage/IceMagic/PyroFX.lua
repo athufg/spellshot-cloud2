@@ -9,11 +9,6 @@
 	                 the starburst where it stops), hot meshes while Immolate is up
 	  Immolate       Immolate (three motes ignite at the chest and orbit, one popping per buffed hit),
 	                 EmberRefund (the Passive: the orbit flares as a ring of flame)
-	  Heat Rush      self-driven from each character's HeatRush / Heat attributes: aura tier at the feet,
-	                 rising heat lines, and the body glow; HeatRelease (the exhale's steam), Deflect
-	  Cinder Shield  Shield / ShieldEnd / ShieldBurst: the see-through rings on the right hand, glowing up the
-	                 heat ramp as ShieldAbsorb climbs, 1.3x for everyone and 1.69x in the caster's own first
-	                 person; the burst's heat haze, and the blur on whoever it passes through
 	  Ring of Fire   RingOfFire: the hand drawing the flame line round the pointed spot by itself, then the
 	                 seal, eruption and IGNITE!; RingStartAngle / RingDrawPoint, the draw both sides share;
 	                 SteerRing / LockRing / RingSteerable, the circle following the crosshair until the snap
@@ -30,9 +25,7 @@
 
 	TOON RULES. The flame meshes are Cryo's kind: baked vertex bands, an inverted-hull outline, SmoothPlastic,
 	white, DoubleSided off, opaque -- so nothing here fades them. They pop, grow, shrink and sink, and a
-	piece that must vanish for a moment is hidden whole (LocalTransparencyModifier 1). The Cinder Shield's
-	pane and rings (Neon) and the heat haze are the see-through exceptions the user asked for, and keep the
-	material and transparency they were set up with.
+	piece that must vanish for a moment is hidden whole (LocalTransparencyModifier 1).
 
 	Pivot offsets are from the import records (pyro/import_results*.md): a MeshPart's pivot is its bounding-
 	box centre, so each part sits at designOrigin * CFrame.new(offset * scale).
@@ -82,36 +75,12 @@ PyroFX.Tuning = {
 		Below = 0.30,
 		Ring = { 0.2, 1.35, 1.0, 1.1, 1.0, 1.0, 0.95, 0.8, 0.6, 0.4, 0.2, 0.05, 0.0 },
 	},
-	HeatRush = {
-		-- SpeedMult: 1.2 could not be felt (2026-09-14); 1.4 takes the 25 run to 35
-		BuildTime = 2.0, Threshold = 0.6, Reduction = 0.4, SpeedMult = 1.4, MaxHold = 4.0,
-		DecayDelay = 1.5, DecayRate = 0.35, MinMoveSpeed = 6, ExhaleAbove = 1 / 3, DeflectRadius = 2.3,
-		TierMid = 0.34, TierHigh = 0.67,
-		LineEvery = { Low = 5 / 30, Mid = 3 / 30, High = 2 / 30 }, LineScale = { Low = 0.75, Mid = 1.0, High = 1.3 },
-		LineFoot = { Low = 4.1, Mid = 4.5, High = 5.0 }, LineRadius = { 1.4, 1.9 },
-		LineLife = 0.4, LineRise = 2.7, LineBack = 3.6,
-		AuraPop = { 0.45, 1.12, 1.0 }, AuraSink = 0.35, GlowCool = 0.45,
-		Deflect = { 0.55, 1.2, 1.0, 0.95, 0.8, 0.55, 0.3, 0.0 },
-	},
-	CinderShield = {
-		Strength = 60, FormAt = 5 / 30,
-		-- where the held shield's centre sits from the HumanoidRootPart (solved on the measured rig at the hold pose)
-		CentreFromRoot = Vector3.new(0.43, 0.95, -2.17),
-		ScaleTP = 1.3, ScaleFP = 1.69,
-		FromTipTP = Vector3.new(-0.35, -0.15, -0.45), FromTipFP = Vector3.new(-0.30, -0.10, -0.50),
-		Grow = { 0.25, 0.75, 1.12 }, BurstPop = { 1.0, 1.15, 0.6 }, Fade = { 0.75, 0.4, 0.0 },
-		Cracked = 0.3, Breaking = 0.7,
-		AsideTime = 0.85,                  -- a left-hand Fireball's clip: the shield rides the swinging hand
-		HazeDelay = 0.04, HazeSpeed = 30, HazeRange = 18, HazeDamage = 20,
-		HazeHalfWidth = 2.1, HazeHalfHeight = 1.7, HazeOpacity = 0.3,
-		BlurSize = 14, BlurTime = 0.9,
-	},
 	RingOfFire = {
 		-- pointed, and the hand draws a Radius circle round the spot by itself over DrawTime (2026-09-14). DrawnRadius
 		-- is the size the seal and eruption meshes were drawn at. Radius 8 -> 11.2 (40% bigger, asked for 2026-09-14)
 		-- -> 25 (2026-09-17, "a way bigger circle": 2.23x) -> 17.5 (2026-10-05, the owner's call with the flame look, for
 		-- BOTH looks). It is the BURNING radius too: PyroHandler reads this one number both for the draw and for the fire
-		-- (reach = Radius, times HotReach at high Heat -- 17.5 studs, 21 hot; they were 25 and 30).
+		-- (reach = Radius -- 17.5 studs; it was 25. The Hot fields are unused since Heat Rush left, 2026-10-27).
 		-- TraceStep 1.4 -> 1.8 keeps the line's pieces under MAX_SEGMENTS (2*pi*25/1.8 = 87 of 90; 61 at 17.5), and
 		-- FireScale grows with it so they still overlap. DrawTime 0.8 -> 0.5 and SettleTime 0.30 -> 0.20 (2026-09-17,
 		-- "speed up the circle"): the whole cast, the press to the eruption, is DrawTime + SettleTime + SnapBeat --
@@ -226,11 +195,6 @@ function PyroFX.RingDrawPoint(center, radius, startAngle, u)
 	return center + Vector3.new(math.cos(a) * radius, 0, math.sin(a) * radius)
 end
 
---- The heat haze's scale `t` seconds after it leaves the shield.
-function PyroFX.HazeScale(t)
-	local life = T.CinderShield.HazeRange / T.CinderShield.HazeSpeed
-	return 0.4 + 3.6 * math.clamp(t, 0, life)
-end
 
 ----------------------------------------------------------------------------------------------------
 -- colour: the kit's heat ramp, coolest to hottest
@@ -244,17 +208,15 @@ local RAMP = {
 }
 
 --- A colour at `pos` along the ramp, 0 (Dark) to 4 (WhiteHot).
-local function rampColour(pos)
-	pos = math.clamp(pos, 0, #RAMP - 1)
-	local i = math.min(#RAMP - 2, math.floor(pos))
-	return RAMP[i + 1]:Lerp(RAMP[i + 2], pos - i)
+--- `ramp`: a wrap's ToonRamp (the same five steps in its colours), else Pyro's own (2026-10-25)
+local function rampColour(pos, ramp)
+	ramp = ramp or RAMP
+	pos = math.clamp(pos, 0, #ramp - 1)
+	local i = math.min(#ramp - 2, math.floor(pos))
+	return ramp[i + 1]:Lerp(ramp[i + 2], pos - i)
 end
 PyroFX.RampColour = rampColour
 
---- Heat Rush's body glow: the one colour torso, sleeves and hands share, Base to WhiteHot by Heat.
-function PyroFX.GlowColour(heat)
-	return rampColour(2 + 2 * math.clamp(heat, 0, 1))
-end
 
 ----------------------------------------------------------------------------------------------------
 -- client helpers
@@ -264,21 +226,74 @@ local warned = {}
 local Viewmodel, VFXLibrary, Settings = nil, nil, nil
 
 -- WRAPS (SkinCatalog, 2026-10-10): `character`'s wrap for Pyro's `ability` (their replicated, validated choice), or nil;
--- withWrap runs fn under it, so every flame its canvases draw -- and any canvas made inside their frames -- wears it
+-- withWrap runs fn under it, so every flame its canvases draw -- and any canvas made inside their frames -- wears it.
+-- (2026-10-24) an ELEMENT wrap, like Umbra's (2026-10-19), Cryo's and Toxin's: the caster's one ElementWrap_Pyro
+-- (SkinCatalog.ElementWrap), in Studio a WrapStudio attribute on the caster's model -- no longer a Skin_<ability> per
+-- ability through Offer. Drawn on the same six abilities Offer listed: the flame-look ones. A borrowed Pyro Technique and a Pyro skin keep Default, as before.
 local SkinCat, PDraw = nil, nil
-local burnWraps = setmetatable({}, { __mode = "k" })   -- [victim model] = the wrap of the last Lash that hit it
+local burnWraps = setmetatable({}, { __mode = "k" })   -- [victim model] = { W = the wrap of the last Lash that hit it, At }
+local FLAME_WRAP = { Fireball = true, Immolate = true, EmberRefund = true, RingofFire = true, Detonate = true, ScorchingLash = true }
+-- (2026-10-24, the owner on the showreel: the added layers hid the fight on normal moves) each ability's TIER, from
+-- PyroHandler's own headers: the Ultimate (Ring of Fire), a Technique (Scorching Lash); the rest are Basics (M1
+-- Fireball, Primary Immolate, Passive Ember Refund, Mobility Detonate). A wrap's ShedScale[tier] shrinks its Shed
+-- layers -- size, rate, speed, life, lift -- for that tier; the Ultimate (no entry) draws them at full scale.
+local TIER = { RingofFire = "Ultimate", ScorchingLash = "Technique" }
+local tiered = {}
+local function forTier(w, ability)
+	local S, shed = w.ShedScale, w.Shed
+	local tier = TIER[ability] or "Basic"
+	local f = S and shed and (S[ability] or S[tier])               -- (2026-10-24: an ability's own entry wins over its tier's)
+	if not f then return w end
+	if S[ability] then tier = ability end
+	local key = w.Id .. "/" .. tier
+	local v = tiered[key]
+	if v then return v end
+	local list = {}
+	for i, L in ipairs(shed) do
+		local c = table.clone(L)
+		c.Name = L.Name .. "@" .. tier
+		c.Size = { L.Size[1] * f.Size, L.Size[2] * f.Size }
+		c.Speed = { L.Speed[1] * (f.Speed or 1), L.Speed[2] * (f.Speed or 1) }
+		c.Life = { L.Life[1] * (f.Life or 1), L.Life[2] * (f.Life or 1) }
+		c.Rise = (L.Rise or 0) * (f.Rise or 1)
+		c.PerPart = L.PerPart and L.PerPart * f.Rate
+		c.MinRate = L.MinRate and L.MinRate * f.Rate
+		c.Burst = L.Burst and L.Burst * f.Rate
+		list[i] = c
+	end
+	v = setmetatable({ Shed = list, Tier = tier }, { __index = w })
+	tiered[key] = v
+	return v
+end
 local function wrapOf(character, ability)
-	local plr = typeof(character) == "Instance" and Players:GetPlayerFromCharacter(character) or nil
-	if not plr then return nil end
+	if typeof(character) ~= "Instance" or not FLAME_WRAP[ability] then return nil end
 	SkinCat = SkinCat or require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("SkinCatalog"))
-	local w = SkinCat.Resolve("Pyro", ability, SkinCat.Chosen(plr, ability))
-	return (type(w) == "table" and w.Flame) and w or nil
+	local id = RunService:IsStudio() and character:GetAttribute("WrapStudio") or nil
+	if not id then
+		local plr = Players:GetPlayerFromCharacter(character)
+		if not plr or plr:GetAttribute("Element") ~= "Pyro" then return nil end
+		if SkinCat.ElementSkin(plr, "Pyro") ~= "Default" then return nil end      -- (a material wrap never goes over a skin)
+		id = SkinCat.ElementWrap(plr, "Pyro")
+	end
+	local w = type(id) == "string" and id ~= "Default" and SkinCat.Skins[id]
+	return (type(w) == "table" and w.Wrap == "Pyro" and w.Flame) and forTier(w, ability) or nil
+end
+local TOON_PIECES = { "RingOfFireIgnite" }   -- (2026-10-25: the toon pieces with Pyro's colours baked in)
+local function prewarmToon(w)
+	if not (w and w.ToonRamp) then return end
+	local folder = ReplicatedStorage:FindFirstChild("FireMagicMeshes")
+	if not folder then return end
+	for _, n in ipairs(TOON_PIECES) do
+		local src = folder:FindFirstChild(n)
+		if src then PDraw.WrapPiece(w, src) end
+	end
 end
 local function withWrap(character, ability, fn, ...)
 	local w = wrapOf(character, ability)
 	if not w then return fn(...) end
 	PDraw = PDraw or require(ReplicatedStorage:WaitForChild("IceMagic"):WaitForChild("PyroDraw"))
 	PDraw.PrewarmWrap(w)
+	prewarmToon(w)
 	return PDraw.WithWrap(w, fn, ...)
 end
 
@@ -297,7 +312,7 @@ end
 -- "toon": the Build Prompt #20 meshes, every draw in this file. "flame": the owner-confirmed V1 "Layered blaze+" look
 -- (flames only), drawn by PyroFlame_Fire / PyroFlame_Ring / PyroFlame_Tech through PyroDraw from the PF_ meshes in
 -- ReplicatedStorage.FireMagicMeshes.Flame. Fireball, Immolate, Ember Refund, Ring of Fire, Detonate, Scorching Lash and
--- the burn-stack flames have both looks; Heat Rush and the Cinder Shield have only the one in this file. The comic
+-- the burn-stack flames have both looks. The comic
 -- words (IGNITE!, KABOOM!) are this file's in either look. No mechanic reads the look: Tuning, the flight maths and
 -- every hit test are the same code for both.
 -- THE KILL SWITCH: PyroFX.Look is the default; the ReplicatedStorage attribute "PyroLook" ("toon" | "flame") overrides
@@ -337,7 +352,13 @@ end
 
 --- A copy of one approved mesh, anchored and inert, keeping the material, colour and transparency it was set
 --- up with. nil (with one warning) when the place does not have it.
-local function piece(name)
+--- (2026-10-25) the wrap a toon piece made right now wears: the canvas wrap in force (an entry's withWrap), if it paints
+--- the toon look (ToonRamp)
+local function toonWrapNow()
+	local w = PDraw and PDraw.CurrentWrap()
+	return (type(w) == "table" and w.ToonRamp) and w or nil
+end
+local function piece(name, w)
 	local folder = ReplicatedStorage:FindFirstChild(MESH_FOLDER)
 	local src = folder and folder:FindFirstChild(name)
 	if not (src and src:IsA("BasePart")) then
@@ -346,6 +367,11 @@ local function piece(name)
 			warn(("[PyroFX] mesh '%s' not found in ReplicatedStorage.%s"):format(name, MESH_FOLDER))
 		end
 		return nil
+	end
+	w = w or toonWrapNow()
+	if w and PDraw then                                  -- (2026-10-25) the wrap's copy, its colours swapped for the wrap's
+		local t = PDraw.WrapPiece(w, src)
+		if t then src = t end
 	end
 	local p = src:Clone()
 	p.Anchored = true
@@ -422,6 +448,13 @@ local function isLocal(character)
 	return character ~= nil and character == Players.LocalPlayer.Character
 end
 
+--- (2026-10-19, audit P5F-06) Reduce Enemy VFX's "not an enemy's": yours or a teammate's (VFXLibrary.IsEnemy)
+local function spared(character)
+	if typeof(character) ~= "Instance" then return false end      -- (no caster known: thinned, as before)
+	if VFXLibrary and type(VFXLibrary.IsEnemy) == "function" then return not VFXLibrary.IsEnemy(character) end
+	return isLocal(character)
+end
+
 --- Whether the local player is looking through their own eyes (the only view this game has today, but the
 --- flag is FirstPersonController's to own).
 local function firstPerson()
@@ -434,6 +467,7 @@ end
 -- After the camera (Camera), the slide roll (+1), the viewmodel (+2) and the shards (+3): what rides the
 -- viewmodel's arms is placed against the arms as they will be drawn.
 local effects = {}
+local failHooks = {}             -- [effect fn] = what to run if it errors (addEffect's onFail)
 local bound = false
 
 local function step(dt)
@@ -446,8 +480,14 @@ local function step(dt)
 				warn("[PyroFX] an effect failed: " .. tostring(alive))
 			end
 			alive = false
+			-- (2026-10-19, audit P5B-18) the effect's own cleanup (addEffect's onFail), so its pieces do not stay behind
+			local onFail = failHooks[effects[i]]
+			if onFail then pcall(onFail) end
 		end
-		if not alive then table.remove(effects, i) end
+		if not alive then
+			failHooks[effects[i]] = nil
+			table.remove(effects, i)
+		end
 	end
 	if #effects == 0 and bound then
 		RunService:UnbindFromRenderStep("SpellshotPyroFX")
@@ -455,8 +495,9 @@ local function step(dt)
 	end
 end
 
---- Runs fn(now, dt) every frame until it returns false.
-local function addEffect(fn)
+--- Runs fn(now, dt) every frame until it returns false; `onFail` (optional) cleans up if fn errors.
+local function addEffect(fn, onFail)
+	if onFail then failHooks[fn] = onFail end
 	table.insert(effects, fn)
 	if not bound then
 		bound = true
@@ -476,21 +517,23 @@ end
 local emberPool = {}
 local embersLive = 0
 
-local function takeEmber(name)
-	local pool = emberPool[name]
+local function takeEmber(name, w)
+	local key = w and (name .. "@" .. w.Id) or name          -- (2026-10-25: a wrap's pieces pool apart)
+	local pool = emberPool[key]
 	while pool and #pool > 0 do
 		local p = table.remove(pool)
 		if p.Parent then return p end
 	end
-	return piece(name)
+	return piece(name, w)
 end
 
-local function giveEmber(name, p)
+local function giveEmber(name, p, w)
 	p.LocalTransparencyModifier = 1
-	local pool = emberPool[name]
+	local key = w and (name .. "@" .. w.Id) or name
+	local pool = emberPool[key]
 	if not pool then
 		pool = {}
-		emberPool[name] = pool
+		emberPool[key] = pool
 	end
 	if #pool < 60 and p.Parent then table.insert(pool, p) else p:Destroy() end
 end
@@ -611,7 +654,8 @@ function PyroFX.FireFireball(origin, dir, exclude, visualFrom, onHit, hot)
 	local cam = workspace.CurrentCamera
 	local camStart = cam and cam.CFrame.Position or origin
 	local nextEmber = 0
-	local thin = (Settings.EffectDensity or 1) < 0.75 or (Settings.ThinEnemyVFX and not own)
+	-- (2026-10-19, audit P5F-06) a teammate's ball is not an enemy's (the thrower is exclude[1], both callers)
+	local thin = (Settings.EffectDensity or 1) < 0.75 or (Settings.ThinEnemyVFX and not (own or spared(exclude and exclude[1])))
 	addEffect(function(now)
 		local t = math.min((now - start) * VFXLibrary.ShotTimeScale(), F.Life)
 		local a = PyroFX.FireballPoint(origin, v0, lastT)
@@ -758,441 +802,6 @@ function PyroFX.EmberRefund(character, from)
 end
 
 ----------------------------------------------------------------------------------------------------
--- MOBILITY: HEAT RUSH
-----------------------------------------------------------------------------------------------------
--- Self-driven from each character's HeatRush (held) and Heat (0..1) attributes, so every client draws
--- everyone's with no remote but the release: the aura tier at the feet (it rises in by height when the tier
--- changes, and sinks on release), heat lines rising off the sides and back, and the body glow -- torso,
--- sleeves and hands one colour up the ramp while held, cooling back to their resting tones after. Your own
--- aura and heat lines are not drawn in first person (they only get in the way); your exhale's steam is.
-local AURA_PIVOT = {
-	Low = Vector3.new(0, 0.717, 0.428), Mid = Vector3.new(-0.028, 1.109, 0.752), High = Vector3.new(0.033, 1.404, 1.481),
-}
-local LINE_PIVOT = { Vector3.new(-0.01, 1.021, 0), Vector3.new(-0.009, 0.991, 0), Vector3.new(-0.002, 0.939, 0) }
-local DEFLECT_PIVOT = Vector3.new(-0.647, 0.025, -0.015)
-local GLOW_PARTS = { "UpperTorso", "LowerTorso", "LeftUpperArm", "LeftLowerArm", "LeftHand",
-	"RightUpperArm", "RightLowerArm", "RightHand" }
-local heatControllers = {}      -- [character] = controller
-
-local function rand(a, b)
-	return a + (b - a) * math.random()
-end
-
-local function tierOf(h)
-	local H = T.HeatRush
-	return (h < H.TierMid and "Low") or (h < H.TierHigh and "Mid") or "High"
-end
-
-local function addLine(ctl, offset, scale, life, rise, back, delay)
-	local k = math.random(1, 3)
-	ctl.Lines[#ctl.Lines + 1] = {
-		Name = "HeatLine_0" .. k, Pivot = LINE_PIVOT[k], Offset = offset, Scale = scale, Life = life,
-		Rise = rise, Back = back, Rot = math.rad(rand(0, 180)), Born = os.clock() + (delay or 0), Steam = back == 0,
-	}
-end
-
---- The ground under a character, facing where it is running (or looking, standing still).
-local function groundFrame(character)
-	local root = character:FindFirstChild("HumanoidRootPart")
-	local hum = character:FindFirstChildOfClass("Humanoid")
-	if not (root and hum) then return nil end
-	local ground = root.Position - Vector3.new(0, hum.HipHeight + root.Size.Y / 2, 0)
-	local v = root.AssemblyLinearVelocity
-	local fwd = flatUnit((v.X * v.X + v.Z * v.Z > 4) and v or root.CFrame.LookVector, Vector3.new(0, 0, -1))
-	return CFrame.lookAt(ground, ground + fwd)
-end
-
-local function startHeat(character)
-	libs()
-	local existing = heatControllers[character]
-	if existing then return existing end
-	local H = T.HeatRush
-	local ctl = {
-		Auras = { Low = piece("HeatRushAuraLow"), Mid = piece("HeatRushAuraMid"), High = piece("HeatRushAuraHigh") },
-		Lines = {}, Count = 0, NextLine = 0, Tier = nil, TierSince = 0,
-		Heat = character:GetAttribute("Heat") or 0, Rest = {}, Holding = false, ReleasedAt = nil, Glowing = false,
-	}
-	for _, name in ipairs(GLOW_PARTS) do
-		local part = character:FindFirstChild(name)
-		if part then ctl.Rest[part] = part.Color end
-	end
-	heatControllers[character] = ctl
-	addEffect(function(now, dt)
-		local frame = groundFrame(character)
-		local function finish()
-			for part, colour in pairs(ctl.Rest) do
-				if part.Parent then part.Color = colour end
-			end
-			destroy(ctl.Auras)
-			for _, ln in ipairs(ctl.Lines) do
-				if ln.Part then giveEmber(ln.Name, ln.Part) end
-			end
-			if heatControllers[character] == ctl then heatControllers[character] = nil end
-			return false
-		end
-		if not (frame and character.Parent) then return finish() end
-		local holding = character:GetAttribute("HeatRush") == true
-		if holding then
-			ctl.ReleasedAt = nil
-		elseif ctl.Holding then
-			ctl.ReleasedAt = now
-		end
-		ctl.Holding = holding
-		if holding then ctl.Glowing = true end
-		ctl.Heat += ((character:GetAttribute("Heat") or 0) - ctl.Heat) * math.clamp(8 * dt, 0, 1)
-		local h = ctl.Heat
-		local hideOwn = isLocal(character) and firstPerson()
-
-		-- the glow: while held one shared colour up the ramp, cooling back to the resting tones once let go
-		if ctl.Glowing then
-			local glow = PyroFX.GlowColour(h)
-			local cool = holding and 0 or (ctl.ReleasedAt and easeOutQuad((now - ctl.ReleasedAt) / H.GlowCool) or 1)
-			for part, rest in pairs(ctl.Rest) do
-				if part.Parent then part.Color = glow:Lerp(rest, cool) end
-			end
-			if cool >= 1 then ctl.Glowing = false end
-		end
-
-		-- the aura
-		local tier = tierOf(h)
-		if tier ~= ctl.Tier then ctl.Tier, ctl.TierSince = tier, now end
-		local sink = holding and 1 or (ctl.ReleasedAt and (1 - easeInQuad((now - ctl.ReleasedAt) / H.AuraSink)) or 0)
-		local sy = seq(H.AuraPop, now - ctl.TierSince, 1) * (1 + 0.06 * math.sin(now * 51)) * sink
-		for name, p in pairs(ctl.Auras) do
-			if name == tier and sy > 0.01 and not hideOwn then
-				place(p, frame, AURA_PIVOT[name], 1, sy, 1)
-			else
-				hide(p)
-			end
-		end
-
-		-- the heat lines: golden-ratio steps round the sides and back, so no two land on top of each other
-		if holding and now >= ctl.NextLine then
-			ctl.NextLine = now + H.LineEvery[tier]
-			local a = -0.15 * math.pi + 1.3 * math.pi * ((ctl.Count * 0.618034) % 1)
-			ctl.Count += 1
-			local r = rand(H.LineRadius[1], H.LineRadius[2])
-			addLine(ctl, Vector3.new(math.cos(a) * r, H.LineFoot[tier] + rand(-0.3, 0.4), math.sin(a) * r),
-				H.LineScale[tier] * rand(0.85, 1.1), H.LineLife, H.LineRise, H.LineBack)
-		end
-		for i = #ctl.Lines, 1, -1 do
-			local ln = ctl.Lines[i]
-			local age = now - ln.Born
-			if age >= ln.Life then
-				if ln.Part then giveEmber(ln.Name, ln.Part) end
-				table.remove(ctl.Lines, i)
-			elseif age >= 0 then
-				ln.Part = ln.Part or takeEmber(ln.Name)
-				local g = 0.4 + 0.6 * math.min(1, age * 30)
-				local left = ln.Life - age
-				if left <= 4 / 30 then g *= math.max(0, (left - 1 / 30) / (3 / 30)) end
-				if ln.Part then
-					if (hideOwn and not ln.Steam) or g <= 0.001 then
-						hide(ln.Part)
-					else
-						local at = frame * (ln.Offset + Vector3.new(0, ln.Rise * age, ln.Back * age))
-						place(ln.Part, CFrame.new(at) * CFrame.Angles(0, ln.Rot, 0), ln.Pivot, ln.Scale * g)
-					end
-				end
-			end
-		end
-
-		if not holding and h < 0.01 and sink <= 0 and #ctl.Lines == 0 and not ctl.Glowing then
-			return finish()
-		end
-		return true
-	end)
-	return ctl
-end
-
---- Heat Rush let go: above a third of Heat, a puff of steam -- heat lines all round the upper body, rising
---- fast and shrinking out.
-function PyroFX.HeatRelease(character, heat)
-	if (heat or 0) < T.HeatRush.ExhaleAbove then return end
-	local ctl = startHeat(character)
-	for k = 0, 6 do
-		local a = 2 * math.pi * k / 7 + rand(-0.3, 0.3)
-		local r = rand(0.9, 1.4)
-		addLine(ctl, Vector3.new(math.cos(a) * r, rand(3.2, 4.4), math.sin(a) * r), rand(0.9, 1.2), 0.45, 4.5, 0,
-			0.06 + 0.02 * k)
-	end
-end
-
---- A ranged hit thinned by the heat: the spark splash turned to the camera where it met the heat, its rays
---- thrown back and up toward whoever fired.
-function PyroFX.Deflect(character, from, position)
-	libs()
-	local p = piece("HeatRushDeflect")
-	if not p then return end
-	local born = os.clock()
-	local toward = (typeof(from) == "Vector3") and flatUnit(from - position, Vector3.xAxis) or Vector3.xAxis
-	local throw = toward + Vector3.new(0, 0.75, 0)
-	addEffect(function(now)
-		local s = seq(T.HeatRush.Deflect, now - born, 0)
-		if s <= 0 or not p.Parent then
-			p:Destroy()
-			return false
-		end
-		local back = workspace.CurrentCamera.CFrame.Position - position
-		back = back.Magnitude > 1e-3 and back.Unit or Vector3.zAxis
-		local want = throw - back * throw:Dot(back)
-		if want.Magnitude < 1e-3 then want = Vector3.yAxis - back * back.Y end
-		local x = -want.Unit                     -- the rays fly along the part's -X
-		place(p, CFrame.fromMatrix(position, x, back:Cross(x), back), DEFLECT_PIVOT, s)
-		return true
-	end)
-end
-
--- Heat Rush runs itself off the attributes: a character holding it, or still carrying Heat, gets a
--- controller. The local player's viewmodel hears the same two facts.
-local watchingHeat = false
-function PyroFX.WatchHeat()
-	if watchingHeat or not RunService:IsClient() then return end
-	watchingHeat = true
-	libs()
-	RunService.Heartbeat:Connect(function()
-		for _, plr in ipairs(Players:GetPlayers()) do
-			local c = plr.Character
-			if c and not heatControllers[c] and (c:GetAttribute("HeatRush") or (c:GetAttribute("Heat") or 0) > 0.01) then
-				withWrap(c, "HeatRush", startHeat, c)
-			end
-		end
-		local me = Players.LocalPlayer.Character
-		if me then Viewmodel.SetHeat(me:GetAttribute("HeatRush") == true, me:GetAttribute("Heat") or 0) end
-	end)
-end
-
-----------------------------------------------------------------------------------------------------
--- DEFENSE: CINDER SHIELD
-----------------------------------------------------------------------------------------------------
--- The see-through Neon rings held on the right hand, over the body. Everyone sees it at 1.3x on the
--- character's hand; the caster, in first person, sees their own copy at 1.69x riding the viewmodel's right
--- arm. It glows up the heat ramp as ShieldAbsorb climbs (the pane a step cooler, so the rings still read),
--- cracks at 0.3 and swaps to the breaking pieces at 0.7. During a left-hand Fireball it rides the swinging
--- hand. Expiring shrinks it away; a burst pops it and sends the heat haze.
-local SHIELD_PIVOT = {
-	CinderShieldPane = Vector3.new(0, 0, 0.07),
-	CinderShieldRings_Full = Vector3.new(0, 0, 0.05),
-	CinderShieldRings_Breaking = Vector3.new(0, 0, 0.05),
-	CinderShieldInk_Full = Vector3.new(0, 0, 0.07),
-	CinderShieldInk_Breaking = Vector3.new(0, 0, 0.07),
-	CinderShieldCracks_Cracked = Vector3.new(-0.452, 0.066, -0.012),
-	CinderShieldCracks_Breaking = Vector3.new(-0.083, 0.001, -0.022),
-}
-local HAZE_PIVOT = Vector3.new(0.025, 0, -2.01)
-local SHAKE = { Vector3.new(0.08, 0, 0.12), Vector3.new(-0.05, 0, 0.05) }
-local shieldControllers = {}    -- [character] = controller
-
-local function shieldRamp(a)
-	return rampColour(0.35 + 3.65 * math.clamp(a, 0, 1))
-end
-
---- The blur on your own screen when a heat haze passes through you: in at once, gone over BlurTime.
-local function blurScreen()
-	local C = T.CinderShield
-	local blur = Instance.new("BlurEffect")
-	blur.Name = "CinderHazeBlur"
-	blur.Size = C.BlurSize
-	blur.Parent = Lighting
-	local born = os.clock()
-	addEffect(function(now)
-		local u = (now - born) / C.BlurTime
-		if u >= 1 or not blur.Parent then
-			blur:Destroy()
-			return false
-		end
-		blur.Size = C.BlurSize * (1 - u) * (1 - u)
-		return true
-	end)
-end
-
---- The burst's heat haze: a faint warm ripple leaving the shield the way the caster faced, at shield height,
---- growing as it goes and fading at the end of its range. Whoever it passes through gets the blur.
-local function heatHaze(character, origin, dir)
-	local p = piece("CinderHeatHaze")
-	if not p then return end
-	local C = T.CinderShield
-	local baseT = p.Transparency
-	local born = os.clock() + C.HazeDelay
-	local life = C.HazeRange / C.HazeSpeed
-	-- your own haze never blurs you, and neither does one that could not hurt you (Config.MayHurt): in the Hub, or
-	-- from anyone but your opponent in the same duel
-	local caster, me = Players:GetPlayerFromCharacter(character), Players.LocalPlayer
-	local Config = require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("SpellshotConfig"))
-	local blurred = isLocal(character) or not (caster and me and Config.MayHurt(caster, me))
-	dir = flatUnit(dir, Vector3.new(0, 0, -1))
-	addEffect(function(now)
-		local t = now - born
-		if t >= life or not p.Parent then
-			p:Destroy()
-			return false
-		end
-		if t < 0 then return true end
-		local fadeFrom = life * 0.6
-		local op = C.HazeOpacity * (t < fadeFrom and 1 or math.max(0, 1 - (t - fadeFrom) / (life - fadeFrom)))
-		p.Transparency = math.max(baseT, 1 - 0.75 * op)
-		local at = origin + dir * (C.HazeSpeed * t)
-		place(p, CFrame.lookAt(at, at + dir), HAZE_PIVOT, PyroFX.HazeScale(t))
-		if not blurred then
-			local me = Players.LocalPlayer.Character
-			local root = me and me:FindFirstChild("HumanoidRootPart")
-			if root then
-				local rel = root.Position - origin
-				local along = rel:Dot(dir)
-				if along > 0 and along <= C.HazeSpeed * t then
-					blurred = true
-					local s = PyroFX.HazeScale(along / C.HazeSpeed)
-					local side = rel - dir * along
-					if math.abs(side.Y) <= C.HazeHalfHeight * s + 2.5
-						and Vector3.new(side.X, 0, side.Z).Magnitude <= C.HazeHalfWidth * s + 1.5 then
-						blurScreen()
-					end
-				end
-			end
-		end
-		return true
-	end)
-end
-
---- The shield's frame this frame: the hold, or -- while a left-hand Fireball swings it aside -- riding the hand,
---- easing back onto the hold after.
-local function riding(ctl, now, handCF, holdCF)
-	if now < ctl.AsideUntil then
-		if not ctl.Rel then ctl.Rel = handCF:ToObjectSpace(holdCF) end
-		return handCF * ctl.Rel
-	end
-	if ctl.Rel then
-		local u = (now - ctl.AsideUntil) / 0.15
-		if u >= 1 then
-			ctl.Rel = nil
-			return holdCF
-		end
-		return (handCF * ctl.Rel):Lerp(holdCF, easeOutQuad(u))
-	end
-	return holdCF
-end
-
---- Cinder Shield on `character`, forming on the fists' impact. The caster's own client starts it on the
---- keypress; the server's broadcast then finds it already running and leaves it.
-function PyroFX.Shield(character, serverT0)
-	libs()
-	local C = T.CinderShield
-	local start = localClock(serverT0)
-	local old = shieldControllers[character]
-	if old and not old.EndAt and math.abs(old.Start - start) < 0.6 then
-		old.Confirmed = old.Confirmed or serverT0 ~= nil
-		return
-	end
-	if old then old.Kill = true end
-	local own = isLocal(character) and firstPerson()
-	local parts = {}
-	for name in pairs(SHIELD_PIVOT) do parts[name] = piece(name) end
-	local ctl = { Start = start, FormAt = start + C.FormAt, Absorb = 0, ShakeAt = -1, AsideUntil = 0,
-		Confirmed = serverT0 ~= nil }
-	shieldControllers[character] = ctl
-	local function finish()
-		destroy(parts)
-		if shieldControllers[character] == ctl then shieldControllers[character] = nil end
-		return false
-	end
-	addEffect(function(now)
-		local root = character:FindFirstChild("HumanoidRootPart")
-		local hand = character:FindFirstChild("RightHand")
-		if ctl.Kill or not (root and hand and character.Parent) then return finish() end
-		if character:GetAttribute("CinderShield") then ctl.Confirmed = true end
-		-- a keypress the server turned down never gets confirmed: let the shield go
-		if not ctl.Confirmed and not ctl.EndAt and now - ctl.Start > 1.0 then
-			ctl.EndAt, ctl.EndSeq = now, C.Fade
-		end
-		local s
-		if ctl.EndAt then
-			s = seq(ctl.EndSeq, now - ctl.EndAt, 0)
-			if s <= 0 then return finish() end
-		elseif now < ctl.FormAt then
-			s = 0
-		else
-			s = seq(C.Grow, now - ctl.FormAt, 1)
-		end
-		local attrA = character:GetAttribute("ShieldAbsorb")
-		if attrA and not ctl.EndAt then
-			if attrA > ctl.Absorb + 1e-3 then ctl.ShakeAt = now end
-			ctl.Absorb = attrA
-		end
-		local a = ctl.Absorb
-
-		local cf, basis
-		if own then
-			local arm = Viewmodel.GetArmCFrame("R")
-			local cam = workspace.CurrentCamera.CFrame
-			if not arm then
-				for _, p in pairs(parts) do hide(p) end
-				return true
-			end
-			local tip = (arm * CFrame.new(0, 0, -1.25)).Position
-			cf = riding(ctl, now, arm, CFrame.new(tip + cam:VectorToWorldSpace(C.FromTipFP)) * cam.Rotation)
-			basis = cam
-		else
-			local tip = (hand.CFrame * CFrame.new(0, -0.15, 0)).Position
-			cf = riding(ctl, now, hand.CFrame, CFrame.new(tip + root.CFrame:VectorToWorldSpace(C.FromTipTP)) * root.CFrame.Rotation)
-			basis = root.CFrame
-		end
-		local shake = SHAKE[math.floor((now - ctl.ShakeAt) * 30) + 1]
-		if shake then cf = CFrame.new(basis:VectorToWorldSpace(shake)) * cf end
-		ctl.Centre = cf.Position
-
-		local state = (a < C.Cracked and "Full") or (a < C.Breaking and "Cracked") or "Breaking"
-		local ringsName = (state == "Breaking") and "CinderShieldRings_Breaking" or "CinderShieldRings_Full"
-		local inkName = (state == "Breaking") and "CinderShieldInk_Breaking" or "CinderShieldInk_Full"
-		local crackName = (state ~= "Full") and ("CinderShieldCracks_" .. state) or nil
-		local scale = own and C.ScaleFP or C.ScaleTP
-		for name, p in pairs(parts) do
-			if name == "CinderShieldPane" or name == ringsName or name == inkName or name == crackName then
-				place(p, cf, SHIELD_PIVOT[name], s * scale)
-			else
-				hide(p)
-			end
-		end
-		local rings = parts[ringsName]
-		if rings then
-			rings.Color = shieldRamp(a)
-			rings.Transparency = 1 - (0.38 + 0.47 * a)
-		end
-		local pane = parts.CinderShieldPane
-		if pane then
-			pane.Color = shieldRamp(a - 0.3)
-			pane.Transparency = 1 - (0.20 + 0.30 * a)
-		end
-		return true
-	end)
-end
-
---- A Fireball thrown with the shield up: the shield rides the right hand while it swings aside.
-function PyroFX.ShieldAside(character)
-	local ctl = shieldControllers[character]
-	if not ctl then return end
-	local now = os.clock()
-	if now >= ctl.AsideUntil and not ctl.Rel then ctl.Rel = nil end
-	ctl.AsideUntil = now + T.CinderShield.AsideTime
-end
-
---- It ran out (or its caster fell): it shrinks away, releasing nothing.
-function PyroFX.ShieldEnd(character)
-	local ctl = shieldControllers[character]
-	if ctl and not ctl.EndAt then ctl.EndAt, ctl.EndSeq = os.clock(), T.CinderShield.Fade end
-end
-
---- It burst: a pop at full glow, and the heat haze leaves it the way the caster faced.
-function PyroFX.ShieldBurst(character, origin, dir, serverT0)
-	libs()
-	local ctl = shieldControllers[character]
-	local from = (ctl and ctl.Centre) or origin
-	if ctl then
-		ctl.EndAt, ctl.EndSeq, ctl.Absorb = os.clock(), T.CinderShield.BurstPop, 1
-	end
-	if typeof(from) == "Vector3" and typeof(dir) == "Vector3" then heatHaze(character, from, dir) end
-end
-
-----------------------------------------------------------------------------------------------------
 -- ULTIMATE: RING OF FIRE
 ----------------------------------------------------------------------------------------------------
 -- POINTED, not traced (asked for 2026-09-14): the caster points at a spot and their hand draws the circle round
@@ -1296,6 +905,12 @@ function PyroFX.RingOfFire(character, center, radius, hot, serverT0, startAngle,
 			return
 		end
 	end
+	-- (2026-10-19, audit P5B-01) the toon ring is drawn where the fire really ends, the area the server burns
+	-- (PyroHandler: radius x HotReach when hot, 21 studs, not 17.5), as the flame look's HotLineAtReach does: the line,
+	-- the hand's draw point, the seal and the eruption all go by the reach
+	radius = radius * ((hot and R.HotReach) or 1)
+	-- (2026-10-19, audit P5B-05) Reduce Flashing: the trace's variants hold still instead of swapping at FlickerRate (18 Hz)
+	local calm = Settings and Settings.Get and Settings.Get("ReduceFlashing") == true
 	local t0 = localClock(serverT0)
 	local closed = t0 + R.DrawTime
 	local snap = closed + R.SettleTime + R.SnapBeat
@@ -1339,7 +954,7 @@ function PyroFX.RingOfFire(character, center, radius, hot, serverT0, startAngle,
 		local f = R.FireScale
 		for i, seg in ipairs(segs) do
 			local s = burning and seq(R.SegBurn, now - snap, 0) or seq(R.SegPop, now - seg.Born, 1)
-			local shown = (math.floor(now * R.FlickerRate) + i) % 3 + 1   -- the variants crawl round the ring
+			local shown = (math.floor(calm and 0 or now * R.FlickerRate) + i) % 3 + 1   -- the variants crawl round the ring
 			local cf = CFrame.fromMatrix(center + seg.Offset, -seg.Dir, Vector3.yAxis)
 			for n, p in ipairs(seg.Parts) do
 				if n == shown and s > 0.001 then place(p, cf, TRACE_PIVOT, f, s * f, s * f) else hide(p) end
@@ -1401,6 +1016,12 @@ function PyroFX.RingOfFire(character, center, radius, hot, serverT0, startAngle,
 			return false
 		end
 		return true
+	end, function()                  -- (2026-10-19, audit P5B-18) an error takes the ring's pieces with it
+		for _, seg in ipairs(segs) do destroy(seg.Parts) end
+		if seal then seal:Destroy() end
+		if erupt then erupt:Destroy() end
+		if word then word:Destroy() end
+		if character and rings[character] == ring then rings[character] = nil end
 	end)
 end
 
@@ -1607,7 +1228,7 @@ function PyroFX.DetonateFlick(character, t0)
 			end
 		end
 		return true
-	end)
+	end, finish)                     -- (2026-10-19, audit P5B-18) an error releases its pieces too
 end
 
 --- The Flame Crown on `model` for the mark that goes off at server time `expires`, `fuse` seconds after it landed.
@@ -1615,16 +1236,27 @@ end
 local function startMark(model, expires, fuse, landing, own)
 	libs()
 	-- the flame look's mark keeps the same books (markControllers, lastMark: PyroFlame_Tech.Share), so the blast, the
-	-- fizzle and watchMark serve either look's. `own`: the local player's own cast (the flame look's thinning only)
+	-- fizzle and watchMark serve either look's. `own`: not an enemy's cast (the flame look's thinning only)
 	if viaFlame("Tech", "StartMark", model, expires, fuse, landing, own) then return end
 	local D = DETONATE_FX
 	local old = markControllers[model]
+	local carry = nil
 	if old then
-		if math.abs(old.Expires - expires) < 0.05 then return end     -- the broadcast and the attributes: one mark
+		if math.abs(old.Expires - expires) < 0.05 then                -- the broadcast and the attributes: one mark
+			-- (2026-10-19, audit GB-03) unless the watcher (attributes) won the race and this is the broadcast's call:
+			-- it upgrades that mark -- drawn again under the caller's wrap, with its `own`, the landing pop while the
+			-- crown is still new -- keeping its clock and what it has seen, instead of being dropped
+			if landing ~= true or old.Cast then return end
+			carry = old
+			landing = os.clock() - old.Born < 0.2
+		end
 		old.Kill = true
 	end
 	fuse = math.max(fuse, 0.05)
-	local ctl = { Expires = expires, Start = localClock(expires - fuse), Born = os.clock(), Shown = {} }
+	local ctl = { Expires = expires, Start = localClock(expires - fuse), Born = os.clock(), Shown = {}, Cast = carry ~= nil or landing == true }
+	if carry then
+		ctl.Born, ctl.Seen, ctl.OffAt, ctl.FizzleAt, ctl.FizzleAsked = carry.Born, carry.Seen, carry.OffAt, carry.FizzleAt, carry.FizzleAsked
+	end
 	markControllers[model] = ctl
 	lastMark[model] = expires
 	local root = model:FindFirstChild("HumanoidRootPart")
@@ -1727,7 +1359,7 @@ local function startMark(model, expires, fuse, landing, own)
 			end
 		end
 		return true
-	end)
+	end, finish)                     -- (2026-10-19, audit P5B-18) an error releases its pieces too
 end
 
 --- A mark on the victim's RX_Primed attributes that nothing is drawing (a late joiner, a broadcast that never came).
@@ -1748,7 +1380,7 @@ function PyroFX.DetonateMark(d)
 	libs()
 	local fuse = tonumber(d.Fuse) or T.Detonate.Fuse / VFXLibrary.ShotTimeScale()
 	local t0 = tonumber(d.T0) or workspace:GetServerTimeNow()
-	startMark(model, t0 + fuse, fuse, true, isLocal(d.Character))
+	startMark(model, t0 + fuse, fuse, true, spared(d.Character))   -- (2026-10-19, audit P5F-06) own: not an enemy's cast
 end
 
 --- It went off: { Character, Victim, Position, Amount, Scale (0..1), Lethal, T0 }.
@@ -1835,7 +1467,7 @@ function PyroFX.DetonateBlast(d)
 		end
 		if not going then return finish() end
 		return true
-	end)
+	end, finish)                     -- (2026-10-19, audit P5B-18) an error releases its pieces too
 end
 
 --- The mark went out without a blast: { Victim, Position }. The mark's own frame takes it once the victim's flag is
@@ -2187,7 +1819,7 @@ local function whipFor(character, isOwn)
 		local grow = seq(WHIP.PopIn, (now - ctl.Born) * ts, 1) * ((ctl.Own and firstPerson()) and WHIP.OwnScale or 1)
 		whipDraw(ctl, grow, shrink)
 		return true
-	end)
+	end, finish)                     -- (2026-10-19, audit P5B-18) an error releases its pieces too
 	return ctl
 end
 
@@ -2315,7 +1947,7 @@ local function startBurn(model)
 			end
 		end
 		return true
-	end)
+	end, finish)                     -- (2026-10-19, audit P5B-18) an error releases its pieces too
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -2329,7 +1961,8 @@ end
 local flameSet, flameRetry = nil, 0
 local poseApply = nil      -- installPoses': puts the body clips of the look now in force into CastPose
 -- [model] = os.clock() when WatchBurnStacks first saw it at 0 health, kept only while the flame look is loaded: the Ember
--- Refund streak flies from the body that fell last (PyroFlame_Fire's fallenNear; the broadcast names the caster only)
+-- Refund streak's FALLBACK, the body that fell last (PyroFlame_Fire's fallenNear), used only when the broadcast's From
+-- is missing (the victim had no root on the server; From is the normal path -- doc corrected 2026-10-19, audit GB-05)
 local fallen = setmetatable({}, { __mode = "k" })
 
 local function flameLibs()
@@ -2414,7 +2047,7 @@ local function installPoses()
 	if not ok then warn("[PyroFX] the flame look's body clips were not installed: " .. tostring(err)) end
 end
 
--- Burn stacks and Detonate marks draw themselves off the attributes, as Heat Rush does: every player's body and every
+-- Burn stacks and Detonate marks draw themselves off the attributes: every player's body and every
 -- range dummy is looked at each frame, the list refreshed each second (TerraFX.WatchStagger's pattern). A mark's own
 -- broadcast starts it sooner; this is what a late joiner, or a client that missed it, has. Started once per client
 -- (AbilityFX), and does nothing on the server.
@@ -2453,8 +2086,20 @@ function PyroFX.WatchBurnStacks()
 		for i, m in ipairs(candidates) do
 			if m.Parent then
 				if not burnControllers[m] and (tonumber(m:GetAttribute("RX_Burning_Stacks")) or 0) > 0 then
-					-- the burn wears the wrap of whoever lashed this body last (LashHit below)
-					local w = burnWraps[m]
+					-- the burn wears the wrap of whoever lit it. (2026-10-19, audit GB-02) the server's stamp when it has one
+					-- (RX_Burning_By: the source player's UserId, RX_Burning_Src: the ability that lit it -- every burn
+					-- source writes them); else the Lash that hit this body in the last second (LashHit below) -- a Lash
+					-- from long ago no longer names a burn that a Ring, an Immolate hit or a reaction lit
+					local w = nil
+					local by, src = m:GetAttribute("RX_Burning_By"), m:GetAttribute("RX_Burning_Src")
+					local bp = type(by) == "number" and Players:GetPlayerByUserId(by) or nil
+					if bp then
+						-- (2026-10-25) any flame-look source, drawn at the Basics' scale (a Ring burn on every body is not the Ultimate)
+						w = type(src) == "string" and FLAME_WRAP[src] and bp.Character and wrapOf(bp.Character, "Immolate") or nil
+					else
+						local e = burnWraps[m]
+						w = e and os.clock() - e.At < 1 and e.W or nil
+					end
 					if w then
 						PDraw = PDraw or require(ReplicatedStorage:WaitForChild("IceMagic"):WaitForChild("PyroDraw"))
 						PDraw.WithWrap(w, startBurn, m)
@@ -2478,8 +2123,7 @@ end
 -- argument, the broadcast table's Character, or -- FireFireball -- the first thing its shot excludes (the thrower)
 do
 	local ENTRY = { Charge = "Fireball", FireFireball = "Fireball", Immolate = "Immolate", EmberRefund = "EmberRefund",
-		HeatRelease = "HeatRush", Deflect = "HeatRush", Shield = "CinderShield", ShieldEnd = "CinderShield",
-		ShieldBurst = "CinderShield", ShieldAside = "CinderShield", SteerRing = "RingofFire", LockRing = "RingofFire",
+		SteerRing = "RingofFire", LockRing = "RingofFire",
 		RingOfFire = "RingofFire", DetonateFlick = "Detonate", DetonateMark = "Detonate", DetonateBlast = "Detonate",
 		DetonateFizzle = "Detonate", LashHold = "ScorchingLash", Lash = "ScorchingLash", LashHit = "ScorchingLash" }
 	for name, ability in pairs(ENTRY) do
@@ -2490,7 +2134,7 @@ do
 				if name == "LashHit" and type(a) == "table" and type(a.Victims) == "table" then
 					local w = wrapOf(ch, ability)
 					for _, v in ipairs(a.Victims) do
-						if typeof(v) == "Instance" then burnWraps[v] = w end
+						if typeof(v) == "Instance" then burnWraps[v] = { W = w, At = os.clock() } end
 					end
 				end
 				return withWrap(ch, ability, orig, a, b, c, ...)
@@ -2502,19 +2146,25 @@ do
 		local lp = Players.LocalPlayer
 		if not lp then return end
 		local function warm()
+			PDraw = PDraw or require(ReplicatedStorage:WaitForChild("IceMagic"):WaitForChild("PyroDraw"))
 			local ch = lp.Character
-			if lp:GetAttribute("Element") ~= "Pyro" or not ch then return end
+			if lp:GetAttribute("Element") ~= "Pyro" or not ch then
+				PDraw.PinWrap(nil)                       -- (2026-10-25: not Pyro: no set is kept for them)
+				return
+			end
 			for _, a in pairs(ENTRY) do
 				local w = wrapOf(ch, a)
 				if w then
-					PDraw = PDraw or require(ReplicatedStorage:WaitForChild("IceMagic"):WaitForChild("PyroDraw"))
+					PDraw.PinWrap(w.Id)                  -- (2026-10-25: their own wrap's set is never let go)
 					PDraw.PrewarmWrap(w)
+					prewarmToon(w)
 					return
 				end
 			end
+			PDraw.PinWrap(nil)
 		end
 		lp.AttributeChanged:Connect(function(n)
-			if n == "Element" or string.sub(n, 1, 5) == "Skin_" then warm() end
+			if n == "Element" or n == "ElementWrap_Pyro" or n == "ElementSkin_Pyro" then warm() end   -- (2026-10-24: was Skin_*)
 		end)
 		warm()
 	end)

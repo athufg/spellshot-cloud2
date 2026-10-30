@@ -187,7 +187,8 @@ function V.mount(fx)
 		stars[i].Visible = false
 	end
 	local shards = mkShards(fx.front, 24, { 90, 60, 510, 190 }, 300, 150, 9)
-	local wR = mkWord("ROOTED!", 300, 44, 196, 74, -6, "chill-a/wR", C.cryo)
+	-- (2026-10-19, audit GA-01) max Chill stacks are the deepest SLOW since 2026-10-08, not a root: the word says so
+	local wR = mkWord("SLOWED!", 300, 44, 196, 74, -6, "chill-a/wR", C.cryo)
 	local wK = mkWord("KRAK!", 300, 66, 164, 78, 6, "chill-a/wK", C.white)
 
 	local gOn, gLow = shown(), shown()

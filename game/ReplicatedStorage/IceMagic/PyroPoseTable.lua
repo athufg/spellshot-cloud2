@@ -17,16 +17,12 @@
 	By hand: PyroPoseTable.Apply(CastPose, "flame" | "toon"[, opts]) -> the names now on the flame keys.
 	UNINSTALL  PyroPoseTable.Apply(CastPose, "toon") puts every live Keys list and flag back (the same tables); taking
 	the Bind line out is the whole removal.
-	opts  ShieldThrow = true   FireballShieldL (the throw under the Cinder Shield) takes the new left throw too: lead arm,
-	                           Waist and Turn; the right arm keeps the live shield-aside pose. DEFAULT OFF: the Cinder
-	                           Shield is out of scope, so its throw keeps the live keys until the owner says otherwise.
-	      LeadOnly = true      the live OffKeys / Both flags are left alone: only the casting arm, Waist and Turn change
+	opts  LeadOnly = true      the live OffKeys / Both flags are left alone: only the casting arm, Waist and Turn change
 	                           and the off arm stays on the rest pose (Immolate: both arms take the right arm's keys).
 
 	WHAT APPLY WRITES  On each of those live clip tables: `Keys`, `OffKeys = true` and `Both = nil`. Nothing else, so
 	Trigger, Rate, Repeat, Hold, StanceLegs, FromCurrent and Side are the live clip's own, the tables keep their identity
-	(CastPose.SetBase holds ScorchingLashHold by reference, and every caller finds a clip by its name), and
-	HeatRushExhale, CinderShieldCast, CinderShieldBurst and (by default) FireballShieldL are never touched. A clip whose
+	(CastPose.SetBase holds ScorchingLashHold by reference, and every caller finds a clip by its name). A clip whose
 	live Trigger, key count, end or StanceLegs is not what the generator read is SKIPPED with a warning (live wins).
 	A look flipped in the middle of a cast changes the clip that is playing (cosmetic; a test-only case).
 
@@ -217,21 +213,6 @@ T.Clips = {
 	},
 }
 
--- opts.ShieldThrow only: the throw under the Cinder Shield (live: leftHanded(FireballR, the shield-aside arm))
-T.ShieldThrow = {
-	-- FireballL's lead arm, Waist and Turn; Off = the live shield-aside pose on every key
-	FireballShieldL = {
-		Live = { Trigger = 0.42, Keys = 6, End = 0.85 },
-		Keys = {
-			key(0, { Stance = true }),
-			key(0.2, { Arm = -26, Elbow = 104, Wrist = 34, In = -6, Waist = 1, Turn = 20, Off = { Arm = 66, Elbow = 48, Wrist = -28, In = -58 }, Easing = E.Quad }),
-			key(0.33, { Arm = -36, Elbow = 114, Wrist = 38, In = -10, Waist = 3, Turn = 28, Off = { Arm = 66, Elbow = 48, Wrist = -28, In = -58 }, Easing = E.Sine }),
-			key(0.42, { Arm = 90, Elbow = 2, Wrist = -4, In = 12, Waist = -12, Turn = -24, Off = { Arm = 66, Elbow = 48, Wrist = -28, In = -58 }, Easing = E.Quint }),
-			key(0.5, { Arm = 84, Elbow = 8, Wrist = -2, In = 18, Waist = -11, Turn = -20, Off = { Arm = 66, Elbow = 48, Wrist = -28, In = -58 }, Easing = E.Linear }),
-			key(0.85, { Stance = true, Easing = E.Sine }),
-		},
-	},
-}
 
 ----------------------------------------------------------------------------------------------------- the installer
 local saved = {}      -- [a live clip table] = its live { Keys, OffKeys, Both }, while the flame keys are in it
@@ -285,7 +266,6 @@ function T.Apply(CastPose, look, opts)
 		end
 	end
 	put(T.Clips)
-	if opts and opts.ShieldThrow then put(T.ShieldThrow) end
 	table.sort(on)
 	return on
 end

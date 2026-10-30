@@ -1,6 +1,7 @@
 --[[
 	TerraTestHarness  (LocalScript)  ->  StarterPlayer/StarterPlayerScripts/TerraTestHarness
 
+	STUDIO ONLY (2026-10-19, audit P6A-15): it stands down at once in a live server, as VoltaicTestHarness does.
 	TEMPORARY. Delete after the Terra pass. Studio's script sandbox cannot send a mouse press
 	(VirtualInputManager needs RobloxScript capability) and cannot fire a remote, so an automated Play
 	test of a kit driven by LMB has to run from inside the game. This drives exactly what
@@ -13,6 +14,9 @@
 	it through its key's own path (and reports whether the server took it); TerraVisual = "aftershockdummy" plays its whole
 	look as somebody else's cast on the nearest dummy (look only, nobody is struck).
 ]]
+
+-- (2026-10-19, audit P6A-15) a test driver that fires real cast remotes off player attributes: never in a live game
+if not game:GetService("RunService"):IsStudio() then return end
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")

@@ -1,14 +1,18 @@
 --[[
 	TerraTestServer  (Script)  ->  ServerScriptService/TerraTestServer
 
-	TEMPORARY. Delete after the Terra pass. The training range's practice thrower calls Humanoid:TakeDamage
-	directly (TrainingGround.server.lua:117), so it bypasses CombatCore and therefore every mitigation in the
-	game -- Bedrock, Cinder Shield and Heat Rush alike. To test a mitigation you need damage that goes THROUGH
+	TEMPORARY, STUDIO ONLY (it returns at once anywhere else). Delete after the Terra pass. The training range's
+	practice thrower calls Humanoid:TakeDamage directly (TrainingGround.server.lua:117), so it bypasses CombatCore and
+	therefore every mitigation in the
+	game -- Bedrock, Bulwark Charge and Blessing alike. To test a mitigation you need damage that goes THROUGH
 	CombatCore, which only a server script that can require it can send.
 
 	Trigger: set the player attribute TerraDamage to an amount. The hit is dealt through Core.DealDamage with
 	no caster, and TerraDamageResult comes back as "asked X, took Y".
 ]]
+
+-- (2026-10-19, audit P6A-15) Studio only, as the Voltaic and Zephyr harnesses are: a live server gets no test damage path
+if not game:GetService("RunService"):IsStudio() then return end
 
 local Players = game:GetService("Players")
 local Core = require(script.Parent:WaitForChild("CombatCore"))

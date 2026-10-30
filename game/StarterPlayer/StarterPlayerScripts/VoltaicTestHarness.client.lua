@@ -449,13 +449,16 @@ end
 local function lookVoltOrb(src)
 	local head = src:FindFirstChild("Head") or src.HumanoidRootPart
 	local dir = across(src.HumanoidRootPart.Position)
-	local elev = math.rad(52)
-	local vel = (dir * math.cos(elev) + Vector3.yAxis * math.sin(elev)) * 48
+	-- (2026-10-19, audit P5D-19) the throw's numbers are VoltaicTuning.VoltOrb's, as the server's: ReleaseAt has been 0.12
+	-- since the 2026-10-13 hold-to-aim (this faked 0.31); the build-time numbers are the fallbacks
+	local VO = (mod(iceFolder, "VoltaicTuning") or {}).VoltOrb or {}
+	local elev = math.rad(VO.Lift or 52)
+	local vel = (dir * math.cos(elev) + Vector3.yAxis * math.sin(elev)) * (VO.Speed or 48)
 	local from = head.Position + CFrame.lookAt(Vector3.zero, dir):VectorToWorldSpace(Vector3.new(0.9, -0.7, -1.4))
 	local scale = timeScale()
 	local t0 = now()
-	local releaseAt = t0 + 0.31 / scale
-	local gravity, fuse = 72, 1.25
+	local releaseAt = t0 + (VO.ReleaseAt or 0.12) / scale
+	local gravity, fuse = VO.Gravity or 72, VO.Fuse or 1.25
 	handler("VoltOrbThrow", {
 		Character = src, From = from, Vel = vel, T0 = t0, ReleaseAt = releaseAt, Gravity = gravity, Fuse = fuse,
 		Seed = math.random(1, 2 ^ 30),
@@ -503,11 +506,17 @@ end
 
 local function lookCascade(src)
 	local point = groundBelow(src.HumanoidRootPart.Position, {})
-	local strikes = { 1.2333, 1.3000, 1.3667, 1.4667, 1.5333 }
+	-- (2026-10-19, audit P5D-19) Strikes are from the CAST since the windup moved in front of the storm (Windup 0.50 +
+	-- StormStrikes); the fallback was the storm-only clock
+	local strikes = { 1.7333, 1.80, 1.8667, 1.9667, 2.0333 }
 	local zone = 11
 	local VFX = mod(iceFolder, "VoltaicFX")
 	local C = VFX and VFX.Tuning and VFX.Tuning.Cascade
 	if C then
+		if not C.Strikes and type(C.StormStrikes) == "table" and type(C.Windup) == "number" then
+			strikes = {}
+			for i, s in ipairs(C.StormStrikes) do strikes[i] = C.Windup + s end
+		end
 		strikes = C.Strikes or strikes
 		zone = C.ZoneRadius or zone
 	end

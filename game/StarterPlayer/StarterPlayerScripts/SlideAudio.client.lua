@@ -13,11 +13,13 @@
 	have to know or care.
 
 	WHY NOT PLAY IT FROM THE SERVER. A server-created Sound would replicate and be heard by
-	everyone, which sounds like the same thing, but it would also cost a round trip before your own
-	slide made a noise. Your slide starts on the keypress; so does its sound.
+	everyone, which sounds like the same thing. (2026-10-19, audit P6A-20) The server's MoveState still
+	arrives a round trip after the keypress, so YOUR OWN slide also starts on MovementController's local
+	cue (LocalSlideAt, a client-only attribute set on the press); MoveState leaving "Slide" stops it as
+	for everyone, and a press the server never turned into a slide is stopped a second later.
 
 	The clip is a body sliding on dirt (Pro Sound Effects, via the Creator Store) and runs 2 s
-	against a 1.1 s slide, so it is faded and stopped when the slide ends rather than left to ring
+	against a slide of up to 1.6 s (Config.Movement.SlideDuration), so it is faded and stopped when the slide ends rather than left to ring
 	on. It is not looped: a slide is one gesture.
 ]]
 
@@ -82,6 +84,16 @@ local function watch(character)
 		end
 	end
 	character:GetAttributeChangedSignal("MoveState"):Connect(look)
+	-- (2026-10-19, audit P6A-20) your own slide: the press's local cue starts it now; if the server's MoveState is not
+	-- "Slide" a second later (the press was refused), nothing will stop it, so this does -- footsteps come back
+	character:GetAttributeChangedSignal("LocalSlideAt"):Connect(function()
+		if character ~= Players.LocalPlayer.Character then return end
+		start(character)
+		local rec = live[character]
+		task.delay(1, function()
+			if rec and live[character] == rec and character:GetAttribute("MoveState") ~= "Slide" then stop(character) end
+		end)
+	end)
 	character.AncestryChanged:Connect(function(_, parent)
 		if not parent then stop(character) end
 	end)

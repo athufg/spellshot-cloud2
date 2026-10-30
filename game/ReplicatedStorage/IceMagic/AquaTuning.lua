@@ -29,6 +29,13 @@ T.Color = {
 	Shark = Color3.fromRGB(34, 44, 52),
 	Teeth = Color3.fromRGB(236, 232, 220),
 	Debris = Color3.fromRGB(104, 98, 90),
+	-- 2026-10-19 (the wrap plumbing): the line accents AquaFX kept as its own constants, moved here unchanged so one
+	-- table holds every colour AquaFX draws in code (AquaWrap swaps a wrap's into it while that wrap's effect draws)
+	UndertowTip = Color3.fromRGB(151, 218, 250), -- #97DAFA Undertow's arm tips: paler than the Tideline so the tip stands out
+	Flash = Color3.fromRGB(183, 222, 248),       -- #B7DEF8 a line's flare: Undertow's flash, the gun's muzzle, the Maw's ring/rim
+	TwinLine = Color3.fromRGB(38, 144, 228),     -- #2690E4 Neon: the Twin Tide lines (manifests line_colour)
+	TwinLineDark = Color3.fromRGB(12, 74, 146),  -- #0C4A92 SmoothPlastic: a Twin Tide line gone dark (line_colour_dark)
+	TwinFlash = Color3.fromRGB(79, 189, 246),    -- #4FBDF6 Neon: the jet's one flash (tt_jet.json flash_colour)
 }
 
 -- M1: Riptide. A crescent of whitewater surged along the ground; an aimed skillshot that follows the floor.

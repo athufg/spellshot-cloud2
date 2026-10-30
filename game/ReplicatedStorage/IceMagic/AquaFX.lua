@@ -18,7 +18,10 @@
 
 	Solid-to-the-body pieces (Twin Tide's walls, the tank's walls and roof) are each client's own local copy and are
 	blocked by INVISIBLE box colliders (CanCollide, NoWallRun -- MovementController will not wall-run them), never by
-	collision on the meshes themselves (a precise hull on a big mesh froze Studio once). Everything lives in the FX
+	collision on the meshes themselves (a precise hull on a big mesh froze Studio once). Those colliders are gameplay, so
+	they are built from the broadcast whatever is drawn (2026-10-19, audit P5D-08: Twin Tide's in ttColliders, apart from
+	its look's load / distance / lateness gates; the Maw's before any look gate), and a cast's handle can Cancel() them
+	at once (audit P5D-09: AquaClient's AquaMawEnd / AquaTwinTideEnd). Everything lives in the FX
 	folder, so shots and the crosshair pass through it: Bulwark Wall stays the one sightline block (Pillar 4).
 	A missing kit piece is skipped with one warning: gameplay never waits on a look.
 ]]
@@ -31,6 +34,23 @@ local iceFolder = ReplicatedStorage:WaitForChild("IceMagic")
 local VFXLibrary = require(iceFolder:WaitForChild("VFXLibrary"))
 local A = require(iceFolder:WaitForChild("AquaTuning"))
 local COL = A.Color
+
+-- COLOUR WRAPS (2026-10-19): AquaWrap puts a wrap's colours in while a wrapped caster's effect draws, and hands out the
+-- wrap's recoloured copy of each kit mesh (template). Everything here that outlives the entry call -- each Heartbeat
+-- stepper, delayed or spawned call, render step, and a returned handle's methods -- is bound to the wrap it was made in.
+-- With no wrap, Bind hands back the very same function and template() the very same template: Default is unchanged.
+local Wrap = (function()
+	local ok, w = pcall(function()
+		local m = iceFolder:WaitForChild("AquaWrap", 5)
+		return m and require(m)
+	end)
+	if ok and type(w) == "table" then return w end
+	return { Active = nil, Bind = function(fn) return fn end, BindHandle = function(h) return h end }
+end)()
+local Heartbeat = { Connect = function(_, fn) return RunService.Heartbeat:Connect(Wrap.Bind(fn)) end }
+local function tdelay(t, fn, ...) return task.delay(t, Wrap.Bind(fn), ...) end
+local function tspawn(fn, ...) return task.spawn(Wrap.Bind(fn), ...) end
+local function bindRender(name, priority, fn) return RunService:BindToRenderStep(name, priority, Wrap.Bind(fn)) end
 
 local AquaFX = {}
 
@@ -76,6 +96,43 @@ local function warnOnce(key, msg)
 	if warned[key] then return end
 	warned[key] = true
 	warn("[AquaFX] " .. msg)
+end
+
+-- (2026-10-19, audit P5D-02 / P5F-05 / P5F-03) The player's settings, as VoltaicKit and ZephyrDraw read them:
+-- Graphics Quality (Settings.EffectDensity) and Reduce Enemy VFX (Settings.ThinEnemyVFX) scale the OPTIONAL water
+-- (spray, drops, foam flecks, the splash cap); Reduce Flashing swaps the pale-white flashes for the plain lit Tideline.
+-- The telegraphs -- Riptide's crest, Twin Tide's walls, the Maw's tank, every Tideline -- are never thinned.
+local settingsLib = nil                -- SpellshotSettings, required on first use (false if it cannot be)
+local function settings()
+	if settingsLib == nil then
+		settingsLib = false
+		local sp = ReplicatedStorage:FindFirstChild("Spellshot")
+		local mod = sp and sp:FindFirstChild("SpellshotSettings")
+		if mod then
+			local ok, lib = pcall(require, mod)
+			if ok and type(lib) == "table" then settingsLib = lib end
+		end
+	end
+	return settingsLib or nil
+end
+
+--- The share of the optional water to draw: EffectDensity (capped at 1), halved for another player's cast (own ==
+--- false) under Reduce Enemy VFX. own == nil = not known, counted as yours. (2026-10-19, audit P5F-06) Callers pass
+--- own = true for a TEAMMATE's cast too (not VFXLibrary.IsEnemy): only an enemy's is halved.
+local function keepFor(own)
+	local S = settings()
+	if not S then return 1 end
+	local k = math.clamp(tonumber(S.EffectDensity) or 1, 0.3, 1)
+	if S.ThinEnemyVFX == true and own == false then k *= 0.5 end
+	return k
+end
+
+--- Reduce Flashing is on
+local function calm()
+	local S = settings()
+	if not (S and type(S.Get) == "function") then return false end
+	local ok, v = pcall(S.Get, "ReduceFlashing")
+	return ok and v == true
 end
 
 --- Characters and the FX folder out of a floor probe.
@@ -127,7 +184,7 @@ local function template(name)
 		or ReplicatedStorage:FindFirstChild("IceMagicMeshes")
 	local kit = meshes and meshes:FindFirstChild(KIT_FOLDER)
 	local t = kit and kit:FindFirstChild(name)
-	if t and t:IsA("MeshPart") then return t end
+	if t and t:IsA("MeshPart") then return (Wrap.Active and Wrap.Template(t)) or t end
 	warnOnce("kit" .. name, name .. " not found in ReplicatedStorage.IceMagicMeshes." .. KIT_FOLDER .. " - that piece is skipped")
 	return nil
 end
@@ -166,6 +223,7 @@ local function take(name, kind, parent)
 	p.Reflectance = 0
 	pcall(function() p.DoubleSided = false end)
 	setKind(p, kind or t:GetAttribute("Kind") or "solid")
+	if Wrap.Active then Wrap.Dress(p, kind or t:GetAttribute("Kind") or "solid") end
 	p.CFrame = HIDE
 	p.Parent = parent or fxFolder()
 	return p
@@ -229,15 +287,80 @@ local live = 0
 -- the world's went to 64 for the bodies' jumps every chunk, drop and drip here fell three times slower.
 local KIT_GRAVITY = 196.2
 
+--- RARE WRAPS (2026-10-19): one sediment fleck or bubble (in turn) beside a splash piece just thrown, when the wrap's
+--- Drift.Share of the Default pieces says one is due (AquaWrap.Piece counts them; Graphics Quality and Reduce Enemy VFX
+--- scale it). Sediment drifts down and aside, a bubble rises in a wobbling trail; each runs its colours over its life
+--- and shrinks away. Nothing is drawn here without a wrap that has Drift. Drift.Trail = { Life, T, Width } (R2A,
+--- 2026-10-19, Deep Brine) leaves a short lit trail behind each piece (a Trail on the same part: no extra piece).
+local driftFlip = false
+local function drift(at)
+	local D = Wrap.Active and Wrap.Active._drift
+	if not D or live >= SPLASH_CAP or typeof(at) ~= "Vector3" then return end
+	driftFlip = not driftFlip
+	local bubble = driftFlip
+	local cols = bubble and D.Bubble or D.Sediment
+	local s0 = (bubble and D.BubbleSize or D.SedimentSize) * (0.75 + 0.5 * math.random())
+	local life = (bubble and D.BubbleLife or D.SedimentLife) * (0.8 + 0.4 * math.random())
+	local p = Instance.new("Part")
+	p.Name = bubble and "AquaBubble" or "AquaSediment"
+	p.Shape = Enum.PartType.Ball
+	p.Material = Enum.Material.SmoothPlastic
+	p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch, p.CastShadow = true, false, false, false, false
+	p.Reflectance = bubble and (D.BubbleGloss or 0) or 0
+	p.Color = cols[1]
+	p.Size = Vector3.one * s0
+	local pos = at + Vector3.new(math.random() - 0.5, math.random() * 0.4, math.random() - 0.5) * 1.2
+	local aside = randomUnitFlat() * (bubble and 0.6 or 1.4)
+	local vy = bubble and (D.Rise or 3) or -(D.Sink or 1)
+	local phase = math.random() * 6.28
+	p.CFrame = CFrame.new(pos)
+	local TR = D.Trail
+	if TR then
+		local w = s0 * (TR.Width or 0.8) * 0.5
+		local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
+		a0.Position, a1.Position = Vector3.new(-w, 0, 0), Vector3.new(w, 0, 0)
+		a0.Parent, a1.Parent = p, p
+		local tr = Instance.new("Trail")
+		tr.Attachment0, tr.Attachment1 = a0, a1
+		tr.FaceCamera, tr.Lifetime, tr.MinLength = true, TR.Life or 0.5, 0.02
+		tr.Color = ColorSequence.new(cols[1], cols[3] or cols[2] or cols[1])
+		tr.Transparency = NumberSequence.new(TR.T or 0.4, 1)
+		tr.WidthScale = NumberSequence.new(1, 0.25)
+		tr.LightEmission, tr.LightInfluence = 0, 1
+		tr.Parent = p
+	end
+	p.Parent = fxFolder()
+	live += 1
+	Wrap.Extra()
+	local t0 = os.clock()
+	local conn
+	conn = Heartbeat:Connect(function(dt)
+		local e = os.clock() - t0
+		if e > life or not p.Parent then
+			conn:Disconnect()
+			live -= 1
+			if p.Parent then p:Destroy() end
+			return
+		end
+		local k = e / life
+		pos += (aside * (1 - k) + Vector3.new(0, vy, 0)) * dt
+		local wob = bubble and Vector3.new(math.sin(phase + e * 9) * 0.12, 0, math.cos(phase + e * 7) * 0.12) or Vector3.zero
+		p.CFrame = CFrame.new(pos + wob)
+		p.Color = (k < 0.5) and cols[1]:Lerp(cols[2], k * 2) or cols[2]:Lerp(cols[3] or cols[2], (k - 0.5) * 2)
+		p.Size = Vector3.one * math.max(0.02, s0 * (1 - smooth((k - 0.65) / 0.35)))
+	end)
+end
+
 --- A crown of water standing on a surface (its up = the surface `normal`, default straight up), `size` times the kit
 --- mesh: it bursts up fast and sinks away over `life`. mesh: "AK_WG_Splash" (the small crown, 188 tris, default) or
 --- "AK_SA_Splash" (the big one, for the loud hits only).
 local function crown(position, size, normal, mesh, life)
-	if live >= SPLASH_CAP then return end
+	if live >= SPLASH_CAP * keepFor() then return end    -- (2026-10-19, audit P5D-02) the cap x Graphics Quality
 	local up = (typeof(normal) == "Vector3" and normal.Magnitude > 0.1) and normal.Unit or Vector3.yAxis
 	local p = take(mesh or "AK_WG_Splash", "solid")
 	if not p then return end
 	live += 1
+	if Wrap.Active and Wrap.Piece(position) then drift(position) end
 	local side = math.abs(up.Y) < 0.95 and Vector3.yAxis or Vector3.xAxis
 	local fwd = up:Cross(side).Unit
 	local cf = CFrame.fromMatrix(position, fwd:Cross(up), up) * CFrame.Angles(0, math.random() * 6.28, 0)
@@ -245,7 +368,7 @@ local function crown(position, size, normal, mesh, life)
 	local t0 = os.clock()
 	place(p, cf, size * 0.35)
 	local conn
-	conn = RunService.Heartbeat:Connect(function()
+	conn = Heartbeat:Connect(function()
 		local e = os.clock() - t0
 		if e > life or not p.Parent then
 			conn:Disconnect()
@@ -275,10 +398,11 @@ end
 ---                   `At` (default: where it is); with no Size it is simply gone (absorbed)
 ---   Shadow = false  casts no shadow (review round 2: thrown drops' shadows crawling over the walls' faces)
 local function fling(name, at, velocity, size, life, spin, gravity, dry, waterY, opts)
-	if live >= SPLASH_CAP then return end
+	if live >= SPLASH_CAP * keepFor() then return end    -- (2026-10-19, audit P5D-02) the cap x Graphics Quality
 	local p = take(name, "solid")
 	if not p then return end
 	live += 1
+	if Wrap.Active and Wrap.Piece(at) then drift(at) end
 	local s0 = size or 1
 	local t0 = os.clock()
 	local rot = CFrame.Angles(math.random() * 6.28, math.random() * 6.28, math.random() * 6.28)
@@ -308,7 +432,7 @@ local function fling(name, at, velocity, size, life, spin, gravity, dry, waterY,
 	end
 	pose(1)
 	local conn
-	conn = RunService.Heartbeat:Connect(function(dt)
+	conn = Heartbeat:Connect(function(dt)
 		local e = os.clock() - t0
 		if e > life or not p.Parent then
 			conn:Disconnect()
@@ -354,9 +478,12 @@ local function fling(name, at, velocity, size, life, spin, gravity, dry, waterY,
 end
 
 --- `n` drops thrown from `at`: up to `upSpeed` along `up` (default straight up) and up to `outSpeed` round it, each
---- `size` times AK_WG_Drop (0.13 x 0.22), each splashing where it lands.
-local function spray(at, n, upSpeed, outSpeed, size, up, life, waterY)
+--- `size` times AK_WG_Drop (0.13 x 0.22), each splashing where it lands. `keep` (default keepFor()): the share of the
+--- `n` drawn (2026-10-19, audit P5D-02), a fraction rounding up or down at random.
+local function spray(at, n, upSpeed, outSpeed, size, up, life, waterY, keep)
 	up = (typeof(up) == "Vector3" and up.Magnitude > 0.1) and up.Unit or Vector3.yAxis
+	local m = n * (keep or keepFor())
+	n = math.floor(m) + ((math.random() < m % 1) and 1 or 0)
 	for _ = 1, n do
 		local v = up * (upSpeed * (0.55 + 0.45 * math.random())) + randomUnitFlat() * (outSpeed * (0.3 + 0.7 * math.random()))
 		fling("AK_WG_Drop", at, v, (size or 1.6) * (0.75 + 0.5 * math.random()), life or 0.9, 5, 0.5, false, waterY)
@@ -382,7 +509,7 @@ local function streakTile(cf, width, life, lengthScale)
 	place(edge, cf, Vector3.new(wx, 1, ly))
 	local t0 = os.clock()
 	local conn
-	conn = RunService.Heartbeat:Connect(function()
+	conn = Heartbeat:Connect(function()
 		local e = os.clock() - t0
 		if e > life or not tile.Parent then
 			conn:Disconnect()
@@ -409,7 +536,7 @@ function AquaFX.Puddle(center, radius, life)
 	place(edge, cf, Vector3.new(radius, 1, radius))
 	local t0 = os.clock()
 	local conn
-	conn = RunService.Heartbeat:Connect(function()
+	conn = Heartbeat:Connect(function()
 		local e = os.clock() - t0
 		if e > life or not pool.Parent then
 			conn:Disconnect()
@@ -458,7 +585,7 @@ function AquaFX.RidingSplash(character)
 		local t0 = os.clock()
 		place(splash, cf, 0.9)
 		local conn
-		conn = RunService.Heartbeat:Connect(function()
+		conn = Heartbeat:Connect(function()
 			local e = os.clock() - t0
 			if e > 0.38 or not splash.Parent then
 				conn:Disconnect()
@@ -469,9 +596,13 @@ function AquaFX.RidingSplash(character)
 			place(splash, cf, s)
 		end)
 	end
+	-- (2026-10-19, audit P5D-02) the drops are thinned by the settings; the crown (the passive's tell) never is
+	-- (2026-10-19, audit P5F-06) Reduce Enemy VFX thins an ENEMY's drops only (VFXLibrary.IsEnemy): a teammate's are whole
+	local keep = keepFor(character == Players.LocalPlayer.Character
+		or (type(VFXLibrary.IsEnemy) == "function" and not VFXLibrary.IsEnemy(character)))
 	for _ = 1, 2 do
 		local v = back * (3 + math.random() * 3) + Vector3.new(math.random() * 2 - 1, 5 + math.random() * 3, math.random() * 2 - 1)
-		fling("AK_WG_Drop", feet + Vector3.new(0, 0.4, 0), v, 1, 0.4, 3, 0.3)
+		if math.random() <= keep then fling("AK_WG_Drop", feet + Vector3.new(0, 0.4, 0), v, 1, 0.4, 3, 0.3) end
 	end
 end
 
@@ -484,13 +615,21 @@ end
 local STAGE_TIME = 0.07
 
 --- Run a wave. opts: Origin (the caster's root), Dir (flat unit), T0 (server time of the release), Own (the shooter's
---- own copy: it looks for bodies), Exclude (what it passes through), OnHit(part, position) for each new body.
+--- own copy: it looks for bodies), Exclude (what it passes through), OnHit(part, position) for each new body,
+--- OnWorld(part, position) for the world thing it breaks on (2026-10-21; the shooter's own copy only),
+--- Friendly (2026-10-19, audit P5F-06: another player's wave that is not an enemy's -- Reduce Enemy VFX leaves it whole).
 function AquaFX.Riptide(opts)
 	local R = A.Riptide
 	local dir = flat(opts.Dir)
 	if dir.Magnitude < 0.1 then return end
 	dir = dir.Unit
+	-- the heights a wall across the line is looked for at: the knee, and (2026-10-21) the crest. The wave is R.Height
+	-- tall, so a plate it cannot pass under (a TargetBoard's, 2 studs off the floor) breaks it too. 0.95 x Height is
+	-- over StepUp, so a step the wave climbs is never a wall to it.
+	local wallProbes = { 1.2, R.Height * 0.95 }
 	local params = floorParams(opts.Exclude)
+	-- (2026-10-19, audit P5D-02) the optional spray's share; the crest is whole. (P5F-06) Friendly: a teammate's, whole
+	local keep = keepFor(opts.Own == true or opts.Friendly == true)
 	local startFlat = flat(opts.Origin) + dir * R.StartAhead
 	local first = floorAt(Vector3.new(startFlat.X, opts.Origin.Y, startFlat.Z), 3, 12, params)
 	if not first then return end
@@ -555,7 +694,7 @@ function AquaFX.Riptide(opts)
 		if brk then
 			place(brk, cf, Vector3.new(1, 0.6, 0.9))
 			local c2
-			c2 = RunService.Heartbeat:Connect(function()
+			c2 = Heartbeat:Connect(function()
 				local e = os.clock() - bt
 				if e > 0.45 or not brk.Parent then
 					c2:Disconnect()
@@ -567,7 +706,7 @@ function AquaFX.Riptide(opts)
 				place(brk, cf * CFrame.new(0, -1.2 * sink, 0), Vector3.new(1, (0.6 + 0.4 * grow) * (1 - 0.6 * sink), 0.9 + 0.1 * grow))
 			end)
 		end
-		for i = 1, 7 do
+		for i = 1, math.floor(7 * keep + 0.5) do
 			local v = dir * (4 + math.random() * 8) + randomUnitFlat() * (3 + math.random() * 4)
 				+ Vector3.new(0, 10 + math.random() * 8, 0)
 			fling("AK_RT_Foam_" .. ((i - 1) % 4 + 1), at + Vector3.new(0, 1.5, 0) + randomUnitFlat() * math.random() * 3, v,
@@ -575,13 +714,13 @@ function AquaFX.Riptide(opts)
 		end
 		-- the crash throws water: a big crown on the spot and a spray of drops forward and up
 		crown(at + dir * 0.6, 1.1, nil, "AK_SA_Splash", 0.45)
-		spray(at + Vector3.new(0, 1.2, 0), 9, 15, 9, 2.2)
+		spray(at + Vector3.new(0, 1.2, 0), 9, 15, 9, 2.2, nil, nil, nil, keep)
 	end
 
 	local lastY = y
 	local lastFront = Vector3.new(startFlat.X, y, startFlat.Z)
 	show(CFrame.lookAt(lastFront, lastFront + dir))
-	conn = RunService.Heartbeat:Connect(function(dt)
+	conn = Heartbeat:Connect(function(dt)
 		if not m.Parent then
 			conn:Disconnect()
 			return
@@ -596,13 +735,32 @@ function AquaFX.Riptide(opts)
 		if not g or g.Position.Y - lastY > R.StepUp then
 			front, broke = lastFront, true
 		else
-			-- a wall across the line, at knee height
-			local from = lastFront + Vector3.new(0, 1.2, 0)
-			local to = Vector3.new(fx.X, g.Position.Y + 1.2, fx.Z)
-			local wall = castThroughBodies(from, to - from, params)
-			if wall and math.abs(wall.Normal.Y) < 0.5 then
+			-- a wall across the line, at knee height or at the crest (wallProbes): the nearer one is where it breaks
+			local wall, wallAt = nil, math.huge
+			for _, up in ipairs(wallProbes) do
+				local from = lastFront + Vector3.new(0, up, 0)
+				local to = Vector3.new(fx.X, g.Position.Y + up, fx.Z)
+				local w = castThroughBodies(from, to - from, params)
+				-- 2026-10-23: at the crest only a TargetBoard breaks it (its plate is 2 studs up): a rail, a low beam or a
+				-- cover lip at crest height lets the wave by again, as before 10-21
+				local board = w and up ~= wallProbes[1] and w.Instance:FindFirstAncestorWhichIsA("Model")
+				if w and math.abs(w.Normal.Y) < 0.5 and (up == wallProbes[1] or (board and board:GetAttribute("TargetBoard"))) then
+					local at = flat(w.Position - lastFront).Magnitude
+					if at < wallAt then wall, wallAt = w, at end
+				end
+			end
+			if wall then
 				front, broke = Vector3.new(wall.Position.X, lastY, wall.Position.Z), true
 				nd = dist + flat(front - lastFront).Magnitude
+				-- (2026-10-21) the shooter's copy reports the world thing it broke on, as every other M1 reports its world
+				-- hit: AquaHandler announces it on ShotImpact, so a Training Ground TargetBoard scores it. A body (a Bulwark
+				-- Wall has a Humanoid) is the crest's box's to report, below, so it is never reported twice.
+				if opts.Own and opts.OnWorld then
+					local mdl = wall.Instance:FindFirstAncestorOfClass("Model")
+					if not (mdl and mdl:FindFirstChildOfClass("Humanoid")) then
+						tspawn(opts.OnWorld, wall.Instance, wall.Position)
+					end
+				end
 			else
 				front, frontY = Vector3.new(fx.X, g.Position.Y, fx.Z), g.Position.Y
 			end
@@ -618,7 +776,9 @@ function AquaFX.Riptide(opts)
 					+ Vector3.new(0, R.Height * (0.75 - 0.4 * u * u) * (0.8 + 0.3 * math.random()), 0)
 				local v = dir * (R.Speed * scale * (0.3 + 0.3 * math.random())) + rightV * (u * (3 + math.random() * 5))
 					+ Vector3.new(0, 4 + math.random() * 6, 0)
-				if math.random() < 0.4 then
+				if math.random() > keep then
+					-- thinned (2026-10-19, audit P5D-02): this tick's spray is skipped
+				elseif math.random() < 0.4 then
 					fling("AK_RT_Foam_" .. math.random(1, 2), at, v, 1.2 + 0.4 * math.random(), 0.8, 6, 0.5)
 				else
 					fling("AK_WG_Drop", at, v, 3 + 1.2 * math.random(), 0.8, 5, 0.5)
@@ -648,11 +808,11 @@ function AquaFX.Riptide(opts)
 				if hum and hum.Health > 0 and not hit[mdl] and count < R.Pierce then
 					hit[mdl] = true
 					count += 1
-					if opts.Own and opts.OnHit then task.spawn(opts.OnHit, p, p.Position) end
+					if opts.Own and opts.OnHit then tspawn(opts.OnHit, p, p.Position) end
 					local body = mdl:FindFirstChild("HumanoidRootPart") or p
 					local at = Vector3.new(body.Position.X, frontY, body.Position.Z)
 					crown(at + dir * 0.4, 1.0, nil, "AK_SA_Splash", 0.4)
-					spray(at + Vector3.new(0, 1.8, 0), 7, 13, 7, 2, (dir * 0.5 + Vector3.yAxis).Unit)
+					spray(at + Vector3.new(0, 1.8, 0), 7, 13, 7, 2, (dir * 0.5 + Vector3.yAxis).Unit, nil, nil, keep)
 				end
 			end
 		end
@@ -681,8 +841,7 @@ end
 -- and it blows apart into mist chunks and droplets.
 local UT_R0, UT_R1, UT_PHI0, UT_ARC, UT_ARMS = 2.7, 1.95, 135, 330, 11
 local UT_POP = 0.08
-local UT_TIP = Color3.fromRGB(151, 218, 250)           -- #97DAFA: paler than the Tideline so the tip still stands out (owner blues, 2026-09-26)
-local UT_FLASH = Color3.fromRGB(183, 222, 248)
+-- (the tip #97DAFA and the flash #B7DEF8 are AquaTuning.Color.UndertowTip / Flash since 2026-10-19)
 
 local function utSweep(t)
 	local U = A.Undertow
@@ -733,8 +892,13 @@ end
 
 --- The whole Undertow from its server time: the disc at `center`, facing back along `look` (toward the caster).
 --- Returns a handle: Head() -> the world point of the water at the hand (the caster's own arm follows it).
-function AquaFX.Undertow(center, look, t0)
+function AquaFX.Undertow(center, look, t0, own)
 	local U = A.Undertow
+	-- (2026-10-19, audit P5D-02 / P5F-03) `own` (false = another player's; nil = yours): the thrown water's share, and
+	-- under Reduce Flashing the snap's white flare stays the plain Tideline
+	local keep = keepFor(own)
+	local flareCol, tipFlare = COL.Flash, COL.Flash
+	if calm() then flareCol, tipFlare = COL.Tideline, COL.UndertowTip end
 	if typeof(look) ~= "Vector3" or look.Magnitude < 0.1 then look = Vector3.new(0, 0, -1) end
 	look = look.Unit
 	local m = model("AquaUndertow")
@@ -747,7 +911,7 @@ function AquaFX.Undertow(center, look, t0)
 	end
 	local head = take("AK_UT_Head", "solid", m)
 	local tip = take("AK_UT_HeadLine", "line", m)
-	if tip then tip.Color = UT_TIP end
+	if tip then tip.Color = COL.UndertowTip end
 	local inner = {}
 	for i = 1, 3 do inner[i] = take("AK_UT_Inner_" .. i, "solid", m) end
 	local eye = take("AK_UT_Eye", "solid", m)
@@ -762,6 +926,7 @@ function AquaFX.Undertow(center, look, t0)
 	local function burst(baseCF)
 		-- the disc is gone into chunks: mist and droplets thrown out in its plane and toward the caster
 		for i = 1, 20 do
+			if math.random() > keep then continue end
 			local phi = i / 20 * math.pi * 2 + math.random() * 0.3
 			local r = (1.2 + math.random() * 1.8) * DS
 			local rad = Vector3.new(math.sin(phi), math.cos(phi), 0)
@@ -771,6 +936,7 @@ function AquaFX.Undertow(center, look, t0)
 			fling("AK_UT_Mist_" .. ((i - 1) % 4 + 1), at, v, 0.8 + math.random() * 0.4, 0.55, 6, 0.35)
 		end
 		for i = 1, 10 do
+			if math.random() > keep then continue end
 			local phi = i / 10 * math.pi * 2 + math.random() * 0.5
 			local rad = Vector3.new(math.sin(phi), math.cos(phi), 0)
 			local at = baseCF * (rad * (2.0 + math.random() * 0.8) * DS)
@@ -779,7 +945,7 @@ function AquaFX.Undertow(center, look, t0)
 		end
 	end
 
-	conn = RunService.Heartbeat:Connect(function()
+	conn = Heartbeat:Connect(function()
 		local now = os.clock()
 		local e = now - start
 		if not m.Parent then
@@ -813,7 +979,7 @@ function AquaFX.Undertow(center, look, t0)
 				local pop = 0.25 + 0.75 * g
 				placeAboutPivot(arms[k], baseCF, cinch, pop)
 				placeAboutPivot(lines[k], baseCF, cinch, pop)
-				if lines[k] then lines[k].Color = flare and UT_FLASH or COL.Tideline end
+				if lines[k] then lines[k].Color = flare and flareCol or COL.Tideline end
 			end
 		end
 		-- the head: the water at the hand
@@ -822,7 +988,7 @@ function AquaFX.Undertow(center, look, t0)
 		local headCF = baseCF * CFrame.new(p * cinch) * CFrame.fromMatrix(Vector3.zero, -radial, Vector3.zAxis, -tangent)
 		place(head, headCF, grow * cinch)
 		place(tip, headCF, grow * cinch)
-		if tip then tip.Color = flare and UT_FLASH or UT_TIP end
+		if tip then tip.Color = flare and tipFlare or COL.UndertowTip end
 		headWorld = headCF.Position
 		-- the inner arms swirl in behind it, turning in from further round and larger; the eye opens
 		for i, sStart in ipairs({ 0.40, 0.62, 0.84 }) do
@@ -835,7 +1001,7 @@ function AquaFX.Undertow(center, look, t0)
 		if ge > 0.01 then place(eye, baseCF, (0.3 + 0.7 * ge) * cinch) end
 		-- droplets thrown off the head while it draws, each gone in a quarter second
 		if e < U.ConjureTime and now >= nextDrop then
-			nextDrop = now + 0.024
+			nextDrop = now + 0.024 / keep
 			local dp = take("AK_UT_Droplet_" .. math.random(1, 4), "solid", m)
 			if dp then
 				drops[#drops + 1] = { Part = dp, S = sHead, Born = now, A = math.random(), B = math.random() }
@@ -863,7 +1029,7 @@ function AquaFX.Undertow(center, look, t0)
 	function handle.Head()
 		return headWorld
 	end
-	return handle
+	return Wrap.BindHandle(handle)
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -914,9 +1080,7 @@ end
 -- (With the claw chains posed -- a table that still throws claw drops, TTPose.dropCount > 0 -- 196/63, 280/105,
 -- 301/126.) Every client gets every cast (the server broadcasts to all) and the Hub and the arenas share one server,
 -- thousands of studs apart: a cast further than TT_FAR from both this client's camera and its body is not drawn.
-local TT_LINE = Color3.fromRGB(38, 144, 228)          -- #2690E4 Neon: the Twin Tide lines (manifests line_colour)
-local TT_LINE_DARK = Color3.fromRGB(12, 74, 146)      -- #0C4A92 SmoothPlastic: a line gone dark (line_colour_dark)
-local TT_FLASH = Color3.fromRGB(79, 189, 246)         -- #4FBDF6 Neon: the jet's one flash (tt_jet.json flash_colour)
+-- (the lines #2690E4, gone dark #0C4A92, the jet's flash #4FBDF6: AquaTuning.Color.TwinLine / TwinLineDark / TwinFlash)
 local TT_STAGES = 4                                   -- AK_TT_Wall_1..4
 local TT_COLLIDER_T = 2.4                             -- the invisible box: this thick, W.Length long, W.Height tall...
 local TT_COLLIDER_RISE = 0.35                         -- ...standing once the wall is this share of its height up
@@ -928,7 +1092,8 @@ local TT_SA_W = 2.52                                  -- AK_SA_Splash's width at
 local TT_SLAM_ACROSS = 1.5                            -- studs across per unit of crownScale (2.6 -> "~3-4 across")
 local TT_LAND_CROWN = 1                               -- a sim drop landing on the pool: AK_SA_Splash "~1x"
 local TT_WET_LEAD = 0.25                              -- the wet ground goes down this long before the last frame goes
-local TT_PROBE = true                                 -- TT* attributes on the model every frame, for the Play test
+-- (2026-10-19, audit P5D-16) Studio only: a live client no longer writes 9+ attributes per frame per cast.
+local TT_PROBE = RunService:IsStudio()                -- TT* attributes on the model every frame, for the Play test
 local TT_FAR = 600                                    -- studs: a cast further than this from camera and body is not drawn
 -- chains left at rest WHILE THE TABLE HAS NO CLAW DROPS (TTPose.dropCount 0 -- the evaluator's own word for "the walls
 -- have no claws", v4 round 3, the owner: "Remove the claws first"): their bones then carry no weights, so posing them
@@ -998,7 +1163,7 @@ end
 local function ttLine(p, lit, colour)
 	if not p then return end
 	setKind(p, lit and "line" or "dark")
-	p.Color = lit and (colour or TT_LINE) or TT_LINE_DARK
+	p.Color = lit and (colour or COL.TwinLine) or COL.TwinLineDark
 end
 
 --- A skinned Twin Tide piece's bones, found by class wherever they sit (the importer may nest them by hierarchy or
@@ -1091,7 +1256,7 @@ end
 --- pieces, in case it has not got to them.)
 local function ttPreload()
 	if not RunService:IsClient() then return end
-	task.spawn(function()
+	tspawn(function()
 		if not game:IsLoaded() then game.Loaded:Wait() end
 		local mods = ttLoad()
 		local meshes = ReplicatedStorage:FindFirstChild(VFXLibrary.Config.MeshFolderName or "IceMagicMeshes")
@@ -1133,18 +1298,103 @@ local function ttFar(center)
 	return not (root and (root.Position - center).Magnitude <= TT_FAR)
 end
 
---- Twin Tide on the lane centred at `center` (on the floor), running along `axis`, cast at server time `t0`. Returns the
---- effect's model (nil when nothing is drawn).
-function AquaFX.TwinTide(center, axis, t0)
+--- (2026-10-19, audit P5D-08) THE WALLS' COLLIDERS, gameplay: built from the broadcast alone (center, axis, t0), before
+--- and apart from the look -- never behind a missing pose module, TT_FAR, a late start or rigOn, which only decide what
+--- is DRAWN (two clients no longer collide differently with one cast). Two invisible boxes (this client's own copy: they
+--- block this client's body) close on the lane on the walls' clock -- TTPose.travel and the middle column's Foot rise
+--- when the pose modules are loaded (the walls' own rule, unchanged), else TTPose.travel's curve at the pose table's
+--- numbers and "up from 0.1 s" -- standing from TT_COLLIDER_RISE of the wall's height until the walls meet.
+--- Returns { Cancel = fn, Done } (P5D-09: AquaTwinTideEnd drops them at once).
+local function ttColliders(center, axis, t0)
+	local W = A.TwinTide
+	local handle = { Done = false }
+	local cols, conn = {}, nil
+	function handle.Cancel()
+		if handle.Done then return end
+		handle.Done = true
+		if conn then conn:Disconnect() end
+		destroyAll(cols)
+	end
+	axis = flat(axis)
+	local startT = os.clock() - math.max(0, serverNow() - (t0 or serverNow()))
 	local mods = ttLoad()
-	if not mods then return nil end
+	local TABLE = mods and mods.Table
+	local TR = (TABLE and TABLE.travel) or {}
+	local closeT = TR.closeTime or (TABLE and TABLE.closeTime) or W.CloseTime
+	if axis.Magnitude < 1e-3 or os.clock() - startT >= closeT then   -- no lane, or the walls have met: nothing to block
+		handle.Done = true
+		return handle
+	end
+	local toP = -(axis.Unit:Cross(Vector3.yAxis))
+	local riseCol = TABLE and math.max(1, math.floor((#TABLE.columns + 1) / 2))
+	local riseOK = TABLE and TABLE.columns[riseCol] and TABLE.columns[riseCol].keys.Foot ~= nil
+	local function step()
+		local e = os.clock() - startT
+		if e >= closeT then
+			handle.Cancel()
+			return
+		end
+		local up = e >= 0.1
+		if riseOK then
+			local ok, cf = pcall(mods.Pose.transform, TABLE, "Foot", riseCol, e)
+			if ok and typeof(cf) == "CFrame" then up = (W.Height + cf.Position.Y) / W.Height >= TT_COLLIDER_RISE end
+		end
+		local off = nil
+		if up and mods then
+			local ok, v = pcall(mods.Pose.travel, e, TR.closeTime, TR.start, TR.meet, TR.hold, TR.tau)
+			if ok and type(v) == "number" then off = v end
+		end
+		if up and not off then                              -- TTPose.travel's curve at the pose table's travel numbers
+			local s = math.clamp((e - 0.3) / (closeT - 0.3), 0, 1)
+			off = 11 - (11 - 3.55) * s * s
+		end
+		for side, c in pairs(cols) do
+			if up then
+				local base = center + toP * (side * off)
+				c.CFrame = CFrame.lookAt(base, base - toP * side) * CFrame.new(0, W.Height / 2, 0)
+			else
+				c.CFrame = HIDE
+			end
+		end
+	end
+	for _, side in ipairs({ 1, -1 }) do
+		cols[side] = collider(Vector3.new(W.Length, W.Height, TT_COLLIDER_T), HIDE)
+	end
+	conn = RunService.Heartbeat:Connect(function()
+		local ok, err = pcall(step)
+		if not ok then
+			warnOnce("ttCol", "Twin Tide's colliders stopped: " .. tostring(err))
+			handle.Cancel()
+		end
+	end)
+	local ok, err = pcall(step)
+	if not ok then
+		warnOnce("ttCol", "Twin Tide's colliders stopped: " .. tostring(err))
+		handle.Cancel()
+	end
+	return handle
+end
+
+--- Twin Tide on the lane centred at `center` (on the floor), running along `axis`, cast at server time `t0`. Returns a
+--- handle { Cancel = fn, Model = the effect's model or nil when nothing is drawn } (2026-10-19, audit P5D-09: was the
+--- model): Cancel (AquaTwinTideEnd: a round reset, the caster gone) drops the colliders and the whole look at once.
+function AquaFX.TwinTide(center, axis, t0, own)
+	-- (2026-10-19, audit P5D-08) the colliders first, from the broadcast alone: whatever is drawn below, they stand
+	local cols = ttColliders(center, axis, t0)
+	local handle = { Cancel = cols.Cancel, Model = nil }
+	-- (2026-10-19, audit P5D-02 / P5F-03) `own` false = another player's: the optional water's share; Reduce Flashing
+	-- drops the jet's one flash (the jet itself is drawn as ever)
+	local keep, quiet = keepFor(own), calm()
+	local mods = ttLoad()
+	if not mods then return handle end
 	local TTPose, TABLE, SIM = mods.Pose, mods.Table, mods.Sim
 	local W = A.TwinTide
 	axis = flat(axis)
-	if axis.Magnitude < 1e-3 then return nil end
+	if axis.Magnitude < 1e-3 then return handle end
 	axis = axis.Unit
-	-- a cast in another zone (or far across one) costs this client nothing: see COST in the header
-	if ttFar(center) then return nil end
+	-- a cast in another zone (or far across one) costs this client nothing: see COST in the header (the colliders above
+	-- are built regardless)
+	if ttFar(center) then return handle end
 	local right = axis:Cross(Vector3.yAxis)
 	local TR = TABLE.travel or {}
 	local closeT = TR.closeTime or TABLE.closeTime or W.CloseTime
@@ -1181,7 +1431,7 @@ function AquaFX.TwinTide(center, axis, t0)
 	local e0 = os.clock() - startT
 	if e0 >= (SIM and simEnd or fallEnd) then
 		layWet(e0, SIM ~= nil)
-		return nil
+		return handle
 	end
 
 	local m = model("AquaTwinTide")
@@ -1192,8 +1442,8 @@ function AquaFX.TwinTide(center, axis, t0)
 		local rig = model(("AquaTwinTideSide%+d"):format(side))
 		walls[#walls + 1] = {
 			Side = side, Rig = rig, Stages = {}, Lip = nil, Cap = nil,
-			Col = collider(Vector3.new(W.Length, W.Height, TT_COLLIDER_T), HIDE, m),
-			Showing = nil, ShowingN = 0, CapShown = false, ColOn = false, LipLit = true, Drops = {},
+			-- (2026-10-19, audit P5D-08) no Col here any more: ttColliders owns the walls' colliders
+			Showing = nil, ShowingN = 0, CapShown = false, LipLit = true, Drops = {},
 		}
 	end
 	local collar, collarShown = nil, false
@@ -1308,7 +1558,7 @@ function AquaFX.TwinTide(center, axis, t0)
 				frames[k] = take(f.mesh, "solid", m)
 				if f.line then
 					lines[k] = take(f.line, "line", m)
-					ttLine(lines[k], true, SIM.lineColour)
+					ttLine(lines[k], true, Wrap.Active and COL.TwinLine or SIM.lineColour)
 				end
 			end)
 		end
@@ -1343,10 +1593,7 @@ function AquaFX.TwinTide(center, axis, t0)
 	local function pose(piece)
 		if piece and piece.Rig then writes += poseRig(piece.Rig, T) end
 	end
-	-- how far out of the ground the walls are: the middle column's Foot carries the whole wall's rise (tbl.liftChains)
-	local riseCol = math.max(1, math.floor((#TABLE.columns + 1) / 2))
-	local riseRef = (TABLE.columns[riseCol] and TABLE.columns[riseCol].keys.Foot)
-		and { Key = "Foot" .. riseCol, Chain = "Foot", Column = riseCol } or nil
+	-- (2026-10-19, audit P5D-08) the walls' rise test (the middle column's Foot, tbl.liftChains) moved to ttColliders
 
 	--- The showing colour stage; a missing one (no template) is stood in for by the nearest one that was made.
 	local function stagePiece(w, n)
@@ -1365,14 +1612,6 @@ function AquaFX.TwinTide(center, axis, t0)
 		local stage = TTPose.wallStage(TABLE, e)
 		local lipLit, jetLit = TTPose.lines(TABLE, e)
 		local capOn = TTPose.capOn(TABLE, e)
-		local standing = false
-		if e < closeT then
-			if riseRef then
-				standing = (W.Height + T(riseRef).Position.Y) / W.Height >= TT_COLLIDER_RISE
-			else
-				standing = e >= 0.1
-			end
-		end
 		for _, w in ipairs(walls) do
 			local base = center + toP * (w.Side * off)
 			local originCF = CFrame.lookAt(base, base - toP * w.Side)
@@ -1406,14 +1645,7 @@ function AquaFX.TwinTide(center, axis, t0)
 					w.CapShown = false
 				end
 			end
-			-- the collider, while the wall stands (as before: from a third of its height up to the meeting)
-			if standing then
-				w.Col.CFrame = originCF * CFrame.new(0, W.Height / 2, 0)
-				w.ColOn = true
-			elseif w.ColOn then
-				w.Col.CFrame = HIDE
-				w.ColOn = false
-			end
+			-- the collider: ttColliders' (2026-10-19, audit P5D-08), on the same clock and rise rule, whatever is drawn
 		end
 		-- the foam collar bridging the lips, in the seam frame; its bones run on world time (tbl.unwarpedChains)
 		if collar then
@@ -1444,11 +1676,11 @@ function AquaFX.TwinTide(center, axis, t0)
 			if jets[st] then place(jets[st], seam[1], 1) end
 			jetShown = st
 		end
-		local want = fl and st > 0
+		local want = fl and st > 0 and not quiet
 		if jets[st] and want ~= jetFlash then
 			if want then
 				jets[st].Material = Enum.Material.Neon
-				jets[st].Color = TT_FLASH
+				jets[st].Color = COL.TwinFlash
 			else
 				setKind(jets[st], "solid")
 			end
@@ -1469,8 +1701,7 @@ function AquaFX.TwinTide(center, axis, t0)
 			for _, s in pairs(w.Stages) do s.Part.CFrame = HIDE end
 			if w.Lip then w.Lip.Part.CFrame = HIDE end
 			if w.Cap then w.Cap.Part.CFrame = HIDE end
-			w.Col.CFrame = HIDE
-			w.Showing, w.ShowingN, w.ColOn, w.CapShown = nil, 0, false, false
+			w.Showing, w.ShowingN, w.CapShown = nil, 0, false
 		end
 		if collar then collar.Part.CFrame = HIDE end
 		for _, p in pairs(jets) do p.CFrame = HIDE end
@@ -1551,7 +1782,8 @@ function AquaFX.TwinTide(center, axis, t0)
 	-- flecks with the rain. The gravities are the sim's own, absolute (fling multiplies KIT_GRAVITY).
 	local function simDrop(d, gravity)
 		local room = (d.src == "rain" and 20) or (d.src == "island" and 10) or 0
-		if live >= SPLASH_CAP - room then return end
+		if live >= SPLASH_CAP * keepFor() - room then return end
+		if room > 0 and math.random() > keep then return end     -- (2026-10-19, audit P5D-02) rain and islands thin; the rim stays
 		local g = (gravity or 117.72) / KIT_GRAVITY
 		local at = seam[1] * d.pos
 		local v = seam[1]:VectorToWorldSpace(d.vel)
@@ -1569,7 +1801,7 @@ function AquaFX.TwinTide(center, axis, t0)
 		end
 	end
 	local function simFleck(d, FL)
-		if live >= SPLASH_CAP - 20 then return end
+		if live >= SPLASH_CAP * keepFor() - 20 or math.random() > keep then return end   -- (2026-10-19, audit P5D-02)
 		local n, best = 1, math.huge
 		for i, len in ipairs(TT_FOAM_LEN) do
 			if math.abs(len - d.size) < best then n, best = i, math.abs(len - d.size) end
@@ -1675,7 +1907,7 @@ function AquaFX.TwinTide(center, axis, t0)
 			finish(os.clock() - startT, true)
 		end
 	end
-	conn = RunService.Heartbeat:Connect(function()
+	conn = Heartbeat:Connect(function()
 		if done then return end
 		if not m.Parent then
 			finish(os.clock() - startT, false)
@@ -1684,7 +1916,14 @@ function AquaFX.TwinTide(center, axis, t0)
 		guarded()
 	end)
 	guarded()                                                -- the first frame now: bones written before anything shows
-	return m
+	-- (2026-10-19, audit P5D-09) Cancel: the colliders and the whole look at once (no wet ground: the server's strip went
+	-- with the cast)
+	handle.Model = m
+	handle.Cancel = function()
+		cols.Cancel()
+		finish(os.clock() - startT, false)
+	end
+	return handle
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -1712,7 +1951,7 @@ end
 --- bugged").
 --- Returns { Kick(), Muzzle(), Reservoir(), SetPalm(fn), ChargeUntil(t), Phase(), BodyOffset(now), Holster(), Destroy() }.
 local DRIPS = { "drip_1", "drip_2", "drip_3", "drip_4" }
-local FLASH = Color3.fromRGB(183, 222, 248)
+-- (the muzzle's flash #B7DEF8: AquaTuning.Color.Flash since 2026-10-19)
 local gunSteps = 0           -- each gun binds its own uniquely named render step
 
 -- THE CHARGE. Phase marks run 0 (a shot just left) .. 1 (charged).
@@ -1731,9 +1970,13 @@ local CH = {
 	Flash = 0.07,      -- READY's white flash, seconds
 }
 
-function AquaFX.SidearmGun(frameFn, k)
+function AquaFX.SidearmGun(frameFn, k, own)
 	local S = A.Sidearm
 	k = k or 1
+	-- (2026-10-19, audit P5D-02 / P5F-03) `own` false = another player's gun (its thrown water thinned by the settings);
+	-- under Reduce Flashing the shot's and READY's white flash is the plain lit Tideline instead
+	local keep = keepFor(own)
+	local flash = calm() and COL.Tideline or COL.Flash
 	local m = model("AquaSidearm")
 	local gun = take("AK_SA_Gun", "solid", m)
 	local coil = take("AK_SA_Coil", "solid", m)
@@ -1771,7 +2014,7 @@ function AquaFX.SidearmGun(frameFn, k)
 		local pos = at
 		local b0 = os.clock()
 		local c
-		c = RunService.Heartbeat:Connect(function(dt)
+		c = Heartbeat:Connect(function(dt)
 			local e = os.clock() - b0
 			if e > 0.7 or not p.Parent then
 				c:Disconnect()
@@ -1802,7 +2045,7 @@ function AquaFX.SidearmGun(frameFn, k)
 	end
 
 	local function chargeTone(now)
-		if now - lastShot < 0.05 or now - charge.ReadyAt < CH.Flash then return FLASH end
+		if now - lastShot < 0.05 or now - charge.ReadyAt < CH.Flash then return flash end
 		return COL.TidelineDim:Lerp(COL.Tideline, smooth((charge.Phase - CH.LitFrom) / (CH.LitFull - CH.LitFrom)))
 	end
 
@@ -1856,7 +2099,7 @@ function AquaFX.SidearmGun(frameFn, k)
 
 	gunSteps += 1
 	local stepName = "AquaSidearmGun_" .. gunSteps
-	RunService:BindToRenderStep(stepName, Enum.RenderPriority.Camera.Value + 3, function()
+	bindRender(stepName, Enum.RenderPriority.Camera.Value + 3, function()
 		if dead then return end
 		local now = os.clock()
 		local dt = now - last
@@ -1878,7 +2121,7 @@ function AquaFX.SidearmGun(frameFn, k)
 		-- shaken off as it forms: water falling away from the hand
 		if not shook and d > 0.5 then
 			shook = true
-			spray(cf.Position, 3, 3, 3, 1.6 * k, nil, 0.8)
+			spray(cf.Position, 3, 3, 3, 1.6 * k, nil, 0.8, nil, keep)
 		end
 		-- the coil sleeve rides the barrel (its gun_origin point sits on the gun's origin); it spins hard while the gun
 		-- forms and while it fires -- charged by the hand, it slows when a shot spends it and speeds up as it charges
@@ -1901,7 +2144,7 @@ function AquaFX.SidearmGun(frameFn, k)
 			elseif charge.Palm then
 				muzzle.Color = chargeTone(now)                 -- flash at the shot, dim (spent), lit as it charges, READY
 			elseif now - lastShot < 0.05 then
-				muzzle.Color = FLASH
+				muzzle.Color = flash
 			elseif firing then
 				muzzle.Color = COL.Tideline
 			else
@@ -1934,7 +2177,7 @@ function AquaFX.SidearmGun(frameFn, k)
 		end
 		if holsterAt and h >= 1 then
 			-- gone into water
-			spray(cf.Position, 4, 2, 3, 1.3 * k, nil, 0.8)
+			spray(cf.Position, 4, 2, 3, 1.3 * k, nil, 0.8, nil, keep)
 			handle.Destroy()
 		end
 	end)
@@ -1948,7 +2191,7 @@ function AquaFX.SidearmGun(frameFn, k)
 			local look = mz.LookVector
 			for _ = 1, 2 do
 				local v = look * (10 + math.random() * 6) + randomUnitFlat() * 2 + Vector3.new(0, 1.5 + math.random() * 2, 0)
-				fling("AK_WG_Drop", mz.Position + look * 0.1, v, 1.2 * k, 0.5, 5, 0.5)
+				if math.random() <= keep then fling("AK_WG_Drop", mz.Position + look * 0.1, v, 1.2 * k, 0.5, 5, 0.5) end
 			end
 		end
 	end
@@ -1999,7 +2242,7 @@ function AquaFX.SidearmGun(frameFn, k)
 		pcall(RunService.UnbindFromRenderStep, RunService, stepName)
 		m:Destroy()
 	end
-	return handle
+	return Wrap.BindHandle(handle)
 end
 
 --- One bullet: straight from `origin` along `dir` (the eye's line), drawn from `visualFrom` (the muzzle) easing onto it.
@@ -2024,8 +2267,10 @@ function AquaFX.FireSlug(origin, dir, n, exclude, visualFrom, onHit)
 	local scale = VFXLibrary.ShotTimeScale()
 	local roll = 0
 	local shed = 0
+	-- (2026-10-19, audit P5D-02) only the shooter's copy has onHit: any other is another player's, thinned by the settings
+	local keep = keepFor(onHit ~= nil)
 	local conn
-	conn = RunService.Heartbeat:Connect(function(dt)
+	conn = Heartbeat:Connect(function(dt)
 		if not m.Parent then
 			conn:Disconnect()
 			return
@@ -2043,7 +2288,7 @@ function AquaFX.FireSlug(origin, dir, n, exclude, visualFrom, onHit)
 		place(body, cf, size)
 		place(lip, cf, size)
 		shed += dt
-		if travelled > 5 and travelled < 30 and shed >= 0.05 then
+		if travelled > 5 and travelled < 30 and shed >= 0.05 / keep then
 			shed = 0
 			local v = dir * (S.Speed * scale * 0.12) + randomUnitFlat() * 1.5 + Vector3.new(0, -1 + math.random() * 2, 0)
 			fling("AK_WG_Drop", drawn - dir * 0.4 * size, v, 1.4, 0.5, 5, 0.5)
@@ -2051,22 +2296,22 @@ function AquaFX.FireSlug(origin, dir, n, exclude, visualFrom, onHit)
 		if hit or travelled >= S.Range then
 			conn:Disconnect()
 			m:Destroy()
-			if hit and onHit then task.spawn(onHit, hit) end
-			AquaFX.Splash(b, true, hit and hit.Normal, (n - 1) % S.PuddleEvery == 0)
+			if hit and onHit then tspawn(onHit, hit) end
+			AquaFX.Splash(b, true, hit and hit.Normal, (n - 1) % S.PuddleEvery == 0, keep)
 		end
 	end)
 end
 
 --- The impact: a crown standing on the surface it hit (its up = the surface normal) -- the big crown for the drawn
 --- shot, the small one for a rapid bullet -- drops thrown off it, and, when `puddle`, a wet puddle on the floor under it.
-function AquaFX.Splash(position, first, normal, puddle)
+function AquaFX.Splash(position, first, normal, puddle, keep)
 	local up = (typeof(normal) == "Vector3" and normal.Magnitude > 0.1) and normal.Unit or Vector3.yAxis
 	if first then
 		crown(position, 0.55, up, "AK_SA_Splash", 0.42)
-		spray(position + up * 0.25, 5, 9, 4, 1.8, up, 0.7)
+		spray(position + up * 0.25, 5, 9, 4, 1.8, up, 0.7, nil, keep)   -- keep: (2026-10-19, audit P5D-02)
 	else
 		crown(position, 0.75, up, nil, 0.3)
-		spray(position + up * 0.2, 2, 7, 3, 1.5, up, 0.6)
+		spray(position + up * 0.2, 2, 7, 3, 1.5, up, 0.6, nil, keep)
 	end
 	if puddle then
 		local g = floorAt(position, 2, 8)
@@ -2088,9 +2333,16 @@ local JAW_OPEN = math.rad(35)
 
 --- The whole ultimate from its server time. Returns a handle: SetSharks(n) when the tank closes on n enemies,
 --- LungeMany({ {Target, Point}, ... }) when the server names each shark's enemy, BiteMany(models) when they land
---- (Lunge(model, point) / Bite(model) are the one-shark forms).
-function AquaFX.Maw(center, t0)
+--- (Lunge(model, point) / Bite(model) are the one-shark forms), Cancel() when the server ends the cast early
+--- (AquaMawEnd: a round reset, the caster gone -- 2026-10-19, audit P5D-09): the colliders and the ceiling go at once and
+--- the tank drains from there, as at its release. The colliders are built here unconditionally (no look gate before
+--- them: audit P5D-08).
+function AquaFX.Maw(center, t0, own)
 	local M = A.Maw
+	-- (2026-10-19, audit P5D-02 / P5F-03) `own` false = another player's Ultimate: its thrown water and rocks thinned by
+	-- the settings (the tank, its walls and rim never are); under Reduce Flashing the bite's pale flash is the Tideline
+	local keep = keepFor(own)
+	local biteCol = calm() and COL.Tideline or COL.Flash
 	local m = model("AquaMaw")
 	local R = M.Radius
 	local N = M.Panels
@@ -2099,11 +2351,11 @@ function AquaFX.Maw(center, t0)
 	local hs = M.WallHeight / 14               -- ...and walls 14 tall
 
 	-- THE SLAM: Terra-faceted debris and whitewater plumes off the ground
-	for i = 1, 9 do
+	for i = 1, math.floor(9 * keep + 0.5) do
 		local v = randomUnitFlat() * (8 + math.random() * 10) + Vector3.new(0, 18 + math.random() * 12, 0)
 		fling("AK_LM_Rock_" .. ((i - 1) % 3 + 1), center + Vector3.new(0, 1, 0), v, 1, 0.9, 5, 0.5, true)
 	end
-	spray(center + Vector3.new(0, 1, 0), 12, 20, 11, 2.4)                -- and the water thrown up with them
+	spray(center + Vector3.new(0, 1, 0), 12, 20, 11, 2.4, nil, nil, nil, keep)   -- and the water thrown up with them
 	for i = 1, 3 do
 		local p = take("AK_LM_Spray_1", "solid", m)
 		if p then
@@ -2111,7 +2363,7 @@ function AquaFX.Maw(center, t0)
 			local cf = CFrame.new(at) * CFrame.Angles(0, math.random() * 6.28, 0)
 			local b0 = os.clock()
 			local c
-			c = RunService.Heartbeat:Connect(function()
+			c = Heartbeat:Connect(function()
 				local e = os.clock() - b0
 				if e > 0.7 or not p.Parent then
 					c:Disconnect()
@@ -2159,6 +2411,7 @@ function AquaFX.Maw(center, t0)
 	addShark()
 
 	local lastBite = nil   -- os.clock of the bite
+	local cancelled = false   -- (2026-10-19, audit P5D-09) Cancel(): no collider or ceiling from here on
 	local rimState = "line"
 	local splashedUp, splashedDown = false, false
 	local handle = {}
@@ -2181,7 +2434,7 @@ function AquaFX.Maw(center, t0)
 	end
 
 	local conn
-	conn = RunService.Heartbeat:Connect(function()
+	conn = Heartbeat:Connect(function()
 		local e = os.clock() - start
 		if not m.Parent then
 			conn:Disconnect()
@@ -2215,14 +2468,14 @@ function AquaFX.Maw(center, t0)
 			splashedDown = true
 			for i, p in ipairs(panels) do
 				crown(Vector3.new(p.Base.X, center.Y, p.Base.Z), 2.4, nil, (i % 4 == 2) and "AK_SA_Splash" or nil, 0.6)
-				if i % 2 == 0 then spray(p.Base + Vector3.new(0, 2, 0), 3, 12, 7, 2.6) end
+				if i % 2 == 0 then spray(p.Base + Vector3.new(0, 2, 0), 3, 12, 7, 2.6, nil, nil, nil, keep) end
 			end
 		end
 		for _, p in ipairs(panels) do
 			local cf = CFrame.lookAt(p.Base, Vector3.new(center.X, p.Base.Y, center.Z)) * CFrame.new(0, -drop, 0)
 			place(p.Wall, cf, Vector3.new(rs, hs, 1))
 			place(p.Rim, cf, Vector3.new(rs, hs, 1))
-			p.Col.CFrame = (wallUp > 0.05) and (cf * CFrame.new(0, M.WallHeight / 2, 0)) or HIDE
+			if p.Col then p.Col.CFrame = (wallUp > 0.05) and (cf * CFrame.new(0, M.WallHeight / 2, 0)) or HIDE end
 			if p.Roof then
 				if curl > 0.01 then
 					place(p.Roof, cf * CFrame.new(0, M.WallHeight, 0), Vector3.new(rs, hs, rs) * math.max(0.03, curl))
@@ -2232,7 +2485,7 @@ function AquaFX.Maw(center, t0)
 			end
 		end
 		-- the roof's collider: a ceiling over the tank while it is closed (no leaving by jumping)
-		if curl > 0.9 and not ceiling then
+		if curl > 0.9 and not ceiling and not cancelled then
 			ceiling = collider(Vector3.new(1, R * 2, R * 2), CFrame.new(center + Vector3.new(0, M.WallHeight + 0.5, 0)) * CFrame.Angles(0, 0, math.pi / 2), m)
 			ceiling.Shape = Enum.PartType.Cylinder
 		elseif curl <= 0.9 and ceiling then
@@ -2259,7 +2512,7 @@ function AquaFX.Maw(center, t0)
 					-- the fin cuts the surface: a wake of drops thrown off it, landing back on the water
 					if finUp > 0.5 and os.clock() >= s.SprayAt then
 						s.SprayAt = os.clock() + 0.08
-						spray(Vector3.new(pos.X, surfaceY + 0.3, pos.Z) - tangent * 0.8, 2, 6, 3.5, 2.2, nil, 0.8, surfaceY)
+						spray(Vector3.new(pos.X, surfaceY + 0.3, pos.Z) - tangent * 0.8, 2, 6, 3.5, 2.2, nil, 0.8, surfaceY, keep)
 					end
 				end
 			elseif not s.Lunge and e >= M.ReleaseTime then
@@ -2316,7 +2569,7 @@ function AquaFX.Maw(center, t0)
 				away = away.Magnitude > 0.5 and away.Unit or Vector3.xAxis
 				local from = Vector3.new(target.X, center.Y - 1.5, target.Z) - away * 7
 				s.Lunge = { Point = target, At = os.clock(), From = from, Target = model }
-				for _ = 1, 6 do
+				for _ = 1, math.floor(6 * keep + 0.5) do
 					local v = randomUnitFlat() * (4 + math.random() * 5) + Vector3.new(0, 12 + math.random() * 8, 0)
 					fling("AK_RT_Foam_" .. math.random(1, 4), from + Vector3.new(0, 1.5, 0), v, 1.2, 0.6, 6, 0.45, false,
 						center.Y + M.FloodDepth)
@@ -2332,11 +2585,11 @@ function AquaFX.Maw(center, t0)
 	local function biteBurst(at)
 		local ring = take("AK_LM_Ring", "line")
 		if ring then
-			ring.Color = Color3.fromRGB(183, 222, 248)
+			ring.Color = biteCol
 			local rcf = CFrame.new(at.X, center.Y + M.FloodDepth + 0.05, at.Z)
 			local f0 = os.clock()
 			local fc
-			fc = RunService.Heartbeat:Connect(function()
+			fc = Heartbeat:Connect(function()
 				local fe = os.clock() - f0
 				if fe > 0.35 or not ring.Parent then
 					fc:Disconnect()
@@ -2346,13 +2599,13 @@ function AquaFX.Maw(center, t0)
 				place(ring, rcf, Vector3.new(1.5 + fe * 22, 1 + fe * 3, 1.5 + fe * 22))
 			end)
 		end
-		spray(Vector3.new(at.X, center.Y + M.FloodDepth + 0.5, at.Z), 14, 22, 12, 2.8, nil, 1.4, center.Y + M.FloodDepth)
+		spray(Vector3.new(at.X, center.Y + M.FloodDepth + 0.5, at.Z), 14, 22, 12, 2.8, nil, 1.4, center.Y + M.FloodDepth, keep)
 		local burst = take("AK_LM_Spray_2", "solid")
 		if burst then
 			local bcf = CFrame.new(at.X, center.Y + M.FloodDepth, at.Z) * CFrame.Angles(0, math.random() * 6.28, 0)
 			local b0 = os.clock()
 			local bc
-			bc = RunService.Heartbeat:Connect(function()
+			bc = Heartbeat:Connect(function()
 				local e = os.clock() - b0
 				if e > 0.6 or not burst.Parent then
 					bc:Disconnect()
@@ -2372,9 +2625,9 @@ function AquaFX.Maw(center, t0)
 		lastBite = os.clock()
 		setRim("line")
 		for _, p in ipairs(panels) do
-			if p.Rim then p.Rim.Color = Color3.fromRGB(183, 222, 248) end
+			if p.Rim then p.Rim.Color = biteCol end
 		end
-		task.delay(0.25, function()
+		tdelay(0.25, function()
 			for _, p in ipairs(panels) do
 				if p.Rim and p.Rim.Parent then p.Rim.Color = COL.Tideline end
 			end
@@ -2397,7 +2650,25 @@ function AquaFX.Maw(center, t0)
 		handle.BiteMany({ targetModel })
 	end
 
-	return handle
+	--- (2026-10-19, audit P5D-09) the server ended the cast (AquaMawEnd): every collider and the ceiling now, then the
+	--- tank opens and drains from here as at its release (its clock jumps to ReleaseTime if it is not there yet)
+	function handle.Cancel()
+		if cancelled then return end
+		cancelled = true
+		for _, p in ipairs(panels) do
+			if p.Col then
+				p.Col:Destroy()
+				p.Col = nil
+			end
+		end
+		if ceiling then
+			ceiling:Destroy()
+			ceiling = nil
+		end
+		start = math.min(start, os.clock() - M.ReleaseTime)
+	end
+
+	return Wrap.BindHandle(handle)
 end
 
 return AquaFX

@@ -41,6 +41,11 @@
 	Health is read from the Humanoid directly.
 ]]
 
+-- (2026-10-19, audit P6A-08) RETIRED: PopArtHUD is the HUD. A "_RETIRED" name does not stop a StarterGui LocalScript
+-- from running, and if it ran it built a second HUD and replaced _G.SpellshotHUD (the dev panel's calls then errored).
+-- It now stops here whatever its Enabled says. Delete it (or move it to ServerStorage) in Studio when convenient.
+do return end
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")

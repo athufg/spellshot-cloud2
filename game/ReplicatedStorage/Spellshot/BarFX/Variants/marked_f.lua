@@ -155,7 +155,7 @@ function V.mount(fx)
 
 		local eOn = onAt and (now - onAt) or 99
 		local k = key(POP, eOn)
-		intro.Visible = eOn < 1.2
+		intro.Visible = eOn < 1.2 and not payAt   -- (2026-10-19, audit GA-16) a mark spent in its first 1.2 s: the payoff word alone (marked_a)
 		introS.Scale, intro.Rotation = k[2], k[3]
 
 		-- the fill's pieces ride its width

@@ -30,7 +30,7 @@
 
 	WHERE CASTS COME FROM: SpellshotService checks and pays for the cast, then fires PerformCast; this, AbilityHandler
 	and PyroHandler all hear it and each acts only on its own kit's ability Ids. Damage goes through CombatCore, so a
-	Cinder Shield soaks a boulder too.
+	shield soaks a boulder too.
 
 	Server -> client (AbilityFX): ("VFX", kind, data) on IceAbilityRemote.
 ]]
@@ -76,6 +76,13 @@ local function isTerra(player)
 	return element == "Terra" and Config.IsPartBuilt("Terra", "Passive")
 end
 
+--- (2026-10-19, audit P4-04) A player this kit throws (Aftershock, Bulwark Charge) is stamped KnockedUntil, server time, for
+--- the throw and its fall: air someone else put them in, which Zephyr's Updraft does not count (ZephyrUpdraftServer).
+local function markKnocked(model, seconds)
+	local untilT = workspace:GetServerTimeNow() + seconds
+	model:SetAttribute("KnockedUntil", math.max(untilT, model:GetAttribute("KnockedUntil") or 0))
+end
+
 ----------------------------------------------------------------------------------------------------
 -- M1: BOULDER SHOT -- the charge
 ----------------------------------------------------------------------------------------------------
@@ -100,11 +107,17 @@ end
 --- over -- and nil is a hold that was dropped (death, a round clearing), where the rock goes at once. "Interrupted"
 --- (2026-09-25) is a drop too, but one the holder's OWN client has to hear about: their own Aftershock slam, or
 --- somebody else's Aftershock striking them.
+local chargeOffAt = {}     -- [player] = os.clock() of their last hold's end (2026-10-19, audit P1-07)
+
 local function stopCharge(player, silent, reason)
 	local c = charging[player]
 	if not c then return end
 	charging[player] = nil
+	chargeOffAt[player] = os.clock()
 	if c.Character.Parent then c.Character:SetAttribute("TerraCharging", nil) end
+	-- (2026-10-19, audit P1-07) a hold whose start was never broadcast (a re-press inside the gap, below) ends unheard,
+	-- unless it is an interrupt, which the holder's own client has to hear about
+	if c.Shown == false and reason ~= "Interrupted" then silent = true end
 	if not silent then broadcast("BoulderChargeStop", { Character = c.Character, Reason = reason }) end
 end
 
@@ -121,9 +134,26 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	end
 	if a.On then
 		if charging[player] and charging[player].Character == character then return end
-		charging[player] = { Character = character, At = os.clock() }
+		-- (2026-10-19, audit P1-07) every On after an Off made a record and a broadcast to every client: a bucket on the
+		-- presses (an Off is never refused -- it only ever ends a hold), and a re-press inside MIN_GAP of the last hold's
+		-- end still starts the hold this server times (an honest quick re-press keeps its charge) but is announced only
+		-- once the gap has passed, and not at all if it ends first
+		if not Core.Allow(player, "BoulderCharge", 6, 8) then return end
+		local MIN_GAP = 0.15
+		local rec = { Character = character, At = os.clock() }
+		charging[player] = rec
 		character:SetAttribute("TerraCharging", true)
-		broadcast("BoulderChargeStart", { Character = character, T0 = workspace:GetServerTimeNow() })
+		local wait = MIN_GAP - (os.clock() - (chargeOffAt[player] or -math.huge))
+		if wait <= 0 then
+			broadcast("BoulderChargeStart", { Character = character, T0 = workspace:GetServerTimeNow() })
+		else
+			rec.Shown = false
+			task.delay(wait, function()
+				if charging[player] ~= rec then return end
+				rec.Shown = true
+				broadcast("BoulderChargeStart", { Character = character, T0 = workspace:GetServerTimeNow() })
+			end)
+		end
 	else
 		stopCharge(player)
 	end
@@ -148,7 +178,10 @@ local function castBoulderShot(player, character, humanoid, root, payload)
 	else
 		dir = root.CFrame.LookVector
 	end
-	local charge = math.clamp(tonumber(payload.Charge) or 0, 0, 1)
+	-- (2026-10-19, audit P1-16) only a release this server accepted sizes the rock (its Charge is checked against the hold
+	-- it watched). The cast's own Charge was the fallback, so a cast with no release drew a full-charge throw that dealt
+	-- nothing -- a fake of the tell -- and a NaN went to every client (math.clamp passes NaN through). No release: a tap.
+	local charge = 0
 	local last = lastThrow[player]
 	if last and os.clock() - last.At <= 0.3 then charge = last.Charge end
 	broadcast("BoulderShot", { Character = character, Dir = dir, Charge = charge })
@@ -193,8 +226,8 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local head = character:FindFirstChild("Head")
 	local ping = 0
 	pcall(function() ping = player:GetNetworkPing() end)
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	if (origin - (head and head.Position or root.Position)).Magnitude > 6 + speed * (0.35 + ping) then
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	if (origin - (head and head.Position or root.Position)).Magnitude > 6 + speed * (0.35 + Core.Lag(ping)) then
 		Core.CountShot("rej_origin")
 		return
 	end
@@ -204,7 +237,9 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local held = chargeHeld(player)
 	local B = T.BoulderShot
 	local allowed = held and math.clamp((held + 0.1) / B.ChargeTime, 0, 1) or 0.1
-	local charge = math.min(math.clamp(tonumber(a.Charge) or 0, 0, 1), allowed)
+	local claim = tonumber(a.Charge) or 0
+	if claim ~= claim then claim = 0 end       -- (2026-10-19, audit P1-16) a NaN claim is a tap, not a NaN rock
+	local charge = math.min(math.clamp(claim, 0, 1), allowed)
 	lastThrow[player] = { Charge = charge, At = now }     -- ...and the relay draws the rock at this, not at the claim
 	-- ANNOUNCED, not silent (2026-09-23): a release this server accepts whose M1 cast it then refuses (the cast relay's
 	-- own interval, CastLocked) sends no BoulderShot, and every other client kept the rock in the thrower's hand and the
@@ -329,6 +364,12 @@ remote.OnServerEvent:Connect(function(player, action, a)
 		Core.CountShot("rej_blocked")
 		return
 	end
+	-- a body is only hit by a PAID throw (2026-10-19, audit P1-12 / GC-14): the release reaches here first, so the
+	-- question waits for the hit, by which time the throw's CastRequest has arrived
+	if humanoid and not Core.TakePaidM1(player) then
+		Core.CountShot("rej_unpaid")
+		return
+	end
 	Core.CountShot("hit")
 	if humanoid then
 		Core.DealDamage(player, humanoid, TerraFX.ChargeDamage(shot.Charge), { Ranged = true, From = shot.Origin })
@@ -353,8 +394,18 @@ local function endCharge(player, silent)
 	if not silent then broadcast("BulwarkChargeEnd", { Character = c.Character }) end
 end
 
-local function castBulwarkCharge(player, character, humanoid, root, payload)
+local function castBulwarkCharge(player, character, humanoid, root, payload, role)
 	local C = T.BulwarkCharge
+	-- (2026-10-19, audit P1-10) refused, at no cost, where the caster's own client refuses the dash (DashMotor.CanStart with
+	-- the row's MinCap): rooted or slowed below MinCap (either cap slot), or frozen. (Its third rule, Channeling, is an
+	-- attribute the client sets on itself, which the server never sees.) An honest client never sends it then; a modified
+	-- one got the sweep, the 40% reduction and Bedrock's stacks standing still.
+	local cap = math.min(character:GetAttribute("SpeedCapSlow") or math.huge, character:GetAttribute("SpeedCapUlt") or math.huge)
+	if cap < C.MinCap or character:FindFirstChild("IceFrozenState") then
+		local giveBack = spellFolder:FindFirstChild("GiveBack")
+		if giveBack then giveBack:Fire(player, role or "Primary") end
+		return
+	end
 	local dir = payload.Dir
 	if Core.ValidVector(dir) and dir.Magnitude > 0.1 then
 		dir = Vector3.new(dir.X, 0, dir.Z)
@@ -362,6 +413,9 @@ local function castBulwarkCharge(player, character, humanoid, root, payload)
 	else
 		dir = root.CFrame.LookVector
 	end
+	-- (2026-10-19, audit P1-16) a NaN Dist is the full distance: math.clamp passes NaN through to every client
+	local dist = tonumber(payload.Dist)
+	if not dist or dist ~= dist then dist = C.Distance end
 	charges[player] = {
 		Character = character, Root = root, Dir = dir, Hit = {},
 		Until = os.clock() + C.MaxTime,
@@ -369,7 +423,7 @@ local function castBulwarkCharge(player, character, humanoid, root, payload)
 	character:SetAttribute("BulwarkCharging", true)
 	broadcast("BulwarkCharge", {
 		Character = character, Start = root.Position, Dir = dir,
-		Dist = math.clamp(tonumber(payload.Dist) or C.Distance, 0, C.Distance + 4),
+		Dist = math.clamp(dist, 0, C.Distance + 4),
 		T0 = workspace:GetServerTimeNow(),
 	})
 end
@@ -398,20 +452,48 @@ local function sweepCharge(player, c)
 				local rel = vroot.Position - root.Position
 				local along = rel:Dot(c.Dir)
 				local side = rel - c.Dir * along
+				-- (2026-10-19, audit GC-02 / GC-04) never through a Bulwark Wall; a wall itself takes the damage only
+				local isWall = Core.IsWall(model)
 				if along > -1.5 and along <= C.Reach and math.abs(side.Y) <= C.HalfHeight
-					and Vector3.new(side.X, 0, side.Z).Magnitude <= C.HalfWidth then
+					and Vector3.new(side.X, 0, side.Z).Magnitude <= C.HalfWidth
+					and (isWall or not Core.WallBetween(root.Position, vroot.Position)) then
 					c.Hit[victim] = true
-					if Core.DealDamage(player, victim, C.Damage, { From = root.Position }) then
+					if isWall then
+						Core.DealDamage(player, victim, C.Damage, { From = root.Position })
+					elseif Core.DealDamage(player, victim, C.Damage, { From = root.Position }) then
 						Core.ApplyStatusTag(victim, "Staggered", C.Stagger)
 						model:SetAttribute("RX_Staggered_Element", "Terra")
 						model:SetAttribute("RX_Staggered", true)
+						-- (2026-10-19, audit P3-06) the stars end with the LAST stagger running, not the first to time
+						-- out: RX_StaggeredUntil (server time) is the latest end any Bulwark Charge asked for, and an
+						-- Overload's own stagger (ElementalReactions) holds its stamp, ReactionStaggerAt, until it ends
+						local staggerUntil = workspace:GetServerTimeNow() + C.Stagger
+						model:SetAttribute("RX_StaggeredUntil",
+							math.max(staggerUntil, model:GetAttribute("RX_StaggeredUntil") or 0))
 						task.delay(C.Stagger, function()
-							if model.Parent then model:SetAttribute("RX_Staggered", false) end
+							if not model.Parent then return end
+							if workspace:GetServerTimeNow() < (model:GetAttribute("RX_StaggeredUntil") or 0) - 0.05 then return end
+							if model:GetAttribute("ReactionStaggerAt") ~= nil then return end
+							model:SetAttribute("RX_Staggered", false)
+							model:SetAttribute("RX_StaggeredUntil", nil)
 						end)
-						-- knocked off their feet: thrown along the charge and up. On a player's own body the
-						-- client owns the physics, so this reads as a shove rather than a launch; on a dummy,
-						-- which the server owns, it is the full throw.
-						vroot.AssemblyLinearVelocity = c.Dir * C.Knock + Vector3.new(0, C.KnockLift, 0)
+						-- knocked off their feet: thrown along the charge and up. A dummy the server owns takes the
+						-- throw here; a PLAYER's own client owns their body and overwrote a velocity written here, so
+						-- it read as a shove (2026-10-19, audit P3-21): they are sent the throw to make themselves,
+						-- the knock ElementalReactions' Overload sends (AbilityFX's AftershockKnock), held for
+						-- Aftershock's KnockTime -- and stamped KnockedUntil for it and the fall (audit P4-04)
+						local velocity = c.Dir * C.Knock + Vector3.new(0, C.KnockLift, 0)
+						local victimPlayer = Players:GetPlayerFromCharacter(model)
+						if victimPlayer then
+							local knockTime = T.Aftershock.KnockTime
+							pcall(function()
+								remote:FireClient(victimPlayer, "VFX", "AftershockKnock", { Velocity = velocity,
+									Until = workspace:GetServerTimeNow() + knockTime, Center = root.Position, Caster = player })
+							end)
+							markKnocked(model, knockTime + math.clamp(2 * C.KnockLift / workspace.Gravity, 0.35, 1.4) + 0.3)
+						else
+							vroot.AssemblyLinearVelocity = velocity
+						end
 						broadcast("BulwarkHit", { Position = vroot.Position, Dir = c.Dir, Character = c.Character })
 					end
 				end
@@ -433,7 +515,7 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- The reduction: while the charge runs, everything that hurts the charger is thinned. Priority 5, so it runs
--- BEFORE Heat Rush's and Cinder Shield's -- a shield soaks what is left after the armour, not before it.
+-- BEFORE every soak -- a shield soaks what is left after the armour, not before it.
 Core.AddModifier(5, function(victim, amount)
 	local player = Players:GetPlayerFromCharacter(victim.Parent)
 	local c = player and charges[player]
@@ -447,7 +529,7 @@ end)
 -- The one wall in the game (SpellshotConfig.Defense.BulwarkWall: "full projectile/sightline block", 16 s). Its design,
 -- as the kit's showcase set it down: a CHANNELLED HOLD, capped, that BREAKS ON DAMAGE, and the cooldown starts when it
 -- drops, whichever way. This is that design wired to the Defense key -- no redesign. The hold is SpellshotService's
--- HELD path, the one Heat Rush and Gust Jump already use: the key going down pays and fires Phase "Start" here, the key
+-- HELD path: the key going down pays and fires Phase "Start" here, the key
 -- coming up ends the hold (endHold fires Phase "Release"; the row's Cooldown is 0, so nothing is locked), and anything
 -- here that has to end it first -- an empty bar, the wall broken -- does so through ReleaseHold, the same way.
 --   THE BODY is the server's own: one anchored, collidable, raycastable box the size of the kit's twelve slabs, WallAhead
@@ -480,6 +562,14 @@ do
 		end
 	end
 	if hi.X > lo.X then wallSize = Vector3.new(hi.X - lo.X, hi.Y - lo.Y, hi.Z - lo.Z) end
+	-- 2026-10-23: with the rework's kit in (TerraWall2, what TerraFX_Wall draws) the box is ITS wall: BulwarkWallKitData's
+	-- Size, the top at Size.Y + Foot (the old slabs' box stood 0.6 studs over the stones)
+	local data = spellFolder:FindFirstChild("BulwarkWallKitData")
+	local ok, d = false, nil
+	if data and kit and kit:FindFirstChild("TerraWall2") then ok, d = pcall(require, data) end
+	if ok and type(d) == "table" and typeof(d.Size) == "Vector3" then
+		wallSize = Vector3.new(d.Size.X, d.Size.Y + (tonumber(d.Foot) or 0), d.Size.Z)
+	end
 end
 
 local function wallFloor(position, skip)
@@ -742,18 +832,26 @@ local function hold(root, at, face)
 	orient.MaxTorque = 1e6
 	orient.Responsiveness = 30
 	orient.Parent = root
-	return { Anchor = anchor, A0 = a0, Align = align, Orient = orient, Base = at }
+	-- (2026-10-19, audit P1-03) while held, the body's physics are the server's (Core.HoldBody: network ownership, players
+	-- only -- a dummy is the server's already), so a modified client cannot walk out of the Tomb; letGo gives it back
+	local body = root.Parent
+	if body and Core.HoldBody then Core.HoldBody(body, "Tomb", true) end
+	return { Anchor = anchor, A0 = a0, Align = align, Orient = orient, Base = at, Body = body }
 end
 
 local function letGo(lift)
 	if not lift then return end
 	if lift.Carried then
+		-- (a range dummy, anchored: never a player's body, so no Core.AllowMove is needed before this PivotTo)
 		if lift.Model.Parent then lift.Model:PivotTo(lift.Pivot) end
 		return
 	end
 	for _, k in ipairs({ "Align", "Orient", "A0", "Anchor" }) do
 		if lift[k] then lift[k]:Destroy() end
 	end
+	-- (2026-10-19, audit P1-03) released on every way out -- the descent's end, an escape, a death, a clear, the caster
+	-- leaving (all come through freeVictim); HoldBody's release also opens Core.AllowMove's grace for the drop
+	if lift.Body and Core.HoldBody then Core.HoldBody(lift.Body, "Tomb", false) end
 end
 
 --- The target's height on the pillar: the only body a Tomb ever moves.
@@ -993,9 +1091,10 @@ end)
 
 -- THE WAY OUT: a Mobility Technique the server ACCEPTS from an Entombed body stamps CCBreak on it with the server time,
 -- and a hold that began earlier than that lets go (stepTomb). The game's one "Mobility breaks crowd control" hook -- it
--- was written for the first Earthen Tomb, since nothing earlier had one (a root refuses the Mobility key outright), and
--- this build keeps it rather than adding another. Anything else that should free a body -- a future cleanse, a dev tool
--- -- can stamp the same attribute. The Technique itself goes on as normal and is paid for as normal: its cooldown,
+-- was written for the first Earthen Tomb, since nothing earlier had one, and this build keeps it rather than adding
+-- another. (2026-10-19, audit P4-14: it said "a root refuses the Mobility key outright", which is not so -- only a
+-- Charges cast checks the cap, in SpellshotService; Mark, Position Trade, Vent and the rest cast while rooted.)
+-- Anything else that should free a body -- a future cleanse, a dev tool -- can stamp the same attribute. The Technique itself goes on as normal and is paid for as normal: its cooldown,
 -- charge or mana is the whole price of getting out.
 --- 2026-09-21: the stamp used to go on ANY performCast in the Mobility role, which made the escape free. Two ways:
 --- the AimWhileHeld keep-alive packet is a performCast that costs nothing and starts nothing, and a Tremor Vault
@@ -1203,12 +1302,18 @@ local function interruptVictim(victim)
 	local c = victim.Character
 	if not c then return end
 	for _, role in ipairs(AFTERSHOCK_ROLES) do
-		if c:GetAttribute("Holding_" .. role) then releaseHold:Fire(victim, role) end
+		-- the reason rides along, as AquaHandler.interrupt sends it (audit P4-05): a listener that does not read it treats
+		-- this as the release it always was
+		if c:GetAttribute("Holding_" .. role) then releaseHold:Fire(victim, role, "Interrupted") end
 	end
 	if charging[victim] then stopCharge(victim, false, "Interrupted") end
 	if charges[victim] then endCharge(victim) end
-	local untilT = workspace:GetServerTimeNow() + T.Aftershock.InterruptTime
-	c:SetAttribute("InterruptedUntil", math.max(untilT, c:GetAttribute("InterruptedUntil") or 0))
+	local untilT = math.max(workspace:GetServerTimeNow() + T.Aftershock.InterruptTime, c:GetAttribute("InterruptedUntil") or 0)
+	c:SetAttribute("InterruptedUntil", untilT)
+	-- (2026-10-19, audit P4-06) ...and the victim's own client hears it: the holds above ended on this server only, so an
+	-- Aqua's Sidearm stayed drawn on their screen and kept sending shots the server threw away. AquaInterrupted is
+	-- Undertow's message for exactly this (AquaClient drops the gun; nothing else reads it yet)
+	tell(victim, "AquaInterrupted", { Until = untilT })
 end
 
 --- A body the front reached with its feet on the floor. Damage first; everything else only if it landed.
@@ -1229,6 +1334,8 @@ local function strike(player, s, humanoid, model, vroot, d, feet)
 	local victim = Players:GetPlayerFromCharacter(model)
 	if victim then
 		tell(victim, "AftershockKnock", { Velocity = velocity, Until = now + A.KnockTime, Center = s.At, Caster = player })
+		-- (2026-10-19, audit P4-04) the throw and its fall are not Updraft's air (ZephyrUpdraftServer)
+		markKnocked(model, A.KnockTime + math.clamp(2 * math.max(velocity.Y, 0) / workspace.Gravity, 0.35, 1.4) + 0.3)
 		interruptVictim(victim)
 	elseif serverOwned(vroot) then
 		moveDummy(vroot, velocity, A.KnockTime, A.KnockForcePerMass)
@@ -1353,7 +1460,8 @@ end)
 --   STACKS   built only while you are COMMITTED to an attack -- holding a Boulder Shot charge, or mid Bulwark
 --            Charge -- and lapsing a moment after you stop. Commit longer, take less.
 -- The count lives on the character as Bedrock_Stacks (every client draws the plates from it) and as
--- Stacks_Passive / StacksMax_Passive, which is what the HUD's passive chip already reads.
+-- Stacks_Passive / StacksMax_Passive, published for the HUD's passive chip, which draws them as a row of pips
+-- (2026-10-19, audit GA-10: PopArtHUD).
 local bedrock = {}         -- [player] = { Character, Stacks, Fed (os.clock of the last committing frame) }
 
 local function bedrockRecord(player, character)
@@ -1376,13 +1484,14 @@ local function publishBedrock(b)
 	if shown ~= stacks then
 		character:SetAttribute("Bedrock_Stacks", stacks > 0 and stacks or nil)
 		character:SetAttribute("Stacks_Passive", stacks)
-		-- RX_Shielded is one boolean two kits write, with no count behind it, so Bedrock lowering it took Cinder
-		-- Shield's ring down with it -- shattered a frame after it was cast, on a shield that was still absorbing.
-		-- Bedrock raises its own and only lowers what no one else is still holding up.
+		-- (2026-10-27) Bedrock is the only kit that writes RX_Shielded since Cinder Shield left the game
 		if stacks > 0 then
 			character:SetAttribute("RX_Shielded_Element", "Terra")
+			-- (2026-10-19, audits GA-02 / GA-06) Bedrock is armour (a share off each hit), with no pool to publish as
+			-- RX_Shielded_Amount, so BarFX reads it as "unknown": full, no hits. And its lapse is never a payoff
+			character:SetAttribute("RX_Shielded_Paid", false)
 			character:SetAttribute("RX_Shielded", true)
-		elseif not character:GetAttribute("CinderShield") then
+		else
 			character:SetAttribute("RX_Shielded", false)
 		end
 	end
@@ -1421,11 +1530,14 @@ RunService.Heartbeat:Connect(function(dt)
 				b.Stacks, b.Part = 0, 0
 			end
 			publishBedrock(b)
-		elseif character and character:GetAttribute("Bedrock_Stacks") then
+		-- (2026-10-19, audit GA-10) also at 0 stacks: StacksMax_Passive alone would keep the HUD's five dark pips after an
+		-- Element change; RX_Shielded is only Bedrock's to drop when it had stacks up
+		elseif character and (character:GetAttribute("Bedrock_Stacks") or character:GetAttribute("StacksMax_Passive")) then
+			local hadStacks = character:GetAttribute("Bedrock_Stacks") ~= nil
 			character:SetAttribute("Bedrock_Stacks", nil)
 			character:SetAttribute("Stacks_Passive", nil)
 			character:SetAttribute("StacksMax_Passive", nil)
-			character:SetAttribute("RX_Shielded", false)
+			if hadStacks then character:SetAttribute("RX_Shielded", false) end
 			bedrock[player] = nil
 		end
 	end
@@ -1458,7 +1570,8 @@ performCast.Event:Connect(function(player, role, ability, payload)
 	if not fn then return end
 	local character, humanoid, root = Core.AliveCharacter(player)
 	if not character then return end
-	fn(player, character, humanoid, root, type(payload) == "table" and payload or {})
+	-- the slot rides along as a sixth argument (AbilityHandler's way), for a cast that has to give itself back
+	fn(player, character, humanoid, root, type(payload) == "table" and payload or {}, role)
 end)
 
 ----------------------------------------------------------------------------------------------------
@@ -1498,6 +1611,7 @@ Players.PlayerRemoving:Connect(function(player)
 	buckets[player] = nil
 	lastThrow[player] = nil
 	charging[player] = nil
+	chargeOffAt[player] = nil
 	charges[player] = nil
 	dropTomb(player)
 	freeVictimOf(player)                    -- ...and let go of them if they were somebody else's victim

@@ -9,12 +9,20 @@
 	  * Sparks is the one currency. The 9 base Elements are bought with it: Sparks come from playing, or from a Sparks
 	    pack bought with Robux to skip the grind.
 	  * Every player owns the STARTER KIT from their first join -- fixed, no choice screen.
-	  * Skins and wraps stay Robux-only (the shop's own logic, untouched by this file).
+	  * Skins and wraps stay Robux-only (the shop's own logic, untouched by this file). (2026-10-19, audit P2-06) NOT BUILT
+	    YET: nothing sells one, the save keeps no cosmetic ownership, and SkinCatalog.OwnsSkin answers true for every
+	    skin, so every cosmetic is free to wear today. Gate it before any skin goes on sale.
 	  * Event / collab Elements are a separate track, later. Ownership is keyed by Element NAME, so any future Element
 	    id fits; one that must never be sold for Sparks goes in NotForSale.
 
-	EVERY AMOUNT BELOW MARKED "PLACEHOLDER" IS ONE. The yardstick used to pick them: a first-to-5 duel WIN pays
-	Win + 5 x PerRoundWon = 200 Sparks, so an Element costs about 8-10 wins.
+	EVERY AMOUNT BELOW MARKED "PLACEHOLDER" IS ONE. The yardstick used to pick them: a first-to-5 TEAM-match win
+	(Quick Play; a Hub pad duel pays nothing, DuelMatch) pays Win + 5 x PerRoundWon = 200 Sparks, so an Element costs
+	about 8-10 team-match wins. (2026-10-19, audit P2-18)
+
+	(2026-10-19, audit P6B-07) WHAT ACTUALLY PAYS: only a Quick Play team match (DUEL in Quick Play: two teams of
+	SpellshotConfig's Team.Size, so 6 queued players) ends in AwardMatch. A Hub pad duel and SOLO TEST pay nothing
+	(DuelMatch), and a forfeit before 2 settled rounds pays nobody. There are no dailies or Contracts yet. Whether pad
+	duels should pay, and the prices for this income, are open.
 ]]
 
 local Economy = {}

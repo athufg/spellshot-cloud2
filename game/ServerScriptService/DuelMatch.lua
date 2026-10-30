@@ -24,7 +24,12 @@
 	                      of the team's health over the sum of its max health, a player who is down or gone counting 0 of
 	                      their max -- and equal shares are a draw. RoundEndPause seconds, then the next round or the end.
 	  the match ends      at FirstTo round wins. The winner is declared, and after MatchEndHold everyone goes back to the
-	                      Hub the way BACK TO HUB goes (a player who is down is rebuilt in the Hub instead).
+	                      Hub the way BACK TO HUB goes (a player who is down is rebuilt in the Hub instead). (2026-10-19,
+	                      audit P3-14) From the result to the trip home everyone is CastLocked, and HubServer's respawn
+	                      hold (DuelMatch.Holds) keeps the dead down: the result screen is not a fifth round.
+	                      (2026-10-19, audit P3-13) Or at MaxRounds rounds played, so rounds that keep drawing cannot stall
+	                      it for ever: the side with more round wins takes it, and equal wins are a DRAW (Result "draw",
+	                      which the economy pays as one).
 
 	OUT FOR THE ROUND (2026-10-18). A player who goes down stays down until the round is over: nobody comes back mid-round,
 	and the camera stays on the body. HubServer took Roblox's respawn over that day and holds anyone DuelMatch.Of still
@@ -38,8 +43,10 @@
 	(SwapChance) to swap them -- a fresh flip each round, not an alternation. The marks themselves are HubServer's
 	arenaSpot(side, mapId); only which team stands on which changes.
 
-	DEATHS. CombatCore stamps the instant a hit takes a humanoid to 0 (os.clock() in the damage path, not a poll); a
-	death from anywhere else is stamped when its Died fires. A team is DOWN at the instant its last player fell. The first
+	DEATHS. CombatCore stamps the FRAME in which a hit takes a humanoid to 0 (Core.FrameClock in the damage path, not a
+	poll; os.clock() until 2026-10-19, audit P3-15); a death from anywhere else is stamped with the same clock when its Died
+	fires, so deaths in one frame -- one AoE taking the last of both teams -- are simultaneous whatever order they ran in.
+	A team is DOWN at the instant its last player fell. The first
 	team down ends the round, and the round is settled on the next frame, so a death already processed by then is seen
 	too. The team down first loses -- the other wins, even if its last player falls a moment later to a hit that was
 	already in flight. Only two teams down less than DRAW_WINDOW apart, which the server cannot put in order, are a draw,
@@ -252,7 +259,9 @@ end
 local function release(match, player)
 	if matches[player] == match then matches[player] = nil end
 	if not player.Parent then return end
-	for _, name in ipairs({ "DuelMatch", "MatchTeam", "CanLeaveMatch", "RoundsWon", "RoundsLost", "RoundEndsAt" }) do
+	-- CastLocked too (2026-10-19, audit P3-14): finish() locks everyone for the result screen
+	for _, name in ipairs({ "DuelMatch", "MatchTeam", "CanLeaveMatch", "RoundsWon", "RoundsLost", "RoundEndsAt",
+		"CastLocked" }) do
 		player:SetAttribute(name, nil)
 	end
 end
@@ -274,8 +283,13 @@ end
 --- The economy's match reward (2026-10-18, team mode): PlayerData.AwardMatch(player, result, roundsWon) for everyone
 --- still in the game and still in the match, in a team match only. PlayerData is the economy's (another session builds
 --- it the same day), so it is looked up now, not at load, and nothing it does can stop the match ending.
-local function award(match, winner)
+-- (2026-10-19, audit P2-05) a forfeit before this many rounds were settled pays nobody: a whole team disconnecting at round
+-- 1 paid every player left the full win (150+ Sparks in seconds), a loop any group with alt accounts could farm
+local FORFEIT_MIN_ROUNDS = 2
+
+local function award(match, winner, how)
 	if match.Kind ~= "Team" then return end
+	if how == "forfeit" and (match.CountedRound or 0) < FORFEIT_MIN_ROUNDS then return end
 	local module = ServerScriptService:FindFirstChild("PlayerData")
 	if not module then return end
 	local ok, PlayerData = pcall(require, module)
@@ -303,12 +317,18 @@ local function finish(match, winner, how)
 	disconnectAll(match)
 	showClock(match, nil)
 	match.Signal:Fire()
+	-- (2026-10-19, audit P3-14) the result screen is not a fight: nobody casts from here to the trip home (CanAct and
+	-- SpellshotService both read CastLocked; release() takes it off)
+	for _, p in ipairs(match.Players) do
+		if present(match, p) then p:SetAttribute("CastLocked", true) end
+	end
 	publishScore(match)
 	tell(match, "end", function(i, data)
-		data.Result = (i == winner) and "win" or "loss"
+		-- (2026-10-19, audit P3-13) `winner` is "draw" when MaxRounds ends a level match
+		data.Result = (winner == 1 or winner == 2) and ((i == winner) and "win" or "loss") or "draw"
 		data.How = how
 	end)
-	award(match, winner)
+	award(match, winner, how)
 	task.spawn(function()
 		task.wait((how == "forfeit") and rule(match, "ForfeitHold") or rule(match, "MatchEndHold"))
 		for _, p in ipairs(match.Players) do
@@ -330,7 +350,7 @@ local function settle(match)
 		-- a death whose Died has not come through yet still has CombatCore's stamp
 		for p, humanoid in pairs(match.Humanoids) do
 			if not match.Deaths[p] and humanoid.Health <= 0 then
-				match.Deaths[p] = Core.DeathTime(humanoid) or os.clock()
+				match.Deaths[p] = Core.DeathTime(humanoid) or Core.FrameClock()     -- (2026-10-19, audit P3-15)
 			end
 		end
 		match.Result = DuelMatch.Resolve({
@@ -343,7 +363,19 @@ end
 
 local function onDied(match, p, humanoid)
 	if match.State ~= "Live" or match.Deaths[p] then return end
-	match.Deaths[p] = (humanoid and Core.DeathTime(humanoid)) or os.clock()
+	match.Deaths[p] = (humanoid and Core.DeathTime(humanoid)) or Core.FrameClock()     -- (2026-10-19, audit P3-15) DealDamage's clock
+	-- (2026-10-19, audit GA-08) the HUD's kill feed (PopArtHUD listens on Spellshot.KillFeed: killer, victim, Element) was
+	-- only ever fed by the dev panel. A death a player's hit caused goes to everyone still in this match.
+	local killer, element = nil, nil
+	if humanoid then killer, element = Core.Killer(humanoid) end
+	local feed = spellFolder:FindFirstChild("KillFeed")
+	if feed and typeof(killer) == "Instance" and killer:IsA("Player") then
+		local who = killer.DisplayName
+		element = element or killer:GetAttribute("Element")
+		for _, q in ipairs(match.Players) do
+			if present(match, q) then feed:FireClient(q, who, p.DisplayName, element) end
+		end
+	end
 	local i = match.TeamOf[p]
 	if DuelMatch.DownAt(match.Deaths, match.Teams[i]) then
 		settle(match)
@@ -433,7 +465,8 @@ local function startRound(match)
 		return true
 	end, rule(match, "StartTimeout"))
 	if match.State == "Over" then
-		for _, p in ipairs(coming) do p:SetAttribute("CastLocked", nil) end
+		-- (2026-10-19, audit P3-14) left locked: finish() locked everyone for the result screen, and release() unlocks them
+		--[[for _, p in ipairs(coming) do p:SetAttribute("CastLocked", nil) end   until 2026-10-19]]
 		return
 	end
 
@@ -485,6 +518,14 @@ local function run(match)
 		if match.State == "Over" then break end
 		if result ~= "draw" and match.Wins[result] >= rule(match, "FirstTo") then
 			finish(match, result, "rounds")
+			break
+		end
+		-- (2026-10-19, audit P3-13) a cap on rounds played: draws score nobody, so two sides that never engage (both full
+		-- when the clock runs out) never reached FirstTo, and nobody but a dev can leave a match
+		local cap = rule(match, "MaxRounds")
+		if type(cap) == "number" and cap > 0 and match.Round >= cap then
+			local w1, w2 = match.Wins[1], match.Wins[2]
+			finish(match, (w1 > w2) and 1 or ((w2 > w1) and 2 or "draw"), "rounds")
 			break
 		end
 	end
@@ -546,13 +587,19 @@ local function drop(match, player)
 		return
 	end
 	if not match.Deaths[player] then
-		match.Deaths[player] = os.clock()
+		match.Deaths[player] = Core.FrameClock()           -- (2026-10-19, audit P3-15) the deaths' clock; os.clock() before
 		if match.State == "Live" and DuelMatch.DownAt(match.Deaths, match.Teams[i]) then settle(match) end
 	end
 	tell(match, "left", function(t, data)
 		data.Who = player.DisplayName
 		data.Ally = (t == i)
 	end)
+end
+
+--- (2026-10-19, audit P3-14) Whether the match still holds `player` -- true from Begin until it sends them home, through
+--- the result screen, when DuelMatch.Of already answers nil. HubServer's respawn takeover holds the dead while this is true.
+function DuelMatch.Holds(player)
+	return matches[player] ~= nil
 end
 
 --- A dev leaving mid-match (HubServer has already checked Config.IsDev): they leave the match and go home now. Their team
@@ -574,6 +621,9 @@ Players.PlayerRemoving:Connect(function(player)
 	if match.TeamOf[player] and match.State ~= "Over" then
 		drop(match, player)
 	end
+	-- (2026-10-19, audit P3-07) and out of the match's attributes, as release() does for everyone else: a leaver kept
+	-- DuelMatch / MatchTeam, so Config.MayHurt still let anything of theirs left running hurt their old opponents
+	release(match, player)
 end)
 
 return DuelMatch

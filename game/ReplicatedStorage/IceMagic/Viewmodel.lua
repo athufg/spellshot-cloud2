@@ -305,23 +305,10 @@ local POSE = {
 	-- Immolate: both arms swing out wide, then pull in to the chest, the tips meeting low without crossing.
 	ImmolateOpen = sym(arm(1.30, -1.18, -0.80, 60, 8, -10, 6)),
 	ImmolateIn = sym(arm(0.72, -1.40, -0.40, 62, 34, -40, 20)),
-	-- Heat Rush: the sprint at full Heat, arms tucked tighter and higher (the state blends to it from Sprint by
-	-- Heat), and the exhale's slack drop.
-	HeatRushHigh = sym(arm(0.64, -1.00, -0.32, 46, 24, -20, 18)),
-	HeatRushDrop = sym(arm(1.12, -1.62, -0.36, 36, 20, -12, -10)),
 	-- Cryo's FROSTBLADE run (2026-10-15, the developer: "make the naruto run show in first person too"): Cold Momentum's
 	-- Naruto run seen from the eyes. Arms swept straight back are behind the lens, so the fists drop low and wide to the
 	-- bottom corners and stay there, cut by the frame, a hand kunai in each (FrostbladeKit.Naruto feeds SetNaruto)
 	NarutoRun = sym(arm(1.311, -1.645, -0.132, 40, 15, -20, 0)),
-	-- Cinder Shield: fists pulled out wide, then the knuckles meeting low in the middle; the right arm up behind
-	-- the shield with the left dropped below the frame; the right arm swinging the shield aside like a door while
-	-- the left throws (picked by ray cast: the crosshair and the middle of the screen stay clear); both arms
-	-- thrust out on the burst.
-	ShieldWind = sym(arm(1.18, -1.45, -0.42, 55, -6, 12, 0)),
-	ShieldBump = sym(arm(0.70, -1.30, -0.55, 48, 25, -20, 0)),
-	ShieldHold = pair(arm(0.81, -1.74, -0.86, 40, 12, -8, 0), mirror(arm(1.05, -2.6, -0.2, 10, 20, 0, 0))),
-	ShieldAside = sym(arm(0.9, -1.8, -0.6, 30, -80, 0, 0)),
-	ShieldThrust = sym(arm(0.72, -0.80, -0.90, 16, -4, 0, -30)),
 	-- Ring of Fire: pointing down the crosshair while the hand draws the circle; the settle as it closes; thrown up
 	-- at the right of the view, then flicked out down the crosshair onto the eruption. (A point solved straight
 	-- at the circle pitched the arm down and lifted its back end into the lens.)
@@ -649,34 +636,6 @@ Viewmodel.Clips = {
 			{ t = 0.22, Pose = POSE.ImmolateIn, Cam = Vector3.new(0, -0.10, 0), Easing = Enum.EasingStyle.Quad },
 			{ t = 0.30, Pose = POSE.ImmolateIn, Cam = Vector3.new(0, -0.07, 0) },
 			{ t = 0.52, Pose = nil, Easing = Enum.EasingStyle.Sine },
-		},
-	},
-	-- Heat Rush let go above a third of Heat: the arms drop slack and the camera lifts with the chest
-	HeatRushExhale = {
-		Trigger = 0.14,
-		Keys = {
-			{ t = 0.00, Pose = nil },
-			{ t = 0.14, Pose = POSE.HeatRushDrop, Cam = Vector3.new(0, 0.12, 0), Easing = Enum.EasingStyle.Quad },
-			{ t = 0.32, Pose = POSE.HeatRushDrop, Cam = Vector3.new(0, 0.04, 0) },
-			{ t = 0.62, Pose = POSE.Idle, Easing = Enum.EasingStyle.Sine },
-		},
-	},
-	-- Cinder Shield: held for as long as the shield is up. The fists' punch plays on top as a shot on each arm
-	-- (CinderShieldBump): a two-arm clip's blend lagged the 0.17 s impact and the fists never met.
-	CinderShieldHold = {
-		Hold = true,
-		Keys = {
-			{ t = 0.00, Pose = nil },
-			{ t = 0.34, Pose = POSE.ShieldHold, Easing = Enum.EasingStyle.Quad },
-		},
-	},
-	CinderShieldBurst = {
-		Trigger = 0.06,
-		Keys = {
-			{ t = 0.00, Pose = nil },
-			{ t = 0.06, Pose = POSE.ShieldThrust, Cam = Vector3.new(0, -0.03, -0.22), Easing = Enum.EasingStyle.Quad },
-			{ t = 0.20, Pose = POSE.ShieldThrust, Cam = Vector3.new(0, -0.02, -0.10) },
-			{ t = 0.55, Pose = POSE.Idle, Easing = Enum.EasingStyle.Sine },
 		},
 	},
 	-- Ring of Fire: the settle when the circle closes (held until the point takes over), and the ease back to
@@ -1140,29 +1099,6 @@ Viewmodel.ArmClips = {
 			{ t = 0.85, Easing = Enum.EasingStyle.Quad, Direction = Enum.EasingDirection.InOut },
 		},
 	},
-	-- Cinder Shield's cast, played on BOTH arms at once: out wide, then the knuckles meet (Trigger: the shield
-	-- forms), ending on the hold clip underneath. Cam is halved because the two shots sum.
-	CinderShieldBump = {
-		Trigger = 5 / 30,
-		Keys = {
-			{ t = 0.00, From = true },
-			{ t = 0.10, Pose = POSE.ShieldWind, Easing = Enum.EasingStyle.Quad, Direction = Enum.EasingDirection.Out },
-			{ t = 5 / 30, Pose = POSE.ShieldBump, Easing = Enum.EasingStyle.Quad, Direction = Enum.EasingDirection.In,
-				Cam = Vector3.new(0, -0.03, -0.05) },
-			{ t = 0.22, Pose = POSE.ShieldBump, Cam = Vector3.new(0, -0.015, -0.02) },
-			{ t = 0.30, Easing = Enum.EasingStyle.Quad, Direction = Enum.EasingDirection.InOut },
-		},
-	},
-	-- a Fireball thrown with the shield up: the right arm swings the shield aside until the release, then back
-	CinderShieldAside = {
-		Trigger = 0.42,
-		Keys = {
-			{ t = 0.00, From = true },
-			{ t = 0.16, Pose = POSE.ShieldAside, Easing = Enum.EasingStyle.Quad, Direction = Enum.EasingDirection.Out },
-			{ t = 0.48, Pose = POSE.ShieldAside },
-			{ t = 0.74, Easing = Enum.EasingStyle.Quad, Direction = Enum.EasingDirection.InOut },
-		},
-	},
 	-- Ring of Fire's snap-and-point: thrown up at the right of the view, then flicked out down the crosshair on
 	-- the ignition frame (Trigger)
 	RingOfFirePoint = {
@@ -1302,7 +1238,7 @@ Viewmodel.ArmClips = {
 --     began. The Phase 3 replica (B/scripts/umb_lib.py) read it as the idle. For a clip that starts from the state pose
 --     the two agree; for one that does not they do not -- UmbraEclipseOpen starts from the charge's squeeze, and a Shadow
 --     Dart chained onto the last one's recovery starts from wherever that arm was -- so those two end on POSE.Idle, the
---     house fix (CycloneRelease, CinderShieldBurst, CrossSlashDash end the same way), which is what the videos show.
+--     house fix (CycloneRelease and CrossSlashDash end the same way), which is what the videos show.
 --   * Viewmodel.Play has no time scale of its own: UmbraAnim passes a clock (ShotTimeScale, and M1RateMult for the dart,
 --     so under Eclipse the whole dart cycle runs 1.5x faster on the same keys).
 --
@@ -1590,8 +1526,7 @@ local state = {
 	vel = { R = {}, L = {} },      -- how fast each shown arm pose is moving, per channel per second (a Spline shot's start)
 	glow = 0, glowTarget = 0,
 	lampScale = 1, fill = Vector3.new(1, 1, 1), sunAmt = 0, sunDir = nil, keyLamp = nil, gapLamp = nil,
-	-- Pyro: Heat Rush's first-person state (SetHeat) and Ring of Fire's trace (SetTrace)
-	heat = { Active = false, Value = 0, Shown = 0 },
+	-- Pyro: Ring of Fire's trace (SetTrace)
 	-- Frostblade: the Naruto run's first-person weight (0..1, eased by FrostbladeKit; SetNaruto)
 	naruto = 0,
 	trace = false, traceCam = nil, traceYaw = 0, tracePitch = 0, traceDraw = nil,
@@ -1782,6 +1717,10 @@ function Viewmodel.Build(character)
 	model.Parent = camera
 
 	state.model = model
+	-- 2026-10-28 (the owner: "when i spawn in with TP on, the first person hands show up too"): a fresh rig is drawn,
+	-- but state.hidden still said the OLD rig was hidden, so Update saw no change and never hid the new one. Forget it:
+	-- the next Update writes the right transparency for whichever view is on.
+	state.hidden = nil
 	state.arms = arms
 	state.character = character
 	state.humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -1795,6 +1734,7 @@ function Viewmodel.Build(character)
 end
 
 function Viewmodel.Destroy()
+	state.dressKey, state.dressT = nil, nil   -- (2026-10-29) a fresh rig dresses its arms again
 	if state.model then state.model:Destroy() end
 	if state.humanoid and state.humanoid.Parent then
 		state.humanoid.CameraOffset = Vector3.new()
@@ -2002,15 +1942,6 @@ local FIELDS = { "X", "Y", "Z", "Pitch", "Yaw", "Roll", "Wrist" }
 ----------------------------------------------------------------------------------------------------
 -- Pyro hooks (Build Prompt #21)
 ----------------------------------------------------------------------------------------------------
--- Heat Rush: the camera sinks this far at full Heat (on top of the posture dip, like a crouch)
-local HUNCH_CAM = Vector3.new(0, -0.38, -0.14)
-
---- Heat Rush's first-person half: whether it is held, and the Heat (0..1) the arms and camera answer to.
---- Fed every frame by the Pyro client code from the key and the replicated Heat.
-function Viewmodel.SetHeat(active, heat)
-	state.heat.Active = active and true or false
-	state.heat.Value = math.clamp(heat or 0, 0, 1)
-end
 
 --- Ring of Fire's draw: while on, the right arm points down the crosshair, and its fist loops once round over
 --- `drawTime` seconds from the os.clock() moment `drawStart` -- the hand drawing the circle by itself.
@@ -2038,8 +1969,8 @@ function Viewmodel.ArmBusy(side)
 	return state.shots[side] ~= nil
 end
 
---- The world frame of an arm's root (its elbow end), for what rides the arm: the Fireball charge on the fist,
---- the Cinder Shield in first person. nil when the rig is not built.
+--- The world frame of an arm's root (its elbow end), for what rides the arm: the Fireball charge on the fist.
+--- nil when the rig is not built.
 function Viewmodel.GetArmCFrame(side)
 	-- same as GetMuzzleCFrame: in third person what rides the arm has to ride the body's arm. The hand
 	-- rather than the elbow, which is close enough for an effect that was sitting on the fist anyway.
@@ -2063,7 +1994,7 @@ function Viewmodel.GetFistCFrame(side)
 	return root and root * CFrame.new(0, 0, -C.ArmLength) or nil
 end
 
---- The name of the two-arm clip playing, if any (a Fireball may be thrown over the Cinder Shield's hold).
+--- The name of the two-arm clip playing, if any.
 function Viewmodel.CurrentClip()
 	if not state.clip then return nil end
 	for name, clip in pairs(Viewmodel.Clips) do
@@ -2415,6 +2346,132 @@ local function withArmOffset(side, p)
 	return out
 end
 
+----------------------------------------------------------------------------------------------------
+-- OUTFIT ON THE ARMS (2026-10-29, the owner: the outfit did not show on the hands in first person). The arms are a rig
+-- of their own, so a premium Outfit's pieces -- rigid Accessories ElementCoat puts on the body (SpellshotOutfit, each on
+-- its R15 part) -- never reached them. Every worn piece on a LowerArm or a Hand is copied onto the matching arm: read
+-- relative to the elbow (a Hand piece through the rest wrist), the forearm's long axis (-Y) laid along the arm (-Z), its
+-- section scaled to the arm's (ArmWidth x ArmHeight) and elbow-to-fingertips to ArmLength. Re-read when the
+-- character's DressedOutfit or UniformStamp changes (polled); the copies carry no emitters, lights, welds or scripts.
+----------------------------------------------------------------------------------------------------
+local DRESS_POLL = 0.5
+local DRESS_KEEP = { SpecialMesh = true, SurfaceAppearance = true, Decal = true, Texture = true }
+local DRESS_MAP = CFrame.Angles(math.pi / 2, 0, 0)   -- lower arm space -> arm space: -Y (to the hand) -> -Z (forward)
+-- (2026-10-29, the owner: the outfit on the hands flickered) mapped exactly, a sleeve's inner faces landed ON the arm's
+-- skin and its fingertips on the arm's end cap, and the coincident faces z-fought: the section stands this much proud,
+-- the tip this far past the cap
+local DRESS_PAD, DRESS_TIP = 1.12, 0.04
+-- (2026-10-29, the owner: lines at the Knight's wrist, skin under Frostbound / Magma Warlord) the hand pieces met the
+-- forearm piece face to face at the wrist (and the upper arm's at the elbow): the hand pieces stand a little forward and
+-- wider, the upper arm's a little back; and while an outfit is on, the arm's own shell takes the sleeve's colour, so a
+-- gap between pieces reads as the sleeve and never as skin
+local DRESS_HAND_SEP, DRESS_HAND_PAD, DRESS_UPPER_SEP = 0.02, 1.05, 0.02
+
+local function clearDress()
+	for _, a in pairs(state.arms or {}) do
+		for _, e in ipairs(a.Dress or {}) do e.part:Destroy() end
+		a.Dress = {}
+		for _, e in ipairs(a.Pieces or {}) do
+			if e.skinTone then e.tone, e.skinTone, e.shownTone = e.skinTone, nil, nil end
+		end
+	end
+end
+
+local function dressArms()
+	local ch = state.character
+	if not (ch and ch.Parent and state.arms) then return end
+	local key = tostring(ch:GetAttribute("DressedOutfit")) .. "|" .. tostring(ch:GetAttribute("UniformStamp"))
+	if key == state.dressKey then return end
+	clearDress()
+	if not ch:GetAttribute("DressedOutfit") then
+		state.dressKey = key
+		return
+	end
+	local found = 0
+	for side, name in pairs({ R = "Right", L = "Left" }) do
+		local a = state.arms[side]
+		local lower, hand = ch:FindFirstChild(name .. "LowerArm"), ch:FindFirstChild(name .. "Hand")
+		local elbow = lower and lower:FindFirstChild(name .. "ElbowRigAttachment")
+		local wristL = lower and lower:FindFirstChild(name .. "WristRigAttachment")
+		local wristH = hand and hand:FindFirstChild(name .. "WristRigAttachment")
+		if a and lower and hand and elbow and wristL and wristH then
+			local restHand = wristL.CFrame * wristH.CFrame:Inverse()          -- the hand in the lower arm's space, at rest
+			local e = elbow.Position
+			local tipY = (restHand * Vector3.new(0, -hand.Size.Y / 2, 0)).Y   -- the fingertips
+			local sx, sz = DRESS_PAD * C.ArmWidth / lower.Size.X, DRESS_PAD * C.ArmHeight / lower.Size.Z
+			local sl = (C.ArmLength + DRESS_TIP) / math.max(0.2, e.Y - tipY)
+			-- (2026-10-29) the upper arm too: the arm runs ArmBack behind the elbow, straight on, and showed bare skin there
+			local upper = ch:FindFirstChild(name .. "UpperArm")
+			local elbowU = upper and upper:FindFirstChild(name .. "ElbowRigAttachment")
+			local shoulderU = upper and upper:FindFirstChild(name .. "ShoulderRigAttachment")
+			local lenU = (elbowU and shoulderU) and math.max(0.2, shoulderU.Position.Y - elbowU.Position.Y) or nil
+			local lsx, lsl, lsz = sx, sl, sz
+			for _, acc in ipairs(ch:GetChildren()) do
+				local bp = acc:IsA("Accessory") and acc:GetAttribute("SpellshotOutfit") and acc:GetAttribute("BodyPart")
+				if bp == lower.Name or bp == hand.Name or (lenU and bp == upper.Name) then
+					local host = (bp == hand.Name and hand) or (bp == lower.Name and lower) or upper
+					local e = e
+					local sep = 0
+					if host == upper then
+						e = elbowU.Position
+						sx, sz = DRESS_PAD * C.ArmWidth / upper.Size.X, DRESS_PAD * C.ArmHeight / upper.Size.Z
+						sl = (C.ArmBack + DRESS_TIP) / lenU
+						sep = DRESS_UPPER_SEP
+					elseif host == hand then
+						sx, sl, sz = lsx * DRESS_HAND_PAD, lsl, lsz * DRESS_HAND_PAD
+						sep = -DRESS_HAND_SEP
+					else
+						sx, sl, sz = lsx, lsl, lsz
+					end
+					if host == lower and not a.SleeveColor then a.SleeveColor = acc:FindFirstChild("Handle") and acc.Handle.Color end
+					for _, src in ipairs(acc:GetDescendants()) do
+						if src:IsA("BasePart") and src.Transparency < 1 then
+							local rel = host.CFrame:ToObjectSpace(src.CFrame)
+							if host == hand then rel = restHand * rel end
+							local d = rel.Position - e
+							local function k(v) return Vector3.new(v.X * sx, v.Y * sl, v.Z * sz).Magnitude end
+							local was = src.Archivable
+							src.Archivable = true
+							local c = src:Clone()
+							src.Archivable = was
+							for _, x in ipairs(c:GetChildren()) do
+								if not DRESS_KEEP[x.ClassName] then x:Destroy() end
+							end
+							c.Anchored, c.CanCollide, c.CanQuery, c.CanTouch = true, false, false, false
+							c.CastShadow, c.Massless = false, true
+							c.Size = Vector3.new(src.Size.X * k(rel.XVector), src.Size.Y * k(rel.YVector), src.Size.Z * k(rel.ZVector))
+							c.LocalTransparencyModifier = state.hidden and 1 or 0
+							c.Parent = a.Model
+							a.Dress = a.Dress or {}
+							a.Dress[#a.Dress + 1] = { part = c,
+								cf = CFrame.new(d.X * sx, -d.Z * sz, d.Y * sl + sep) * DRESS_MAP * rel.Rotation }
+							found += 1
+						end
+					end
+				end
+			end
+		end
+	end
+	-- the shell in the sleeve's colour: each face keeps its own shade of the skin (inner / outer / underside), now of the sleeve
+	for _, a in pairs(state.arms) do
+		local sc = a.SleeveColor
+		a.SleeveColor = nil
+		if sc and a.Dress and #a.Dress > 0 then
+			for _, e in ipairs(a.Pieces) do
+				if e.tone then
+					e.skinTone = e.skinTone or e.tone
+					local t, k = e.skinTone, C.Skin
+					e.tone = Color3.new(math.min(1, sc.R * t.R / math.max(0.05, k.R)), math.min(1, sc.G * t.G / math.max(0.05, k.G)),
+						math.min(1, sc.B * t.B / math.max(0.05, k.B)))
+					e.shownTone = nil
+				end
+			end
+		end
+	end
+	-- an outfit whose pieces have not replicated yet is read again at the next poll
+	if found > 0 then state.dressKey = key end
+end
+
 --- Places one arm from its pose. The arm is rigid, so this moves a single root frame and every
 --- piece rides its precomputed offset off it.
 local function solveArm(a, p, camCF, sway)
@@ -2433,6 +2490,9 @@ local function solveArm(a, p, camCF, sway)
 	-- The invisible ink shell rides exactly the same offsets -- no depth trickery needed, since it
 	-- is never drawn and only its Highlight silhouette shows.
 	for _, e in ipairs(a.Shell) do
+		e.part.CFrame = root * e.cf
+	end
+	for _, e in ipairs(a.Dress or {}) do      -- (2026-10-29) the worn outfit's forearm and hand pieces
 		e.part.CFrame = root * e.cf
 	end
 	a.CastPoint.WorldCFrame = root * CFrame.new(0, 0, -C.ArmLength - 0.05)
@@ -2457,6 +2517,11 @@ function Viewmodel.Update(dt)
 		local ht = (state.clipClock and state.clipClock()) or (os.clock() - state.clipStart)
 		hide = ht >= hc.HideArms[1] and ht < hc.HideArms[2]
 	end
+	state.dressT = (state.dressT or DRESS_POLL) + dt     -- (2026-10-29) the outfit on the arms, re-read when it changes
+	if state.dressT >= DRESS_POLL then
+		state.dressT = 0
+		dressArms()
+	end
 	if hide ~= state.hidden then
 		state.hidden = hide
 		for _, d in ipairs(state.model:GetDescendants()) do
@@ -2475,15 +2540,6 @@ function Viewmodel.Update(dt)
 	if def.Late then
 		local u = math.clamp(state.move.SlideTime / def.Drift, 0, 1)
 		target = { R = lerpArm(def.Pose.R, def.Late.R, u), L = lerpArm(def.Pose.L, def.Late.L, u) }
-	end
-	-- HEAT RUSH: while it is held and you run, the sprint blends toward the full-Heat tuck by Heat (smoothed
-	-- here), the stride swings up to 35% wider and 16% faster (the cycle, below), and the camera sinks a little
-	local heatGoal = (state.heat.Active and want == "Sprint") and state.heat.Value or 0
-	state.heat.Shown += (heatGoal - state.heat.Shown) * math.clamp(6 * dt, 0, 1)
-	local heatShown = state.heat.Shown
-	if heatShown > 0.001 and want == "Sprint" then
-		target = { R = lerpArm(def.Pose.R, POSE.HeatRushHigh.R, heatShown),
-			L = lerpArm(def.Pose.L, POSE.HeatRushHigh.L, heatShown) }
 	end
 	-- FROSTBLADE'S NARUTO RUN (Cold Momentum): the arms drop back to the bottom corners by the run's weight
 	if state.naruto > 0.001 and want ~= "Slide" and want ~= "Crouch" then
@@ -2607,10 +2663,9 @@ function Viewmodel.Update(dt)
 	state.cycleAmt += (wantAmt - state.cycleAmt) * math.clamp((airborne and 14 or 8) * dt, 0, 1)
 	local dR, dL
 	if cyc and state.cycleAmt > 0.001 then
-		-- Heat Rush: the stride quickens and widens with Heat (heatShown is 0 outside it)
-		state.phase += dt * (def.Cadence or 6) * (1 + 0.16 * heatShown)
+		state.phase += dt * (def.Cadence or 6)
 		-- (the Naruto run holds the arms still: its weight takes the stride's pump away)
-		dR, dL = cyc(state.phase, state.cycleAmt * (1 + 0.35 * heatShown) * (1 - 0.9 * state.naruto))
+		dR, dL = cyc(state.phase, state.cycleAmt * (1 - 0.9 * state.naruto))
 	end
 	local old = state.oldCycle
 	if old then
@@ -2767,9 +2822,8 @@ function Viewmodel.Update(dt)
 					0.8 * math.sin(a * 53 + 1.3 + s.Ph)) * e
 			end
 		end
-		-- Heat Rush's hunch is posture too: it sinks with Heat whatever the shake setting
-		-- and the Naruto run's lean: the head 0.2 studs forward and down, as the body's head moves in the run
-		state.humanoid.CameraOffset = (state.camOffset + punch) * shake + state.posture + HUNCH_CAM * state.heat.Shown
+		-- the Naruto run's lean: the head 0.2 studs forward and down, as the body's head moves in the run
+		state.humanoid.CameraOffset = (state.camOffset + punch) * shake + state.posture
 			+ Vector3.new(0, -0.1, -0.17) * state.naruto
 	end
 
@@ -2789,9 +2843,11 @@ function Viewmodel.Update(dt)
 	-- only in flat light itself. Riding the lamp fill instead would have taken the M1's palm flash to a sixth in the
 	-- range -- the one place it has a sunlit scene to read against.
 	local glowScale = math.clamp((1 - lum(state.fill)) * 8, 0, 1)
-	-- the M1's palm glow: a short flash on the hand that just fired, over whatever a cast is doing
-	state.arms.R.Glow.Brightness = math.max(b, state.flash.R * C.ShotFlash) * glowScale
-	state.arms.L.Glow.Brightness = math.max(b * 0.45, state.flash.L * C.ShotFlash) * glowScale
+	-- the M1's palm glow: a short flash on the hand that just fired, over whatever a cast is doing.
+	-- (2026-10-19, audit P5F-03) Reduce Flashing keeps the palm flash at 0.4 (the cast glow itself is untouched)
+	local shotFlash = C.ShotFlash * (Settings.Get("ReduceFlashing") and 0.4 or 1)
+	state.arms.R.Glow.Brightness = math.max(b, state.flash.R * shotFlash) * glowScale
+	state.arms.L.Glow.Brightness = math.max(b * 0.45, state.flash.L * shotFlash) * glowScale
 end
 
 ----------------------------------------------------------------------------------------------------

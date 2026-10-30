@@ -39,10 +39,11 @@
 	capped at 1) - what is drawn LAST in a frame is dropped first (cv.Dropped; one warning), so draw what matters
 	first - nor more than Config.MaxLights lights / Config.MaxEmitters emitters. Density = SpellshotSettings.
 	EffectDensity (0.45 / 0.75 / 1 / 1.15), x Config.EnemyThin when Settings.ThinEnemyVFX and the canvas is not `own`
-	(PD.new(name, {own = true}) for the local player's effects): the builders thin wisps, licks, side tongues, tall
-	tongues, streamers, wildfire spacing, column tiers, embers and lights by it. cv.Density is there for your own
-	pieces. Measured headless (harness/life_test.luau): fire_line + big_blast at radius 17.5 peak at 123 parts
-	(density 1), 108 (0.75), 83 (0.45); the Ring r2 piece replayed flame for flame peaks at 245.
+	(PD.new(name, {own = true}) for effects not an enemy's -- yours or a teammate's, PD.Spared; audit P5F-06): the
+	builders thin wisps, licks, side tongues, tall tongues, streamers, wildfire spacing, column tiers, embers and
+	lights by it. cv.Density is there for your own pieces. Measured headless (harness/life_test.luau): fire_line +
+	big_blast at radius 17.5 peak at 123 parts (density 1), 108 (0.75), 83 (0.45); the Ring r2 piece replayed flame
+	for flame peaks at 245.
 
 	COORDINATES. Roblox world Vector3s. The kit is Blender (+Z up): Roblox (x, y, z) = Blender (-x, z, y) ->
 	PyroDraw.B(x, y, z). Kit keyword arguments become ONE options table with the kit's names.
@@ -52,6 +53,7 @@
 	  cv:SetHot(on)                        the kit's set_hot: the default of every builder's hot=
 	  PD.Play(name, frameFn(cv, t, dt, handle), o{T0, Offset, Scale, Clock, Until, MaxLife, OnEnd, own, hot}) -> handle{Canvas, Stop()}
 	  PD.Clock(t0Server?, offset?, scale?) -> fn()   PD.ServerNow()   PD.TimeScale()   PD.Density(own) -> number
+	  PD.Spared(character) -> bool         `own` for a caster: not an ENEMY's (yours or a teammate's; VFXLibrary.IsEnemy)
 	  PD.Prewarm(n | {Family = n})   PD.SetMeshFolder(inst)   PD.SetFolder(inst | fn)   PD.StopAll()   PD.Stats()
 	  PD.Ready() -> ok, {names missing / wrong size}, count      the WHOLE library is in the mesh folder (the look switch's gate)
 	  PD.Rand(a, b, c, k) -> 0..1   PD.flick(t, ph)   PD.sst / eback / equint / clamp   PD.B(x, y, z)   PD.UP
@@ -282,8 +284,10 @@ local function equint(u)
 	return 1 - (1 - clamp(u, 0, 1)) ^ 5
 end
 
---- a fire light's flicker, about +-15 % at 10 and 7.5 Hz
+--- a fire light's flicker, about +-15 % at 10 and 7.5 Hz -- steady (1) under Reduce Flashing (2026-10-19, audit P5B-05:
+--- PyroDraw.Calm, refreshed by Canvas:fire_light at most twice a second; PyroFlame_Ring already passed t = nil)
 local function flick(t, ph)
+	if PyroDraw.Calm then return 1 end
 	ph = ph or 0
 	return 1 + 0.10 * sin(TAU * 10.0 * t + ph) + 0.07 * sin(TAU * 7.5 * t + 1.3 + ph * 2)
 end
@@ -413,6 +417,17 @@ function PyroDraw.Density(own)
 		if settingsLib.ThinEnemyVFX and not own then d = d * Config.EnemyThin end
 	end
 	return d
+end
+
+--- (2026-10-19, audit P5F-06) the `own` a caster's effect should pass for thinning: true unless VFXLibrary calls the
+--- caster an ENEMY, so Reduce Enemy VFX leaves a teammate's (and an AllyDummy's) fire whole, as VFXLibrary's own effects;
+--- without VFXLibrary.IsEnemy, only the local player's character
+function PyroDraw.Spared(character)
+	if typeof(character) ~= "Instance" then return false end      -- (no caster known: thinned, as before)
+	loadLibs()
+	if vfxLib and type(vfxLib.IsEnemy) == "function" then return not vfxLib.IsEnemy(character) end
+	local lp = game:GetService("Players").LocalPlayer
+	return character ~= nil and lp ~= nil and character == lp.Character
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -590,10 +605,14 @@ local function wrapEmberSeq(w)
 	if not s then
 		local c = w.Embers or { Color3.new(1, 1, 1), Color3.fromHex("#C4F4FF"), Color3.fromHex("#4FD6EE"), Color3.fromHex("#1C6FD8") }
 		local kp, n = {}, #c
-		for i, col in ipairs(c) do
-			local a, b = (i - 1) / n, i / n
-			kp[#kp + 1] = ColorSequenceKeypoint.new(a, col)
-			kp[#kp + 1] = ColorSequenceKeypoint.new(i == n and 1 or b - 0.001, col)
+		if w.EmberSmooth then                  -- (2026-10-24, Rare and up) the colours blend over the ember's life
+			for i, col in ipairs(c) do kp[#kp + 1] = ColorSequenceKeypoint.new((i - 1) / (n - 1), col) end
+		else
+			for i, col in ipairs(c) do
+				local a, b = (i - 1) / n, i / n
+				kp[#kp + 1] = ColorSequenceKeypoint.new(a, col)
+				kp[#kp + 1] = ColorSequenceKeypoint.new(i == n and 1 or b - 0.001, col)
+			end
 		end
 		s = ColorSequence.new(kp)
 		wrapEmbers[w.Id] = s
@@ -601,46 +620,614 @@ local function wrapEmberSeq(w)
 	return s
 end
 local wrapRecs, wrapKeep = {}, {}
+local toonRecs = {}                             -- (2026-10-25) [Id] = { [piece name] = its toon copy | false (building) }
+-- (2026-10-25) THE MEMORY: a wrap's set is its 45 copies (~31,700 triangles); one client's EditableMesh budget holds the
+-- Default and about two sets. So a set is let go -- its copies destroyed, its pooled parts with them -- when no canvas has
+-- worn it for IDLE_RELEASE s (10 min), when another wrap's copy is refused for want of room (the least recently drawn idle set
+-- goes first, at most one every EVICT_GAP s), and when a worn skin's essential build asks MeshBudget for room. The
+-- local player's own equipped wrap is PINNED (PinWrap): never let go. A set missing copies for want of room is not
+-- ready, so it draws the Default whole, never a mix, and tries again after RETRY_AFTER s.
+local IDLE_RELEASE, EVICT_GAP, RETRY_AFTER = 600, 2, 6     -- (2026-10-25: 45 s let a caster's set go between
+                                                      -- casts, and their next one drew Default while it rebuilt: sets give way to
+                                                      -- another wrap's need -- SOFT_SETS, a refusal, MeshBudget -- not to a short timer)
+local SOFT_SETS = 2                            -- (a new set beyond this many lets an idle one go first: no refusals in the
+                                               -- usual case; a smaller budget still falls back on the refuse-and-evict path)
+local wrapUse, wrapPinned = {}, {}             -- [Id] = os.clock() a canvas last wore it / true: the local player's own
+local lastEvict, sweeping = -1e9, false
+local lastRoomAsk = -1e9                        -- (2026-10-27) the last MeshBudget.MakeRoom a refused copy asked for
+local budgetLib = nil
+local function meshBudget()
+	if budgetLib == nil then
+		budgetLib = false
+		local mod = script and script.Parent and script.Parent:FindFirstChild("MeshBudget")
+		local ok, lib = pcall(function() return mod and require(mod) end)
+		if ok and type(lib) == "table" then budgetLib = lib end
+	end
+	return budgetLib or nil
+end
+local function publishSets()                    -- (the built sets, for a look in Studio: the FX folder's WrapSets attribute)
+	local folder = root and root.Folder
+	if not folder then return end
+	local ids = {}
+	for id in pairs(wrapRecs) do ids[#ids + 1] = id end
+	table.sort(ids)
+	folder:SetAttribute("WrapSets", table.concat(ids, ","))
+end
+local readyWraps
+local function releaseWrap(id)
+	local byId = wrapRecs[id]
+	local toon = toonRecs[id]
+	if not (byId or toon) then return end
+	toonRecs[id] = nil
+	if toon then
+		for _, t in pairs(toon) do if typeof(t) == "Instance" then t:Destroy() end end
+	end
+	if not byId then return end
+	wrapRecs[id] = nil
+	if readyWraps then readyWraps[id] = nil end
+	for _, r in pairs(byId) do
+		if type(r) == "table" and r.Template then
+			r.Dead = true                               -- (a slot still out on a canvas is destroyed when it comes back)
+			local list = freeParts[r.Name]
+			if list then
+				for _, s in ipairs(list) do s.Part:Destroy() end
+				freeParts[r.Name] = nil
+			end
+			r.Template:Destroy()
+		end
+	end
+	local keep = wrapKeep[id]
+	if keep then
+		for _, em in ipairs(keep) do pcall(function() em:Destroy() end) end
+		wrapKeep[id] = nil
+	end
+	publishSets()
+end
+local function idleSets(age)
+	local now, out = os.clock(), {}
+	for id in pairs(wrapRecs) do
+		if not wrapPinned[id] and now - (wrapUse[id] or 0) > age then out[#out + 1] = id end
+	end
+	return out
+end
+--- room for `forId`: the least recently drawn idle set goes (not the pinned one, nor one drawn in the last 1.5 s)
+local function evictFor(forId)
+	local now = os.clock()
+	if now - lastEvict < EVICT_GAP then return false end
+	local best, bestT = nil, math.huge
+	for _, id in ipairs(idleSets(1.5)) do
+		if id ~= forId and (wrapUse[id] or 0) < bestT then best, bestT = id, wrapUse[id] or 0 end
+	end
+	if not best then return false end
+	lastEvict = now
+	releaseWrap(best)
+	return true
+end
+local function startSweep()
+	if sweeping then return end
+	sweeping = true
+	task.spawn(function()
+		while true do
+			task.wait(10)
+			for _, id in ipairs(idleSets(IDLE_RELEASE)) do releaseWrap(id) end
+		end
+	end)
+	local mb = meshBudget()
+	if mb then mb.Optional(function() for _, id in ipairs(idleSets(1.5)) do releaseWrap(id) end end) end
+end
+-- (2026-10-25) THE TOON PIECES (IGNITE!): their colours are baked as vertex
+-- colours in Pyro's own palette (Dark, EmberRed, Base, Light, WhiteHot). A wrap's ToonRamp gives its five in their place
+-- (the black ink stays); each piece is copied once per wrap, off the draw path, and let go with the wrap's set. Not
+-- built yet, or refused for want of room: nil, and that piece draws as it is this once.
+local TOON_FROM = { Color3.fromHex("#6B1708"), Color3.fromHex("#C22A0A"), Color3.fromHex("#F25C0D"), Color3.fromHex("#FFC74D"),
+	Color3.fromHex("#FFF4D6") }
+local function toonColour(c, ramp)
+	if math.max(c.R, c.G, c.B) < 0.08 then return c end
+	local best, bd = 1, math.huge
+	for i, f in ipairs(TOON_FROM) do
+		local d = (c.R - f.R) ^ 2 + (c.G - f.G) ^ 2 + (c.B - f.B) ^ 2
+		if d < bd then best, bd = i, d end
+	end
+	return ramp[best]
+end
+function PyroDraw.WrapPiece(w, src)
+	local ramp = type(w) == "table" and w.ToonRamp
+	if not ramp or not (typeof(src) == "Instance" and src:IsA("MeshPart")) then return nil end
+	local byId = toonRecs[w.Id]
+	if not byId then
+		byId = {}
+		toonRecs[w.Id] = byId
+	end
+	local r = byId[src.Name]
+	if r ~= nil then return typeof(r) == "Instance" and r or nil end
+	byId[src.Name] = false
+	wrapUse[w.Id] = os.clock()
+	task.spawn(function()
+		local AS = game:GetService("AssetService")
+		local ok, em = pcall(function() return AS:CreateEditableMeshAsync(Content.fromUri(src.MeshId)) end)
+		if not (ok and em) then
+			if toonRecs[w.Id] == byId then byId[src.Name] = nil end   -- (no room now: asked again next time)
+			return
+		end
+		local ok2, tpl = pcall(function()
+			for _, id in ipairs(em:GetColors()) do em:SetColor(id, toonColour(em:GetColor(id), ramp)) end
+			local mp = AS:CreateMeshPartAsync(Content.fromObject(em), { CollisionFidelity = Enum.CollisionFidelity.Box })
+			local t = src:Clone()
+			t:ApplyMesh(mp)
+			t.Size = src.Size
+			return t
+		end)
+		if toonRecs[w.Id] ~= byId or not ok2 then
+			em:Destroy()
+			if ok2 then tpl:Destroy() elseif toonRecs[w.Id] == byId then byId[src.Name] = "failed" end
+			return
+		end
+		local keep = wrapKeep[w.Id]
+		if not keep then
+			keep = {}
+			wrapKeep[w.Id] = keep
+		end
+		keep[#keep + 1] = em
+		byId[src.Name] = tpl
+	end)
+	return nil
+end
+
+--- the local player's own wrap (nil: none): never let go while it is worn
+function PyroDraw.PinWrap(id)
+	table.clear(wrapPinned)
+	if type(id) == "string" then
+		wrapPinned[id] = true
+		wrapUse[id] = os.clock()
+	end
+end
+
+--- (2026-10-27) room for `wrap`'s set before its copies start: every other set not pinned and not drawn in the last
+--- `age` s (default 0.2) goes now. For a display that swaps wraps on a click (the Loadout's pedestal): there the old set
+--- was drawn a moment ago, so the refuse-and-evict path's 1.5 s idle guard kept it, every new copy was refused and
+--- waited RETRY_AFTER -- the new wrap took ~8.5 s to appear.
+function PyroDraw.MakeRoomFor(wrap, age)
+	local keepId = type(wrap) == "table" and wrap.Id or wrap
+	for _, id in ipairs(idleSets(age or 0.2)) do
+		if id ~= keepId then releaseWrap(id) end
+	end
+end
 local function wrapBand(c, F)
 	local u = ((0.3 * c.R + 0.59 * c.G + 0.11 * c.B) - F.Lo) / (F.Hi - F.Lo)
 	local s = F.Steps
+	if F.Smooth then                           -- (2026-10-24, Rare and up) graded: each step blends over F.Smooth of the ramp
+		local cols, h = { F.Azure, F.Sky, F.Pale, F.White }, F.Smooth * 0.5
+		for i = 1, 3 do
+			if u < s[i] + h then
+				if u <= s[i] - h then return cols[i] end
+				return cols[i]:Lerp(cols[i + 1], (u - s[i] + h) / (2 * h))
+			end
+		end
+		return cols[4]
+	end
 	return (u < s[1] and F.Azure) or (u < s[2] and F.Sky) or (u < s[3] and F.Pale) or F.White
 end
 local function wrapRec(m, w)
 	local byId = wrapRecs[w.Id]
 	if not byId then
+		local n = 0
+		for _ in pairs(wrapRecs) do n += 1 end
+		if n >= SOFT_SETS then evictFor(w.Id) end        -- (2026-10-25: room before the first copy, not after a refusal)
 		byId = {}
 		wrapRecs[w.Id] = byId
 	end
 	local r = byId[m.Name]
-	if r ~= nil then return r or m end
+	if type(r) == "table" and r.Retry then                      -- (refused for want of room: tried again after a while)
+		if os.clock() < r.Retry then return m end
+		byId[m.Name], r = nil, nil
+	end
+	if r ~= nil then return type(r) == "table" and r or m end     -- (false: building; "failed": Default for good)
 	byId[m.Name] = false
+	startSweep()
 	task.spawn(function()
-		local ok, tpl = pcall(function()
-			local AS = game:GetService("AssetService")
-			local em = AS:CreateEditableMeshAsync(Content.fromUri(m.Template.MeshId))
+		local mb = meshBudget()
+		local t0 = os.clock()
+		while mb and mb.Busy() and os.clock() - t0 < 20 do task.wait(0.5) end   -- (a worn skin's build goes first)
+		local AS = game:GetService("AssetService")
+		local function make() return AS:CreateEditableMeshAsync(Content.fromUri(m.Template.MeshId)) end
+		local ok, em = pcall(make)
+		if ok and not em and (evictFor(w.Id) or os.clock() - lastEvict < EVICT_GAP) then
+			ok, em = pcall(make)                          -- (no room: an idle set goes -- or just went -- and once more)
+		end
+		if ok and not em and mb then
+			-- (2026-10-27) still no room: the budget's other holders (other Elements' wrap copies, idle skin kits) give
+			-- way, at most every 0.5 s, then once more. Without it the Loadout's Pyro wraps waited RETRY_AFTER (~8 s).
+			if os.clock() - lastRoomAsk > 0.5 then
+				lastRoomAsk = os.clock()
+				pcall(mb.MakeRoom)
+			end
+			ok, em = pcall(make)
+		end
+		if wrapRecs[w.Id] ~= byId then                            -- (this set was let go meanwhile)
+			if ok and em then em:Destroy() end
+			return
+		end
+		if not (ok and em) then
+			if ok then
+				byId[m.Name] = { Retry = os.clock() + RETRY_AFTER }
+			else
+				byId[m.Name] = "failed"
+				warnOnce("wrap:" .. m.Name, "wrap mesh " .. m.Name .. ": " .. tostring(em))
+			end
+			return
+		end
+		local ok2, tpl = pcall(function()
 			for _, id in ipairs(em:GetColors()) do em:SetColor(id, wrapBand(em:GetColor(id), w.Flame)) end
 			local mp = AS:CreateMeshPartAsync(Content.fromObject(em), { CollisionFidelity = Enum.CollisionFidelity.Box })
-			wrapKeep[#wrapKeep + 1] = em
 			local t = m.Template:Clone()
 			t:ApplyMesh(mp)
 			t.Size = m.Template.Size
 			return t
 		end)
-		if ok then
-			local d = table.clone(m)
-			d.Name, d.Template = m.Name .. "@" .. w.Id, tpl
-			byId[m.Name] = d
-		else
-			warnOnce("wrap:" .. m.Name, "wrap mesh " .. m.Name .. ": " .. tostring(tpl))
+		if wrapRecs[w.Id] ~= byId or not ok2 then
+			em:Destroy()
+			if ok2 then tpl:Destroy() elseif wrapRecs[w.Id] == byId then
+				byId[m.Name] = "failed"
+				warnOnce("wrap:" .. m.Name, "wrap mesh " .. m.Name .. ": " .. tostring(tpl))
+			end
+			return
 		end
+		local keep = wrapKeep[w.Id]
+		if not keep then
+			keep = {}
+			wrapKeep[w.Id] = keep
+		end
+		keep[#keep + 1] = em
+		local d = table.clone(m)
+		d.Name, d.Template = m.Name .. "@" .. w.Id, tpl
+		byId[m.Name] = d
+		if #keep == 1 then publishSets() end            -- (the set's first copy: it is now in memory)
 	end)
 	return m
+end
+
+-- (2026-10-19, audit P5B-14) whether every flame mesh's copy for `w` is done (built, or failed for good): until then a
+-- canvas wears no wrap at all -- its flames AND its lights Default -- rather than azure light over orange flames and a
+-- mix of families while the 45 copies come in one by one. Starts any copy not yet begun.
+readyWraps = {}
+local function wrapReady(w)
+	if type(w) ~= "table" or not w.Flame or readyWraps[w.Id] then return true end
+	local all = true
+	for _, fam in pairs(FAM) do
+		for k = 1, fam.n do
+			local m = famMesh(fam, k)
+			if m then
+				local byId = wrapRecs[w.Id]
+				local r = byId and byId[m.Name]
+				if r == nil or (type(r) == "table" and r.Retry) then
+					wrapRec(m, w)
+					byId = wrapRecs[w.Id]
+					r = byId and byId[m.Name]
+				end
+				if r == nil or r == false or (type(r) == "table" and r.Retry) then all = false end
+			end
+		end
+	end
+	if all then readyWraps[w.Id] = true end
+	return all
+end
+
+-- (2026-10-24) THE UPPER TIERS' LEVERS, each read from the wrap's catalog entry and absent from Default and the Uncommons:
+--   Pulse = { Period, Amp }   Epic and up: the flames and their light breathe together (held under Reduce Flashing)
+--   Flow = { A, B, Scale, Speed }   Mythic: one slow world-space field moving through the flames, tinting each between
+--      the multipliers A and B (the vertex bands keep their structure: black stays black)
+--   LightK   Epic and up: the light's brightness x this (a luminous core); Rare and Uncommon keep Default's
+--   EmberFinish = { LightEmission, Brightness, Squash }   Rare and up: the embers' finish
+--   Extra = { layers }   the wrap's own particles beside Default's ember sites, each a Share of that site's steady rate and
+--      a Burst share of its one-shot count, so Graphics Quality and Reduce Enemy VFX carry over (x EffectDensity above 1:
+--      ULTRA draws them fuller, though Default's embers stop at 1)
+local tintOf                                        -- (tintColor, defined further down)
+local lives = {}
+local function pulseK(w)
+	local P = w.Pulse
+	if not P or PyroDraw.Calm then return 1 end
+	return 1 + P.Amp * math.sin(os.clock() * TAU / P.Period)
+end
+local function liveOf(w)
+	local L = lives[w.Id]
+	if L ~= nil then return L or nil end
+	local Fl, WT = w.Flow, w.Tint
+	if not (w.Pulse or Fl or WT) then
+		lives[w.Id] = false
+		return nil
+	end
+	local q = 1 / 255
+	local own = {}                                     -- (2026-10-24) the wrap's own Tint, cached per tint key
+	local function ownTint(key)
+		local c = own[key]
+		if not c then
+			local base = key >= 64 and WT.Hot or WT.Normal
+			local k = (key % 64) * 0.04 / (WT.CoolStep or Config.Tint.CoolStep)   -- (0.04: COOL_Q, defined further down)
+			c = Color3.new(min(1, base * WT.Cool[1] ^ k), min(1, base * WT.Cool[2] ^ k), min(1, base * WT.Cool[3] ^ k))
+			own[key] = c
+		end
+		return c
+	end
+	L = function(tint, pos)
+		local c, k = (WT and ownTint or tintOf)(tint), pulseK(w)
+		local r, g, b = c.R * k, c.G * k, c.B * k
+		if Fl then
+			local u = 0.5 + 0.5 * math.sin((pos.X * 0.83 + pos.Z * 0.57 + pos.Y * 0.35) * Fl.Scale - os.clock() * Fl.Speed)
+			u = floor(u * 24 + 0.5) / 24
+			local A, B = Fl.A, Fl.B
+			r, g, b = r * (A.R + (B.R - A.R) * u), g * (A.G + (B.G - A.G) * u), b * (A.B + (B.B - A.B) * u)
+		end
+		return Color3.new(min(1, floor(r / q + 0.5) * q), min(1, floor(g / q + 0.5) * q), min(1, floor(b / q + 0.5) * q))
+	end
+	lives[w.Id] = L
+	return L
+end
+-- (2026-10-24) DRIFTERS: Neon meshes that leave the flames and drift on their own -- Phoenix's FEATHERS (a quill and a
+-- curled, notched vane, its tip shaded darker) and Void Flame's ASH FLAKES (a jagged flake, black at the heart, its rim lit).
+-- A ParticleEmitter's TextureContent takes an EditableImage but draws nothing, and nothing is uploaded, hence meshes.
+-- Each rises, slows, flutters, spins, runs through its layer's Colors over its life, shrinks and fades out.
+local DRIFT_MAX = { Feather = 160, Flake = 110 }
+local driftTpl, driftFree, drifters, driftConn = {}, {}, {}, nil
+local driftCount = { Feather = 0, Flake = 0 }
+local function buildFeather(V, tri)
+	local q0, q1, q2, q3 = V(-0.022, 0), V(0.022, 0), V(-0.012, 1), V(0.012, 1)        -- the quill
+	tri(q0, q1, q3, 0.7, 0.7, 0.55) tri(q0, q3, q2, 0.7, 0.55, 0.55)
+	local N = 12
+	for _, side in ipairs({ -1, 1 }) do                                                -- the vanes, a notch each
+		local wmax = side < 0 and 0.42 or 0.27
+		local notch = side < 0 and 5 or 7
+		local prevIn, prevOut, ky0 = nil, nil, Color3.new(1, 1, 1)
+		for i = 0, N do
+			local y = 0.14 + 0.84 * i / N
+			local w = wmax * math.sin(math.pi * math.clamp((y - 0.1) / 0.9, 0, 1) ^ 0.7)
+			local vin, vout = V(side * 0.02, y), V(side * (0.02 + w), y - 0.09)
+			local ky = Color3.new(1, 1 - 0.62 * y, 1 - 0.55 * y)                          -- a gold feather, its tip burning red
+			if prevIn and i ~= notch then
+				tri(prevIn, prevOut, vout, ky0, ky0:Lerp(Color3.new(), 0.15), ky:Lerp(Color3.new(), 0.15)) tri(prevIn, vout, vin, ky0, ky:Lerp(Color3.new(), 0.15), ky)
+			end
+			prevIn, prevOut, ky0 = vin, vout, ky
+		end
+	end
+end
+local function buildFlake(V, tri)
+	local rim = { 0.55, 0.38, 0.62, 0.42, 0.58, 0.33, 0.6, 0.45, 0.52 }               -- a jagged outline
+	local centre = V(0, 0.5)
+	local pts, ins = {}, {}
+	for i, r in ipairs(rim) do
+		local a = (i - 1) / #rim * TAU
+		pts[i] = V(math.cos(a) * r * 0.9, 0.5 + math.sin(a) * r)
+		ins[i] = V(math.cos(a) * r * 0.9 * 0.62, 0.5 + math.sin(a) * r * 0.62)
+	end
+	for i = 1, #pts do
+		local j = i % #pts + 1
+		tri(centre, ins[i], ins[j], 0, 0.04, 0.04)                                       -- the black heart
+		tri(ins[i], pts[i], pts[j], 0.04, 1, 1) tri(ins[i], pts[j], ins[j], 0.04, 1, 0.04) -- the burning rim
+	end
+end
+local function drifterTemplate(kind)
+	kind = kind or "Feather"
+	if driftTpl[kind] ~= nil then return driftTpl[kind] or nil end
+	driftTpl[kind] = false
+	local ok, mp = pcall(function()
+		local AS = game:GetService("AssetService")
+		local em = AS:CreateEditableMesh()
+		local function col(k) return em:AddColor(typeof(k) == "Color3" and k or Color3.new(k, k, k), 1) end
+		local function tri(a, b, cc, ka, kb, kc)
+			for _, f in ipairs({ em:AddTriangle(a, b, cc), em:AddTriangle(a, cc, b) }) do   -- two-sided
+				em:SetFaceColors(f, { col(ka), col(kb), col(kc) })
+			end
+		end
+		local function V(x, y) return em:AddVertex(Vector3.new(x, y - 0.5, 0.18 * x * x - 0.06 * y)) end   -- curled
+		if kind == "Flake" then buildFlake(V, tri) else buildFeather(V, tri) end
+		local fixed = AS:CreateEditableMeshAsync(Content.fromObject(em), { FixedSize = true })
+		em:Destroy()
+		local part = AS:CreateMeshPartAsync(Content.fromObject(fixed), { CollisionFidelity = Enum.CollisionFidelity.Box })
+		wrapKeep[#wrapKeep + 1] = fixed
+		part.Name = "Pyro" .. kind
+		inert(part)
+		part.Material = Enum.Material.Neon
+		part.LocalTransparencyModifier = 1
+		return part
+	end)
+	if ok and mp then driftTpl[kind] = mp else warnOnce("drift:" .. kind, kind .. " mesh: " .. tostring(mp)) end
+	return driftTpl[kind] or nil
+end
+local function featherTemplate() return drifterTemplate("Feather") end
+local fParts, fCFs = {}, {}
+local function stepDrifters(dt)
+	local n = #drifters
+	if n == 0 then return end
+	local k = 0
+	for i = n, 1, -1 do
+		local f = drifters[i]
+		f.age += dt
+		local u = f.age / f.life
+		if u >= 1 then
+			f.part.LocalTransparencyModifier = 1
+			local fr = driftFree[f.kind]
+			fr[#fr + 1] = f.part
+			driftCount[f.kind] -= 1
+			drifters[i] = drifters[#drifters]
+			drifters[#drifters] = nil
+		else
+			local L = f.L
+			f.vel = f.vel * math.max(0, 1 - (L.Drag or 2) * dt) + Vector3.new(0, (L.Rise or 0) * dt, 0)
+			f.pos += f.vel * dt
+			local sway = math.sin(f.age * 3.1 + f.ph) * (L.Sway or 0.6)
+			local cf = CFrame.new(f.pos + f.side * (sway * 0.35)) * f.rot * CFrame.Angles(sway * 0.5, f.age * f.spin, sway)
+			k += 1
+			fParts[k], fCFs[k] = f.part, cf
+			local s = L.Size[1] + (L.Size[2] - L.Size[1]) * u
+			if math.abs(s - f.s) > 0.04 then
+				f.s = s
+				f.part.Size = f.base * s
+			end
+			local step = floor(u * 20)
+			if step ~= f.step then
+				f.step = step
+				local cs, m = L.Colors, #L.Colors
+				local x = u * (m - 1)
+				local j = math.min(m - 1, floor(x))
+				f.part.Color = cs[j + 1]:Lerp(cs[math.min(m, j + 2)], x - j)
+				local fade = L.Fade or 0.75
+				f.part.LocalTransparencyModifier = u > fade and (u - fade) / (1 - fade) or 0
+			end
+		end
+	end
+	for i = #fParts, k + 1, -1 do fParts[i], fCFs[i] = nil, nil end
+	if k > 0 then workspace:BulkMoveTo(fParts, fCFs, Enum.BulkMoveMode.FireCFrameChanged) end
+end
+local function spawnDrifter(L, pos, up)
+	local kind = L.Mesh or "Feather"
+	if driftCount[kind] >= (DRIFT_MAX[kind] or 60) then return end
+	local tpl = drifterTemplate(kind)
+	if not tpl then return end
+	local fr = driftFree[kind]
+	if not fr then
+		fr = {}
+		driftFree[kind] = fr
+	end
+	local part = table.remove(fr)
+	if not part or not part.Parent then
+		ensureRoot()
+		part = tpl:Clone()
+		part.Parent = root.Folder
+	end
+	local spread = math.rad(L.Spread or 60)
+	local a, b = math.random() * TAU, math.random() * spread
+	local x = perp(up)
+	local dir = (CFrame.fromAxisAngle(up, a) * CFrame.fromAxisAngle(x, b)):VectorToWorldSpace(up)
+	local sp = L.Speed[1] + (L.Speed[2] - L.Speed[1]) * math.random()
+	drifters[#drifters + 1] = { part = part, kind = kind, L = L, pos = pos, vel = dir * sp, age = 0,
+		life = L.Life[1] + (L.Life[2] - L.Life[1]) * math.random(), ph = math.random() * TAU,
+		spin = (math.random() * 2 - 1) * math.rad(L.Spin or 40), side = x,
+		rot = CFrame.fromEulerAnglesXYZ(math.random() * TAU, math.random() * TAU, math.random() * TAU),
+		base = tpl.Size, s = -1, step = -1 }
+	driftCount[kind] += 1
+	part.LocalTransparencyModifier = 0
+	if not driftConn then driftConn = game:GetService("RunService").RenderStepped:Connect(stepDrifters) end
+end
+local spawnFeather = spawnDrifter
+-- VOID WISPS: dark smoke puffed off the flames, one shared emitter per layer moved to each puff (Emit at the spot)
+local smokers = {}
+local SMOKE_POOL = 12
+local function smokePuff(L, pos)
+	local s = smokers[L]
+	if not s or not s[1].Part.Parent then
+		ensureRoot()
+		s = { i = 0 }
+		local kp, m = {}, #L.Colors
+		for i, cc in ipairs(L.Colors) do kp[#kp + 1] = ColorSequenceKeypoint.new((i - 1) / math.max(1, m - 1), cc) end
+		local seq = ColorSequence.new(kp)
+		for k = 1, SMOKE_POOL do
+			local part = Instance.new("Part")
+			part.Name = "PyroWisp"
+			inert(part)
+			part.Transparency = 1
+			part.Size = Vector3.new(0.6, 0.6, 0.6)
+			part.Parent = root.Folder
+			local e = Instance.new("ParticleEmitter")
+			e.Enabled, e.Rate = false, 0
+			e.Texture = L.Texture
+			e.Color = seq
+			e.LightEmission, e.LightInfluence = L.LightEmission or 0, L.LightInfluence or 0
+			e.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, L.Size[1]), NumberSequenceKeypoint.new(1, L.Size[2]) })
+			e.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.12, L.Alpha or 0.3),
+				NumberSequenceKeypoint.new(0.55, (L.Alpha or 0.3) + 0.2), NumberSequenceKeypoint.new(1, 1) })
+			e.Lifetime = NumberRange.new(L.Life[1], L.Life[2])
+			e.Speed = NumberRange.new(L.Speed[1], L.Speed[2])
+			e.SpreadAngle = Vector2.new(L.Spread or 40, L.Spread or 40)
+			e.Acceleration = Vector3.new(0, L.Rise or 3, 0)
+			e.Drag = L.Drag or 1.5
+			e.Rotation = NumberRange.new(0, 360)
+			e.RotSpeed = NumberRange.new(-(L.Spin or 30), L.Spin or 30)
+			e.Parent = part
+			s[k] = { Part = part, E = e }
+		end
+		smokers[L] = s
+	end
+	s.i = s.i % SMOKE_POOL + 1
+	local u = s[s.i]
+	u.Part.CFrame = CFrame.new(pos)
+	u.E:Emit(1)
+end
+-- (2026-10-24) SHED: a wrap's Shed layers, spawned off the flames this canvas just drew -- max(PerPart x flames, MinRate)
+-- a second, plus Burst x the flames added when the count jumps by half or more, x the canvas's density (Graphics Quality, Reduce Enemy VFX; ULTRA fuller), each at a random flame, from its
+-- body toward its tip. Called from Canvas:End.
+local function shedFrom(cv, parts, cfs, n)
+	local now = os.clock()
+	local dt = cv.shedT and min(now - cv.shedT, 0.1) or 0
+	cv.shedT = now
+	local prev = cv.shedN or 0                          -- a jump in the flame count (a Ring forming, its eruption): a burst
+	cv.shedN = n
+	local jump = (n > prev * 1.5 + 10) and (n - prev) or 0
+	if dt <= 0 and jump == 0 then return end
+	local acc = cv.shedAcc
+	if not acc then
+		acc = {}
+		cv.shedAcc = acc
+	end
+	for i, L in ipairs(cv.Shed) do
+		local x = (acc[i] or 0) + (max((L.PerPart or 0) * n, L.MinRate or 0) * dt + jump * (L.Burst or 0)) * cv.Density
+		local k = floor(x)
+		acc[i] = x - k
+		for _ = 1, k do
+			local j = math.random(1, n)
+			local cf, sz = cfs[j], parts[j].Size
+			local at = cf.Position + cf.UpVector * (sz.Y * (math.random() * 0.6 - 0.1))
+			if L.Kind == "Smoke" then smokePuff(L, at) else spawnDrifter(L, at, UP) end   -- (round world-up: up and away from the fire)
+		end
+		if k > 0 then
+			local tap = PyroDraw._tapEmit
+			if tap then tap("shed+" .. L.Name, cfs[1].Position, k) end
+		end
+	end
+end
+local featherAcc = setmetatable({}, { __mode = "k" })     -- [canvas] = { [site] = { t, acc } }
+local function featherLayer(cv, key, base, rate, burst, L, up)
+	local now = os.clock()
+	local st = featherAcc[cv]
+	if not st then
+		st = {}
+		featherAcc[cv] = st
+	end
+	local a = st[key]
+	if not a then
+		a = { t = now, acc = 0 }
+		st[key] = a
+	end
+	local n = 0
+	if rate and L.Share then
+		a.acc += rate * L.Share * up * math.min(now - a.t, 0.1)
+		n = floor(a.acc)
+		a.acc -= n
+	end
+	a.t = now
+	if burst and L.Burst then
+		local x = burst * L.Burst * up
+		n += floor(x) + ((math.random() < x - floor(x)) and 1 or 0)
+	end
+	if n > 0 then
+		local bp = base.Part
+		local cf, sz = bp.CFrame, bp.Size
+		for _ = 1, n do
+			spawnFeather(L, cf:PointToWorldSpace(Vector3.new((math.random() - 0.5) * sz.X, (math.random() - 0.5) * sz.Y, (math.random() - 0.5) * sz.Z)), cf.UpVector)
+		end
+		local tap = PyroDraw._tapEmit
+		if tap then tap(key, bp.Position, n) end
+	end
 end
 
 --- Builds every flame mesh's copy for `wrap` now (in the background), so its first cast is already wrapped.
 function PyroDraw.PrewarmWrap(wrap)
 	if type(wrap) ~= "table" or not wrap.Flame then return end
+	wrapUse[wrap.Id] = os.clock()
+	if wrap.Extra then
+		for _, L in ipairs(wrap.Extra) do if L.Feather then task.spawn(featherTemplate) end end
+	end
+	if wrap.Shed then
+		for _, L in ipairs(wrap.Shed) do if L.Kind ~= "Smoke" then task.spawn(drifterTemplate, L.Mesh) end end
+	end
 	for _, fam in pairs(FAM) do
 		for k = 1, fam.n do
 			local m = famMesh(fam, k)
@@ -669,6 +1256,10 @@ end
 --- back to its mesh's pool. It is NOT hidden here: another flame swapping to this phase in the same frame takes it as
 --- it is; whatever is still free at End() is hidden then
 local function releaseSlot(rec, s, released)
+	if rec.Dead then                                     -- (2026-10-25: its wrap set was let go)
+		s.Part:Destroy()
+		return
+	end
 	local list = freeParts[rec.Name]
 	if not list then
 		list = {}
@@ -703,6 +1294,8 @@ local function tintColor(key)
 	return c
 end
 
+tintOf = tintColor
+
 function PyroDraw.ClearTints()
 	table.clear(TINTS)
 end
@@ -736,6 +1329,9 @@ function PyroDraw.new(name, o)
 	o = o or NONE
 	ensureRoot()
 	local d = o.density or PyroDraw.Density(o.own)
+	local wrap = o.wrap or pendingWrap
+	if wrap then wrapUse[wrap.Id] = os.clock() end
+	if wrap and not wrapReady(wrap) then wrap = nil end            -- (2026-10-19, audit P5B-14) Default until all are in
 	local cv = setmetatable({
 		Name = name or "fx", T = 0, gen = root.Gen, Hot = o.hot or false, Density = d,
 		MaxParts = floor((o.maxParts or Config.MaxParts) * clamp(d, 0.3, 1) + 0.5),
@@ -743,7 +1339,9 @@ function PyroDraw.new(name, o)
 		recs = {}, recList = {}, released = {}, mvParts = {}, mvCF = {}, nMove = 0,
 		lights = {}, nLight = 0, uLight = 0,
 		emitters = {}, nEmit = 0, uEmit = 0, fired = {},
-		Parts = 0, Dropped = 0, Peak = 0, PeakT = 0, PeakDropped = 0, Dead = false, Wrap = o.wrap or pendingWrap,
+		Parts = 0, Dropped = 0, Peak = 0, PeakT = 0, PeakDropped = 0, Dead = false, Wrap = wrap,
+		Live = wrap and liveOf(wrap) or nil, nX = 0,       -- (2026-10-24: the upper tiers' tint; the wrap's layer emitters)
+		Shed = wrap and wrap.Shed or nil,                  -- (2026-10-24: its layers shed off the flame body)
 	}, Canvas)
 	return cv
 end
@@ -764,6 +1362,8 @@ function Canvas:Begin(t)
 	end
 	self.T = t or 0
 	self.Parts, self.Dropped, self.nMove, self.nLight, self.nEmit = 0, 0, 0, 0, 0
+	self.nX = 0
+	if self.Wrap then wrapUse[self.Wrap.Id] = os.clock() end
 	local list = self.recList
 	for i = 1, #list do list[i].n = 0 end
 end
@@ -789,6 +1389,7 @@ function Canvas:End()
 		cfs[i] = nil
 	end
 	if n > 0 then workspace:BulkMoveTo(parts, cfs, Enum.BulkMoveMode.FireCFrameChanged) end
+	if self.Shed and n > 0 then shedFrom(self, parts, cfs, n) end   -- (2026-10-24)
 	local list = self.recList
 	local released = self.released
 	for i = 1, #list do
@@ -927,8 +1528,15 @@ local function emit(cv, m, pos, vx, vy, vz, sx, sy, sz, tint)
 		s.x, s.y, s.z = bx, by, bz
 		part.Size = Vector3.new(bx, by, bz)
 	end
-	if s.tint ~= tint then
-		s.tint = tint
+	local live = cv.Live
+	if live then                                        -- (2026-10-24, Epic and up) breathing / flowing
+		local c = live(tint, pos)
+		if s.lc ~= c then
+			s.lc, s.tint = c, -1
+			part.Color = c
+		end
+	elseif s.tint ~= tint then
+		s.tint, s.lc = tint, nil
 		part.Color = tintColor(tint)
 	end
 	if not s.shown then
@@ -1047,6 +1655,14 @@ end
 --- THE WARM PointLight. watts as the kit's (the ball 1500, a fist flame 420); o.t flickers it; o.range overrides
 function Canvas:fire_light(p, watts, o)
 	o = o or NONE
+	local now = os.clock()
+	if now - (PyroDraw.CalmAt or -1) > 0.5 then                 -- (2026-10-19, audit P5B-05) Reduce Flashing, for flick()
+		PyroDraw.CalmAt = now
+		loadLibs()
+		local ok, on = false, false
+		if settingsLib and type(settingsLib.Get) == "function" then ok, on = pcall(settingsLib.Get, "ReduceFlashing") end
+		PyroDraw.Calm = ok and on == true
+	end
 	if o.t then watts = watts * flick(o.t, o.ph) end
 	if watts <= 1e-3 then return end
 	if self.nLight >= self.MaxLights then return end
@@ -1060,6 +1676,8 @@ function Canvas:fire_light(p, watts, o)
 	if n > self.uLight then self.uLight = n end
 	local k = watts / Config.LightWatts
 	local b = min(Config.LightBrightness * k ^ 0.5, Config.LightBrightnessMax)
+	local W = self.Wrap
+	if W and (W.LightK or W.Pulse) then b = min(b * (W.LightK or 1) * pulseK(W), Config.LightBrightnessMax) end   -- (2026-10-24)
 	local r = min(o.range or Config.LightRange * k ^ 0.3, Config.LightRangeMax)
 	s.Att.Position = p
 	if abs(b - s.b) > 0.04 * s.b or s.b < 0 then
@@ -1125,8 +1743,30 @@ local function newEmitter()
 end
 
 --- an emitter slot for a call site; cfg(e, part) runs once per (slot, site)
+-- (2026-10-24) a slot a wrap dressed (its ember finish, or one of its layers) goes back to Default's dress first
+local function undress(s)
+	local e = s.Emitter
+	e.Texture = Config.EmberTexture
+	e.Color = emberColor()
+	e.LightEmission = Config.EmberLightEmission
+	e.Brightness = Config.EmberBrightness
+	e.Orientation = Enum.ParticleOrientation.VelocityParallel
+	e.Squash = NumberSequence.new(Config.EmberSquash)
+	e.Transparency = NumberSequence.new(0)
+	e.Rotation = NumberRange.new(0)
+	e.RotSpeed = NumberRange.new(0)
+	e.ShapePartial = 1
+	s.dressed = nil
+end
+local function dressFinish(s, f)
+	local e = s.Emitter
+	if f.LightEmission then e.LightEmission = f.LightEmission end
+	if f.Brightness then e.Brightness = f.Brightness end
+	if f.Squash then e.Squash = NumberSequence.new(f.Squash) end
+	s.dressed = true
+end
 local function emitterSlot(cv, site, cfg, a, b, c, d)
-	if cv.nEmit >= Config.MaxEmitters then return nil end
+	if cv.nEmit - cv.nX >= Config.MaxEmitters then return nil end   -- (2026-10-24: the wrap's layers do not count)
 	local n = cv.nEmit + 1
 	cv.nEmit = n
 	local s = cv.emitters[n]
@@ -1147,20 +1787,133 @@ local function emitterSlot(cv, site, cfg, a, b, c, d)
 		-- this a trail spray handed an emitter that a burst had used stayed at Rate 0 (its rate equalled the stale cache)
 		s.site = site
 		s.rate = nil
+		s.rad = nil                                     -- (ember_field's cached radius: this cfg sets the size afresh)
 		s.Emitter.Enabled = false
 		s.on = false
+		if s.dressed then undress(s) end
 		cfg(s.Emitter, s.Part, a, b, c, d)
 		s.ec = nil
 	end
 	-- a wrapped canvas's embers take the wrap's colours (Immolate's crown, the bursts); Default's stay as cfg left them
 	if cv.Wrap and s.ec ~= cv.Wrap.Id then
 		s.ec = cv.Wrap.Id
+		if s.dressed then undress(s) end
 		s.Emitter.Color = wrapEmberSeq(cv.Wrap)
+		if cv.Wrap.EmberFinish then dressFinish(s, cv.Wrap.EmberFinish) end   -- (2026-10-24, Rare and up)
 	elseif not cv.Wrap and s.ec then
 		s.ec = nil
 		s.Emitter.Color = emberColor()
+		if s.dressed then undress(s) end
 	end
 	return s
+end
+
+-- (2026-10-24) THE WRAP'S LAYERS: their own slots past MaxEmitters (never a Default ember's place), dressed per layer
+local LAYER_MAX = 6
+local function dressLayer(s, L)
+	local e = s.Emitter
+	e.Texture = L.Texture or Config.EmberTexture
+	if not L.Seq then
+		local kp, n = {}, #L.Colors
+		for i, col in ipairs(L.Colors) do kp[#kp + 1] = ColorSequenceKeypoint.new((i - 1) / max(1, n - 1), col) end
+		if n == 1 then kp[2] = ColorSequenceKeypoint.new(1, L.Colors[1]) end
+		L.Seq = ColorSequence.new(kp)
+	end
+	e.Color = L.Seq
+	e.LightEmission = L.LightEmission or Config.EmberLightEmission
+	e.Brightness = L.Brightness or Config.EmberBrightness
+	e.Orientation = L.Facing and Enum.ParticleOrientation.FacingCamera or Enum.ParticleOrientation.VelocityParallel
+	e.Squash = NumberSequence.new(L.Squash or 0)
+	e.Shape = Enum.ParticleEmitterShape.Sphere
+	e.ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume
+	e.ShapeInOut = Enum.ParticleEmitterShapeInOut.Outward
+	e.Lifetime = NumberRange.new(L.Life[1], L.Life[2])
+	e.Speed = NumberRange.new(L.Speed[1], L.Speed[2])
+	e.SpreadAngle = Vector2.new(L.Spread or 180, L.Spread or 180)
+	e.Acceleration = Vector3.new(0, L.Rise or 0, 0)
+	e.Drag = L.Drag or 2
+	e.Size = NumberSequence.new(L.Size[1], L.Size[2])
+	e.Rotation = NumberRange.new(0, 360)
+	e.RotSpeed = NumberRange.new(-(L.Spin or 0), L.Spin or 0)
+	if L.Twinkle and not PyroDraw.Calm then
+		e.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.12, 0),
+			NumberSequenceKeypoint.new(0.3, 0.75), NumberSequenceKeypoint.new(0.45, 0.05), NumberSequenceKeypoint.new(0.65, 0.8),
+			NumberSequenceKeypoint.new(0.8, 0.2), NumberSequenceKeypoint.new(1, 1) })
+	else
+		e.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.7, 0.1), NumberSequenceKeypoint.new(1, 1) })
+	end
+	e.Rate = 0
+	s.dressed = true
+end
+local function layerSlot(cv, site)
+	if cv.nX >= LAYER_MAX then return nil end
+	cv.nX += 1
+	local n = cv.nEmit + 1
+	cv.nEmit = n
+	local s = cv.emitters[n]
+	if not s then
+		local now = os.clock()
+		for i = #freeEmitters, 1, -1 do
+			if freeEmitters[i].freeAt <= now then
+				s = table.remove(freeEmitters, i)
+				break
+			end
+		end
+		s = s or newEmitter()
+		cv.emitters[n] = s
+	end
+	if n > cv.uEmit then cv.uEmit = n end
+	return s
+end
+local layerKeys = {}
+--- the wrap's layers beside one Default ember site `base` (its slot): `rate` its steady rate, `burst` a count just emitted
+local function layers(cv, site, base, rate, burst)
+	local up = cv.Density > 1 and cv.Density or 1
+	for _, L in ipairs(cv.Wrap.Extra) do
+	repeat
+		local keys = layerKeys[L] or {}
+		layerKeys[L] = keys
+		local key = keys[site]
+		if not key then
+			key = site .. "+" .. L.Name
+			keys[site] = key
+		end
+		if L.Feather then
+			featherLayer(cv, key, base, rate, burst, L, up)
+			break                                       -- (continue)
+		end
+		local s = layerSlot(cv, key)
+		if not s then return end
+		if s.site ~= key then
+			s.site, s.rate, s.rad, s.ec = key, nil, nil, nil
+			s.Emitter.Enabled, s.on = false, false
+			dressLayer(s, L)
+			local be, e = base.Emitter, s.Emitter
+			e.Shape, e.ShapeStyle, e.ShapeInOut, e.ShapePartial = be.Shape, be.ShapeStyle, be.ShapeInOut, be.ShapePartial
+		end
+		local bp = base.Part
+		if s.Part.Size ~= bp.Size then s.Part.Size = bp.Size end
+		s.Part.CFrame = bp.CFrame
+		if rate and L.Share then
+			local r = rate * L.Share * up
+			if s.rate ~= r then
+				s.rate = r
+				s.Emitter.Rate = r
+			end
+			if not s.on then
+				s.on = true
+				s.Emitter.Enabled = true
+			end
+		end
+		if burst and L.Burst then
+			local x = burst * L.Burst * up
+			local n = floor(x) + ((math.random() < x - floor(x)) and 1 or 0)
+			if n > 0 then s.Emitter:Emit(n) end
+			local tap = PyroDraw._tapEmit
+			if tap then tap(key, bp.Position, n) end
+		end
+	until true
+	end
 end
 
 local function sizeSeq(s0, s1)
@@ -1213,6 +1966,7 @@ function Canvas:embers(source, t, o)
 		s.on = true
 		s.Emitter.Enabled = true
 	end
+	if self.Wrap and self.Wrap.Extra then layers(self, o.id or "embers", s, rate, nil) end   -- (2026-10-24)
 end
 
 local function cfgBurst(e, part, o, hot)
@@ -1240,18 +1994,24 @@ function Canvas:ember_burst(center, tau, o)
 	local hot = hotOf(self, o.hot)
 	local s = emitterSlot(self, id, cfgBurst, o, hot)
 	if not s then return end
+	local burst = nil
 	if not self.fired[id] then
 		self.fired[id] = true
 		if tau <= 0.15 then
+			-- (2026-10-19, audit GC-11) dressed for THIS burst's speed, size and fall: the slot keeps the first call's
+			-- otherwise, so a second burst on one id at another size flew at the first one's
+			cfgBurst(s.Emitter, s.Part, o, hot)
 			local dir = o.hemi or o.bias or UP
 			if o.hemi and o.bias then dir = o.hemi + o.bias end
 			aimPart(s.Part, center, dir)
 			local n = floor((o.count or 72) * (hot and 1.5 or 1) * clamp(self.Density, 0.3, 1) + 0.5)
 			s.Emitter:Emit(n)
+			burst = n
 			local tap = PyroDraw._tapEmit
 			if tap then tap(id, center, n) end
 		end
 	end
+	if self.Wrap and self.Wrap.Extra then layers(self, id, s, nil, burst) end   -- (2026-10-24)
 end
 
 local function cfgGather(e, part, o, hot)
@@ -1286,6 +2046,7 @@ function Canvas:ember_gather(pos, t, t0, t1, o)
 		s.on = true
 		s.Emitter.Enabled = true
 	end
+	if self.Wrap and self.Wrap.Extra then layers(self, o.id or "ember_gather", s, rate, nil) end   -- (2026-10-24)
 end
 
 local function cfgField(e, part, o, radius)
@@ -1309,6 +2070,13 @@ function Canvas:ember_field(center, radius, t, o)
 	if o.t0 and t < o.t0 or o.t1 and t > o.t1 then return end
 	local s = emitterSlot(self, o.id or "ember_field", cfgField, o, radius)
 	if not s then return end
+	-- (2026-10-19, audit GC-11) a radius that changes (a growing front) resizes the disc; cfgField set it once per site
+	if not s.rad then
+		s.rad = radius
+	elseif math.abs(radius - s.rad) > 0.05 * math.max(s.rad, 0.1) then
+		s.rad = radius
+		s.Part.Size = Vector3.new(2 * radius, 0.4, 2 * radius)
+	end
 	local life = o.life or EF_LIFE
 	local rate = (o.count or 60) / (0.5 * (life[1] + life[2])) * clamp(self.Density, 0.3, 1)
 	aimPart(s.Part, center + UP * (o.lift or 1.5), o.normal or UP)
@@ -1320,6 +2088,7 @@ function Canvas:ember_field(center, radius, t, o)
 		s.on = true
 		s.Emitter.Enabled = true
 	end
+	if self.Wrap and self.Wrap.Extra then layers(self, o.id or "ember_field", s, rate, nil) end   -- (2026-10-24)
 end
 
 --- embers carried UP the pillar (34-56 studs/s)
@@ -1666,7 +2435,8 @@ function Canvas:fire_ball(pos, t, o)
 	if o.light ~= false then
 		local Hh = (hot and 1.45 or 1) * scale * scale
 		self:fire_light(c - UP * 0.3, 1500 * Hh * flick(t, seed))
-		if L > 3 then self:fire_light(c - F * min(3.5, L * 0.5) - UP * 0.4, 650 * Hh * flick(t, 1 + seed)) end
+		-- (2026-10-19, audit GC-12) scaled like every other length test here: a small ball's short tail took a light
+		if L > 3 * scale then self:fire_light(c - F * min(3.5, L * 0.5) - UP * 0.4, 650 * Hh * flick(t, 1 + seed)) end
 	end
 	return c, F, L
 end
@@ -2027,6 +2797,9 @@ local BB_EF = { id = "blast_field", count = 70, inner = 0 }
 
 --- THE RING OF FIRE'S ERUPTION, sized to the ring: the pillar + a wildfire from its foot out to fill x ring_radius +
 --- embers. tp = seconds since the eruption. -> the wildfire's front radius, flames lit
+--- (2026-10-19, audit GC-11) UNPORTED: big_blast, pillar, wildfire and pillar_embers have no caller in the game (the Ring's
+--- eruption is PyroFlame_Ring's own). Before wiring them: big_blast asks for 3 pillar lights + 5 wildfire glows against
+--- Config.MaxLights (4; 2 thinned), so most would be dropped.
 function Canvas:big_blast(center, tp, t, o)
 	o = o or NONE
 	local R, height, seed = o.ring_radius or 17.5, o.height or 36, o.seed or 60

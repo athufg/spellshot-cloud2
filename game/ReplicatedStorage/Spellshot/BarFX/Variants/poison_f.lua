@@ -184,7 +184,7 @@ function V.mount(fx)
 			burst(250, 106, "DOUBLE!", "DOUBLE!", { r = 44, fs = 32, wx = -80, wy = -60, rot = -4, splat = "poison-s/splatG" })
 		elseif name == "tick" then
 			surg()
-			local n = tostring(st.s * 2)
+			local n = tostring(st.drop or st.s * 2)   -- (2026-10-19, audit GA-05) the real HP lost (BarFX st.drop); the bench's s * 2 in previews
 			burst(ex, 112, "HSSS! " .. minus(n), "HSSS! -" .. n, { r = 32, rot = -7, wx = -150, wy = -50 })
 		end
 	end

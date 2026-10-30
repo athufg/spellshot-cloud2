@@ -87,6 +87,15 @@ local header = make("TextLabel", {
 	TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 51,
 }, panel)
 
+-- SPARKS TO (2026-10-23, owner: "do onyl for sparks"): who the Sparks button pays, always on screen because it is the one
+-- row in this panel that may act on someone else. Every other row still acts on you. Set by the SPARKS TARGET list below.
+local sparksToLabel = make("TextLabel", {
+	Name = "SparksTo", BackgroundColor3 = C.Btn, BorderSizePixel = 0,
+	Position = UDim2.new(0, 0, 0, 34), Size = UDim2.new(1, 0, 0, 22),
+	Font = Enum.Font.Code, TextSize = 12, TextColor3 = C.Accent, Text = "  SPARKS TO: you",
+	TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 51,
+}, panel)
+
 local status = make("TextLabel", {
 	Name = "Status", BackgroundColor3 = C.Header, BorderSizePixel = 0,
 	Position = UDim2.new(0, 0, 1, -26), Size = UDim2.new(1, 0, 0, 26),
@@ -96,7 +105,7 @@ local status = make("TextLabel", {
 
 local scroll = make("ScrollingFrame", {
 	Name = "Body", BackgroundTransparency = 1, BorderSizePixel = 0,
-	Position = UDim2.new(0, 0, 0, 34), Size = UDim2.new(1, 0, 1, -60),
+	Position = UDim2.new(0, 0, 0, 56), Size = UDim2.new(1, 0, 1, -82),
 	CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
 	ScrollBarThickness = 8, Active = true, ZIndex = 51,
 }, panel)
@@ -174,6 +183,87 @@ local function currentElement()
 end
 
 ----------------------------------------------------------------------------------------------------
+-- SPARKS TARGET  (2026-10-23)
+----------------------------------------------------------------------------------------------------
+-- Every player on this server, live. Clicking one makes them the target of the Sparks button (+1000 SPARKS, in
+-- ECONOMY) and of NOTHING else: every other row still acts on you. The default is you; a target who leaves falls back
+-- to you. Only the target's UserId is sent; SpellshotService checks the caller is a dev and the target is a player on
+-- this server before it pays them, and logs caller, target and action.
+local sparksTargetId = player.UserId
+local sparksButton                              -- the +1000 SPARKS button, set in ECONOMY below
+local sparksConn                                -- the target's Sparks attribute, shown in the strip
+
+local function sparksTarget()
+	local t = Players:GetPlayerByUserId(sparksTargetId)
+	if not t or t.Parent ~= Players then
+		sparksTargetId = player.UserId
+		t = player
+	end
+	return t
+end
+
+local function playerLabel(p)
+	return p == player and (p.Name .. " (you)") or p.Name
+end
+
+local function paintSparksLabel()
+	local t = sparksTarget()
+	sparksToLabel.Text = ("  SPARKS TO: %s   (has %s)"):format(playerLabel(t), tostring(t:GetAttribute("Sparks") or "-"))
+	if sparksButton then
+		sparksButton.Text = t == player and "+1000 SPARKS" or ("+1000 SPARKS > " .. t.Name)
+		sparksButton.BackgroundColor3 = t == player and C.Btn or C.BtnHot
+	end
+end
+
+section("SPARKS TARGET  (click a player: only +1000 SPARKS goes to them)")
+local sparksList = make("Frame", {
+	BackgroundTransparency = 1, LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 0), ZIndex = 52,
+}, scroll)
+
+local paintSparksTarget
+--- Rebuilds the list from Players (the selected row highlighted) and repaints the strip. `leaving` is left out: during
+--- PlayerRemoving the leaver is still in Players.
+paintSparksTarget = function(leaving)
+	if leaving and leaving.UserId == sparksTargetId then sparksTargetId = player.UserId end
+	local t = sparksTarget()
+	if sparksConn then sparksConn:Disconnect() end
+	sparksConn = t:GetAttributeChangedSignal("Sparks"):Connect(paintSparksLabel)
+	for _, ch in ipairs(sparksList:GetChildren()) do ch:Destroy() end
+	local list = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= leaving then list[#list + 1] = p end
+	end
+	table.sort(list, function(x, y)
+		if (x == player) ~= (y == player) then return x == player end
+		return x.Name:lower() < y.Name:lower()
+	end)
+	local perRow, height = 3, 22
+	for i, p in ipairs(list) do
+		local r, c = math.floor((i - 1) / perRow), (i - 1) % perRow
+		local uid = p.UserId
+		local b = make("TextButton", {
+			BackgroundColor3 = p == t and C.BtnOn or C.Btn, BorderSizePixel = 0, AutoButtonColor = true,
+			Position = UDim2.new(c / perRow, 2, 0, r * (height + 3)), Size = UDim2.new(1 / perRow, -4, 0, height),
+			Font = Enum.Font.Code, TextSize = 11, TextColor3 = C.Text,
+			Text = (p == t and "* " or "  ") .. playerLabel(p), TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 53,
+		}, sparksList)
+		b.Activated:Connect(function()
+			sparksTargetId = uid
+			paintSparksTarget()
+			say("Sparks now go to " .. playerLabel(sparksTarget()) .. "; every other row is still you")
+		end)
+	end
+	sparksList.Size = UDim2.new(1, 0, 0, math.ceil(#list / perRow) * (height + 3))
+	paintSparksLabel()
+end
+Players.PlayerAdded:Connect(function() paintSparksTarget() end)
+Players.PlayerRemoving:Connect(function(p)
+	local wasTarget = p.UserId == sparksTargetId and p ~= player
+	paintSparksTarget(p)
+	if wasTarget then say(p.Name .. " left: Sparks go to you again") end
+end)
+
+----------------------------------------------------------------------------------------------------
 -- ELEMENTS
 ----------------------------------------------------------------------------------------------------
 section("ELEMENTS  (equip - M1 / Primary / Passive / Ult, + default Techniques)")
@@ -190,11 +280,18 @@ end
 -- purchase records stay, so no Robux receipt can pay twice. The line under the buttons reads what the server wrote.
 section("ECONOMY  (Sparks + owned Elements, through PlayerData)")
 do
-	buttonRow({
-		{ "+1000 SPARKS", function() dev("EcoAddSparks") end },
+	-- (2026-10-23) +1000 SPARKS goes to the SPARKS TARGET (the list at the top); UNLOCK ALL and RESET are still you
+	local ecoRow = buttonRow({
+		{ "+1000 SPARKS", function()
+			local t = sparksTarget()
+			dev("EcoAddSparks", t.UserId)
+			return ("+1000 SPARKS -> %s (asked the server)"):format(playerLabel(t))
+		end },
 		{ "UNLOCK ALL", function() dev("EcoUnlockAll") end },
 		{ "RESET TO STARTER", function() dev("EcoReset") end },
 	}, 3)
+	sparksButton = ecoRow[1].button
+	paintSparksTarget()
 	local info = make("TextLabel", {
 		BackgroundColor3 = C.Btn, BorderSizePixel = 0, LayoutOrder = nextOrder(),
 		Size = UDim2.new(1, 0, 0, 30), Font = Enum.Font.Code, TextSize = 11, TextWrapped = true,
@@ -246,14 +343,10 @@ do
 	buttonRow({
 		{ "CAST PRIMARY", function() castRemote:FireServer("Primary", {}) end },
 		{ "CAST M1", function() castRemote:FireServer("M1", {}) end },
-		{ "PASSIVE ON", function()
-			local ch = player.Character
-			if ch then ch:SetAttribute("PassiveActive", true) end
-		end },
-		{ "PASSIVE OFF", function()
-			local ch = player.Character
-			if ch then ch:SetAttribute("PassiveActive", false) end
-		end },
+		-- (2026-10-19, audit P6A-22) through the dev remote: a client-set attribute never replicates, so the server and
+		-- other clients never saw these (SpellshotService's dev handler sets PassiveActive on the character)
+		{ "PASSIVE ON", function() dev("PassiveActive", true) end },
+		{ "PASSIVE OFF", function() dev("PassiveActive", false) end },
 	}, 4)
 end
 
@@ -261,7 +354,8 @@ end
 -- TECHNIQUES  (v0.7, 2026-09-24: two slots over one pool; the Ultimate is the Element's own)
 ----------------------------------------------------------------------------------------------------
 -- Either slot takes any Technique in the pool (SpellshotConfig.Mobility + .Defense) through dev SetTechnique, which
--- refuses one the Element may not hold (Detonate: Pyro's only) and the one already in the other slot; the panel says
+-- refuses one the Element may not hold (Config.ElementMayHold: since P31, 2026-10-18, any other Element's) and the one
+-- already in the other slot; the panel says
 -- which instead of "sent". The slots are named as the player reads them (Config.SlotLabel); "Mobility" / "Defense" are
 -- only the internal slot keys sent to the server. The 2026-09-23 Element-fixed slots are gone.
 -- What a bare CAST (an empty payload straight to CastRequest) cannot do that the real key path in SpellshotInput does:
@@ -283,7 +377,9 @@ end)
 for _, slot in ipairs(Config.TechniqueSlots) do
 	local label = Config.SlotLabel[slot]
 	local other = (slot == "Mobility") and "Defense" or "Mobility"
-	section(("%s  (any of %d)"):format(label:upper(), #techniqueKeys))
+	-- (2026-10-19, audit P4-14) under P31 (Config.TechniquesOwnElementOnly) a slot holds only the Element's own
+	section(("%s  (%s)"):format(label:upper(),
+		Config.TechniquesOwnElementOnly and "your Element's own" or ("any of %d"):format(#techniqueKeys)))
 	local items = {}
 	for _, k in ipairs(techniqueKeys) do
 		local entry = Config.Technique(k)
@@ -711,6 +807,8 @@ end
 -- silence. On a Team Test server -- a real Roblox server, where IsStudio() is false -- that is
 -- exactly what a panel with dead buttons looks like.
 devRemote.OnClientEvent:Connect(function(what, serverIsStudio)
+	-- (2026-10-23) the server's answer to +1000 SPARKS: who got them, or why not (the second value is its message)
+	if what == "eco" then say(tostring(serverIsStudio)) return end
 	if what ~= "denied" then return end
 	say("The SERVER refused that: this account is not a dev on this server."
 		.. (serverIsStudio and "" or " This is a real server (Team Test or live), not a Studio"

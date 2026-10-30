@@ -189,6 +189,7 @@ local layerOn = false       -- touch is the way this player is playing right now
 local function menusOpen()
 	return player:GetAttribute("SettingsOpen") or player:GetAttribute("LoadoutOpen")
 		or player:GetAttribute("QuickPlayOpen") or player:GetAttribute("ShopOpen")
+		or player:GetAttribute("ReactionsOpen")   -- (2026-10-19, audit GA-20) the Reactions tablet is a menu too
 end
 
 local function hittable(b)
@@ -383,7 +384,9 @@ local function sync()
 		-- once the button is hidden nothing could press it again, so the player stayed crouched until they respawned.
 		-- MovementController drops the latch on this one-off action. Sent only while touch is how they are playing, so a
 		-- keyboard player's crouch is never touched.
-		if layerOn then TouchBus.Fire("CrouchClear", true) end
+		-- (2026-10-19, audit P6A-22) a one-off, never held: its Down flag is cleared on the spot (not Fire(..., false),
+		-- which would run MovementController's CrouchClear branch a second time)
+		if layerOn then TouchBus.Fire("CrouchClear", true); TouchBus.Down.CrouchClear = nil end
 	end
 	crouchButton.frame.Visible = crouchShown
 
@@ -413,7 +416,7 @@ RunService.Heartbeat:Connect(function(dt)
 	acc = 0
 	sync()
 end)
-for _, name in ipairs({ "Zone", "SettingsOpen", "LoadoutOpen", "QuickPlayOpen", "ShopOpen" }) do
+for _, name in ipairs({ "Zone", "SettingsOpen", "LoadoutOpen", "QuickPlayOpen", "ShopOpen", "ReactionsOpen" }) do   -- (2026-10-19, audit GA-20)
 	player:GetAttributeChangedSignal(name):Connect(sync)
 end
 sync()

@@ -43,7 +43,7 @@ local spellFolder = ReplicatedStorage:WaitForChild("Spellshot")
 local Config = require(spellFolder:WaitForChild("SpellshotConfig"))
 local SkinCatalog = require(spellFolder:WaitForChild("SkinCatalog"))     -- the caster's HUD skin, stamped on Chill
 -- Damage, the friendly-fire rule and the M1 hit checks are shared with the other kits (CombatCore): a
--- Cinder Shield has to soak an Icicle Shard, and a hit is a hit for every passive that listens.
+-- shield has to soak an Icicle Shard, and a hit is a hit for every passive that listens.
 local Core = require(script.Parent:WaitForChild("CombatCore"))
 -- ELEMENTAL APPLICATION (2026-09-24): Chill's numbers come from the live status preset, and it publishes its clock
 local Status = require(script.Parent:WaitForChild("StatusEffects"))
@@ -138,21 +138,26 @@ local function onHitLanded(caster)
 		if coldMomentum[character] ~= token then return end        -- a newer hit extended it
 		coldMomentum[character] = nil
 		if not character.Parent then return end
-		character:SetAttribute("PassiveActive", false)
-		character:SetAttribute("PassiveExpires", 0)
-		character:SetAttribute("MoveSpeedMult", 1)
+		-- (2026-10-19, audit P4-20) the buff comes off only while it is still Cryo's own: MoveSpeedMult and PassiveActive
+		-- are shared with Aqua's Riding the Current, and an Element switch inside the window hands them to it
+		if character:GetAttribute("MoveSpeedMult") == 1 + passive.SpeedBonus then
+			character:SetAttribute("PassiveActive", false)
+			character:SetAttribute("PassiveExpires", 0)
+			character:SetAttribute("MoveSpeedMult", 1)
+		end
 		character:SetAttribute("RX_Haste", false)
 	end)
 end
 
--- Every landed hit from any kit (a Cryo player can run a Pyro Ultimate) restarts Cold Momentum for a
--- Cryo caster: CombatCore tells every listener.
+-- Every landed hit from any kit (a Cryo player's own, or -- with Config.TechniquesOwnElementOnly off -- another
+-- Element's Technique they borrowed; 2026-10-19, audit P4-14) restarts Cold Momentum for a Cryo caster: CombatCore
+-- tells every listener.
 Core.OnHitLanded(function(caster)
 	onHitLanded(caster)
 end)
 
---- `info` is what the damage modifiers read: Ranged = true for a projectile or a beam (Heat Rush thins
---- those), From = where the hit came from.
+--- `info` is what the damage modifiers read: Ranged = true for a projectile or a beam,
+--- From = where the hit came from.
 local function dealDamage(caster, humanoid, amount, info)
 	return Core.DealDamage(caster, humanoid, amount, info)
 end
@@ -184,6 +189,8 @@ local applyStatusTag = Core.ApplyStatusTag
 local BASE_JUMP_HEIGHT = game:GetService("StarterPlayer").CharacterJumpHeight
 local BASE_JUMP_POWER = game:GetService("StarterPlayer").CharacterJumpPower
 local jumpLocks = setmetatable({}, { __mode = "k" }) -- [humanoid] = { [reason] = true }
+-- (2026-10-19, audit P1-03) [humanoid] = the body whose CombatCore "CryoRoot" hold this file has on (see setJumpLock)
+local rootHolds = setmetatable({}, { __mode = "k" })
 
 local function setJumpLock(humanoid, reason, on)
 	local locks = jumpLocks[humanoid] or {}
@@ -192,6 +199,22 @@ local function setJumpLock(humanoid, reason, on)
 	jumpLocks[humanoid] = locked and locks or nil
 	humanoid.JumpHeight = locked and 0 or BASE_JUMP_HEIGHT
 	humanoid.JumpPower = locked and 0 or BASE_JUMP_POWER
+	-- (2026-10-19, audit P1-03) THE ROOT IS THE SERVER'S. The "Root" lock is set wherever the slow cap is recomputed, and
+	-- is on exactly while the tightest running cap is 0 (Flash Freeze, its frozen patches, Deep Freeze's prison, Mirror
+	-- Cage, a reaction's root) -- overlapping roots included, since it follows the recount. While it is on, the body's
+	-- physics are the server's (Core.HoldBody: network ownership, players only), so a modified client cannot walk out of
+	-- it. Only a change is passed on, so the hold is taken and let go once each.
+	if reason == "Root" and Core.HoldBody then
+		local held = rootHolds[humanoid]
+		local model = humanoid.Parent
+		if on and not held and model then
+			rootHolds[humanoid] = model
+			Core.HoldBody(model, "CryoRoot", true)
+		elseif not on and held then
+			rootHolds[humanoid] = nil
+			Core.HoldBody(held, "CryoRoot", false)
+		end
+	end
 end
 
 -- Other kits' own roots lock jumping through here, so the jump lock keeps ONE writer (RadiantHandler's Benediction,
@@ -266,6 +289,7 @@ local function applySlow(humanoid, walkSpeed, duration, statusName, source)
 			setJumpLock(humanoid, "Root", rooted(rec, t))
 		end
 	end)
+	return entry       -- (2026-10-19, audit P3-04) so a caller can tell later whether its own slow was ended early
 end
 
 -- Ends every slow one source asked for, before its time (2026-09-24). The shard root is the case: Chill's stacks reset
@@ -277,7 +301,10 @@ local function endSlows(humanoid, source)
 	for i = #rec.Entries, 1, -1 do
 		-- `source` may also be a test on the entry (2026-10-17: a reaction breaking every root, whoever applied it)
 		local e = rec.Entries[i]
-		if (type(source) == "function" and source(e)) or e.Source == source then table.remove(rec.Entries, i) end
+		if (type(source) == "function" and source(e)) or e.Source == source then
+			e.Ended = true          -- (2026-10-19, audit P3-04) ended early (a broken root), not run out
+			table.remove(rec.Entries, i)
+		end
 	end
 	local character = humanoid.Parent
 	if #rec.Entries == 0 then
@@ -301,6 +328,47 @@ end
 -- than hitting once on contact -- walking through it costs almost nothing, standing in it costs
 -- the round. Dwell deliberately never decays: leaving and re-entering still gets you rooted, so
 -- the timer cannot be juked by strafing in and out of the edge.
+
+--- (2026-10-19, audit P1-09) LINE OF SIGHT for a spot aimed with the crosshair. The honest client can only pick a spot its
+--- camera sees, so the server asks the same of its own copy of the world: from the caster's eye to the spot -- or to a
+--- point a few studs over it, so low cover in front of the spot does not hide it -- nothing solid may stand in between.
+--- Bodies never count; a Bulwark Wall does (Core.Blocked's rule). Returns the spot when it is in sight, else the point
+--- just short of the first thing in the way on the line to the highest of them, for the caller to ground again.
+local SIGHT_RISES = { 0.5, 3, 5 }
+local function sightPoint(character, root, spot)
+	local head = character:FindFirstChild("Head")
+	local eye = head and head.Position or (root.Position + Vector3.new(0, 1.5, 0))
+	local list = { character }
+	local fx = fxFolder()
+	if fx then list[#list + 1] = fx end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.RespectCanCollide = true
+	local stop
+	for _, rise in ipairs(SIGHT_RISES) do
+		local d = spot + Vector3.new(0, rise, 0) - eye
+		local len = d.Magnitude
+		if len < 0.5 then return spot end
+		local dir = d / len
+		stop = nil
+		for _ = 1, 8 do
+			params.FilterDescendantsInstances = list
+			local hit = workspace:Raycast(eye, d, params)
+			if not hit then break end
+			local depth = (hit.Position - eye):Dot(dir)
+			if depth >= len - Core.SameSurface then break end
+			local model = hit.Instance:FindFirstAncestorOfClass("Model")
+			if not (model and model:FindFirstChildOfClass("Humanoid")) or model:GetAttribute("WallOwner") then
+				stop = eye + dir * math.max(0, depth - 1)
+				break
+			end
+			list[#list + 1] = model
+		end
+		if not stop then return spot end
+	end
+	return stop
+end
+
 --- CURSOR TARGETING (P29, 2026-10-18; the owner shipped Flash Freeze and Blizzard at 20 studs): where a zone aimed with
 --- the crosshair lands -- the aim point the client sent (its row is Targeted) pulled in to `range` from the caster, then
 --- the floor under it (VFXLibrary.GroundBelow: through bodies, at most 40 below the aim). nil keeps the zone where the
@@ -309,6 +377,13 @@ local function cursorFloor(character, root, payload, range)
 	if not range or range <= 0 or not (payload and validVector(payload.Target)) then return nil end
 	local aim = clampTarget(root, payload.Target, range)
 	local floor, _, hit = VFXLibrary.GroundBelow(aim, { character, fxFolder() }, 46)
+	if not hit then return nil end
+	-- (2026-10-19, audit P1-09) a floor out of the caster's sight (through a wall, the storey above or below) is grounded
+	-- again from where the sight line stops: GroundBelow casts from 6 over the point it is given, so this casts from there
+	local seen = sightPoint(character, root, floor)
+	if seen ~= floor then
+		floor, _, hit = VFXLibrary.GroundBelow(seen - Vector3.new(0, 6, 0), { character, fxFolder() }, 46)
+	end
 	return hit and floor or nil
 end
 
@@ -331,7 +406,7 @@ local function castFlashFreeze(player, character, humanoid, root, payload)
 	local zoneEnd = t0 + F.ExpandTime + F.RimLinger
 
 	local dwell = {}      -- [humanoid] = seconds spent inside
-	local rooted = {}     -- [humanoid] = true once the root has landed
+	local rooted = {}     -- [humanoid] = this zone's root entry (applySlow's) once the root has landed
 	local contacted = {}
 	local epoch = Core.Epoch(player)
 	local conn
@@ -348,8 +423,13 @@ local function castFlashFreeze(player, character, humanoid, root, payload)
 			-- the shatter is drawn only where it actually landed: a victim who left the arena between the root and the
 			-- zone's end is refused by DealDamage, and used to burst into the loudest VFX in the kit anyway,
 			-- standing in the Hub, for no damage (2026-09-21)
-			for victim in pairs(rooted) do
-				if victim.Parent and victim.Health > 0 then
+			-- (2026-10-19, audit P3-04) "shattered if STILL frozen when it ends": not a victim whose root a reaction broke
+			-- (Melt / Shatter already paid for it: endSlows marks the entry Ended), nor one moved out of the zone since (a
+			-- Position Trade) -- the root holds a body where it stood, so anything past the rim plus a body's reach moved
+			for victim, entry in pairs(rooted) do
+				local vroot = victim.Parent and victim.Parent:FindFirstChild("HumanoidRootPart")
+				if victim.Parent and victim.Health > 0 and not entry.Ended
+					and vroot and (vroot.Position - center).Magnitude <= F.Radius + 6 then
 					-- a shatter refused (the victim has gone to the Hub, or out of the duel) shows nothing on them either
 					if dealDamage(player, victim, Tune.FlashFreezeShatterDamage) then
 						broadcast("FlashFreezeShatter", { Character = victim.Parent, Caster = character })
@@ -373,9 +453,8 @@ local function castFlashFreeze(player, character, humanoid, root, payload)
 				end
 				dwell[victim] = (dwell[victim] or 0) + dt
 				if not wall and dwell[victim] >= F.LingerToRoot and not rooted[victim] then
-					rooted[victim] = true
 					local remaining = math.max(0.5, zoneEnd - now)
-					applySlow(victim, 0, remaining, "Rooted")
+					rooted[victim] = applySlow(victim, 0, remaining, "Rooted")
 					VFXLibrary.ApplyFrozenState(victim.Parent, remaining)
 					-- Caster: whose freeze it is, for their skin (Frostblade's pierce)
 					broadcast("FlashFreezeRoot", { Character = victim.Parent, Caster = character })
@@ -418,8 +497,8 @@ local function castFrostSlide(player, character, humanoid, root, payload)
 	-- none, as from the dev panel -- starts the dash where the server has the caster now.
 	local ping = 0
 	pcall(function() ping = player:GetNetworkPing() end)
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, S.DashDistance / S.DashTime)
-	local allowance = 6 + speed * (0.35 + ping)
+	local speed = Core.TrailSpeed(root, S.DashDistance / S.DashTime)
+	local allowance = 6 + speed * (0.35 + Core.Lag(ping))
 	local start = payload.Start
 	if not (validVector(start) and (start - root.Position).Magnitude <= allowance) then
 		start = root.Position
@@ -820,13 +899,15 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	if player:GetAttribute("Zone") == "Hub" then return end   -- no M1 in the Hub (HubServer)
 	-- only a player whose M1 IS Icicle Shard (a Pyro's Fireball reports to PyroHandler)
 	if VFXLibrary.AbilityFor(player, "M1") ~= VFXLibrary.AbilityById.IcicleShard then return end
-	-- CanAct, not aliveCharacter: Tremor Vault is a shared Mobility Technique, so a burrowed CRYO player was firing
-	-- shards for full damage out of a hidden, untouchable body (2026-09-21). The performCast dispatcher below keeps
+	-- CanAct, not aliveCharacter: Tremor Vault was a shared Mobility Technique (retired since; 2026-10-19, audit P4-14),
+	-- so a burrowed CRYO player was firing shards for full damage out of a hidden, untouchable body (2026-09-21). Any
+	-- burrow, cast lock or interrupt still refuses the shot. The performCast dispatcher below keeps
 	-- plain aliveCharacter -- a held ability started before the burrow still has to be able to END down there.
 	local character, humanoid, root = Core.CanAct(player)
 	if not character then return end
 	local origin, target, id = a.Origin, a.Target, a.Id
-	if not (validVector(origin) and validVector(target)) or type(id) ~= "number" then return end
+	-- id ~= id refuses a NaN Id (2026-10-19, audit P1-11): the write below raised "table index is NaN" (TerraHandler's fix)
+	if not (validVector(origin) and validVector(target)) or type(id) ~= "number" or id ~= id then return end
 	local ability = VFXLibrary.AbilityById.IcicleShard
 	local now = os.clock()
 	-- One shot per FireInterval on average. The bucket holds a shot and a half, so network jitter that
@@ -856,8 +937,8 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	pcall(function() ping = player:GetNetworkPing() end)
 	-- The speed is what the server sees or what the player may walk at, whichever is more: from a
 	-- standstill the server still reads 0 for the first ~0.2 s while the player is already moving.
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	local allowance = 6 + speed * (0.35 + ping)
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	local allowance = 6 + speed * (0.35 + Core.Lag(ping))
 	if (origin - (head and head.Position or root.Position)).Magnitude > allowance then
 		count("rej_origin")
 		return
@@ -940,6 +1021,11 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	end
 	if blocked(shot, along, humanoid and model or part) then
 		count("rej_blocked")
+		return
+	end
+	-- a body is only hurt by a PAID shot (2026-10-19, audit P1-12 / GC-14: the M1 CastRequest could be skipped)
+	if humanoid and not Core.TakePaidM1(player) then
+		count("rej_unpaid")
 		return
 	end
 	count("hit")
@@ -1381,6 +1467,29 @@ local function clearRebuilt(player, character)
 			end
 		end
 		breakPrison(character)
+	end
+end
+
+-- (2026-10-19, audit P3-05) A reaction that breaks a root (Melt, Shatter: ElementalReactions -> Hooks.BreakRoot) ends every
+-- root on the body, the Deep Freeze prison's and Mirror Cage's included -- so those mechanics end with it, out loud, the way
+-- a clear ends them: the prison breaks for everyone (DeepFreezeEnd), and the body leaves its cage (MirrorCageFree: its
+-- reflections stop, the rest of the cage goes on). They used to stay drawn round a body that could walk away, and the
+-- cage's bolts kept landing on it wherever it went. (Whether a reaction should be able to break an Ultimate's root at all
+-- is the owner's call: see the fix log.)
+do
+	local breakRoot = Core.Hooks.BreakRoot
+	Core.Hooks.BreakRoot = function(humanoid)
+		breakRoot(humanoid)
+		local model = humanoid.Parent
+		if not model then return end
+		local caster = caged[model]
+		local c = caster and cages[caster]
+		if c then
+			for _, v in ipairs(c.Victims) do
+				if v.Model == model then freeFromCage(caster, v) end
+			end
+		end
+		breakPrison(model)
 	end
 end
 

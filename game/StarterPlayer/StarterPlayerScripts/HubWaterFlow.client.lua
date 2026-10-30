@@ -160,11 +160,13 @@ for i, fall in ipairs(FALLS) do
 	for _, at in ipairs(feet) do splash(host, at) end
 end
 
--- the splashes rest while nobody near can see them
+-- the splashes rest while nobody near can see them, and (2026-10-19, audit P6A-11) on Graphics Quality LOW
+local Settings = require(game:GetService("ReplicatedStorage"):WaitForChild("Spellshot"):WaitForChild("SpellshotSettings"))
 local on = true
 RunService.Heartbeat:Connect(function()
 	local camera = workspace.CurrentCamera
 	local near = camera and (camera.CFrame.Position - Tuning.Centre).Magnitude <= Tuning.FarAway or false
+	near = near and Settings.Get("GraphicsQuality") > 1
 	if near ~= on then
 		on = near
 		for _, e in ipairs(emitters) do e.Enabled = near end

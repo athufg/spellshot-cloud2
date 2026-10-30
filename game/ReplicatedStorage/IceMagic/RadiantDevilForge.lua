@@ -703,8 +703,24 @@ function Handle:Xf(pivot, s)
 	self.XP, self.XS = pivot or ZERO, s or 1
 end
 
+-- (2026-10-19, audit P5C-02) forms asked to show but with nothing to show it with: a layer holding triangles and no
+-- part yet (its first build still running, or failed and waiting out FailT). Counted by parts(); Forge.Drawn reads it.
+local unbuilt = 0
+
 local function parts(h)
-	return ((h.S.N > 0) and 1 or 0) + ((h.G.N > 0) and 1 or 0)
+	local S, G = h.S, h.G
+	if (S.N > 0 and not S.Part) or (G.N > 0 and not G.Part) then unbuilt += 1 end
+	return ((S.N > 0) and 1 or 0) + ((G.N > 0) and 1 or 0)
+end
+
+--- (2026-10-19, audit P5C-02) form(...) (any Forge form, or a caller's function drawing several) -> true when every
+--- form it showed has its mesh built, false when one is still building or failed. A forged form replaces a Default
+--- telegraph (the lance's beam, the halo, the column, the arches, the cages), so a caller draws the Default strokes
+--- when this is false: a pending or failed build must not leave the opponent with no tell at all.
+function Forge.Drawn(form, ...)
+	local u = unbuilt
+	form(...)
+	return unbuilt == u
 end
 
 function Handle:Finish(scale)
@@ -1095,6 +1111,28 @@ local function sweep()
 			h:Destroy()
 			globals[key] = nil
 		end
+	end
+end
+
+--- (2026-10-26) MeshBudget's Optional: when a worn skin's essential build asks for room, every spare in the pool and every
+--- hidden form unused for 2 s lets go of its meshes (the next Devil cast builds them again). Before, spares waited out
+--- IdleLife (120 s) and starved the Cryo skin kits after a Devil preview at the Loadout Altar.
+do
+	local mod = script.Parent:FindFirstChild("MeshBudget")
+	local ok, MB = pcall(function() return mod and require(mod) end)
+	if ok and type(MB) == "table" and MB.Optional then
+		MB.Optional(function()
+			while evictSpare() do end
+			local now = os.clock()
+			for key, h in pairs(globals) do
+				if h.Dead then
+					globals[key] = nil
+				elseif not h.Visible and now - h.UsedT > 2 then
+					h:Destroy()
+					globals[key] = nil
+				end
+			end
+		end)
 	end
 end
 
@@ -2135,11 +2173,23 @@ do
 
 	--- _crack_paths (pass 4): 7 jagged cracks out of the pit; one runs to each bonded ally's feet (up to 7), the rest
 	--- round them. Seeded, cached per plant + allies.
-	local crackCache = { key = nil, paths = {} }
+	-- (2026-10-19, audit P5C-18) one entry PER PLANT (up to 4, newest first), compared without building a string: two
+	-- Devil Benedictions at once (2v2, Squad Clash) no longer rebuild both crack sets every frame
+	local crackCache = {}                                -- { { C, G, A = ally points, Paths } }
 	local function crackPaths(c, allies, gs)
-		local key = string.format("%.2f,%.2f,%.2f", c.X, c.Y, c.Z)
-		for _, a in ipairs(allies) do key ..= string.format("|%.1f,%.1f", a.X, a.Z) end
-		if crackCache.key == key then return crackCache.paths end
+		for _, e in ipairs(crackCache) do
+			if e.C == c and e.G == gs and #e.A == #allies then
+				local same = true
+				for i, a in ipairs(allies) do
+					local b = e.A[i]
+					if abs(a.X - b.X) > 0.05 or abs(a.Z - b.Z) > 0.05 then
+						same = false
+						break
+					end
+				end
+				if same then return e.Paths end
+			end
+		end
 		local out = {}
 		local nA = min(#allies, 7)
 		for k = 1, 7 do
@@ -2161,7 +2211,8 @@ do
 			end
 			out[k] = pts
 		end
-		crackCache.key, crackCache.paths = key, out
+		table.insert(crackCache, 1, { C = c, G = gs, A = table.clone(allies), Paths = out })
+		crackCache[5] = nil
 		return out
 	end
 

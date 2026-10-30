@@ -570,7 +570,8 @@ local function floorBelow(from, reach, caster)
 		local hit = workspace:Raycast(from, Vector3.new(0, -reach, 0), params)
 		if not hit then return nil end
 		local model = hit.Instance:FindFirstAncestorOfClass("Model")
-		if model and model:FindFirstChildOfClass("Humanoid") then
+		-- (2026-10-19, audit GC-05) a Bulwark Wall (WallOwner) has a Humanoid but is no body: its top is floor
+		if model and model:FindFirstChildOfClass("Humanoid") and model:GetAttribute("WallOwner") == nil then
 			ex[#ex + 1] = model
 		else
 			return hit.Position
@@ -1336,7 +1337,8 @@ function CrossSlash.Play(character, dir, timing, opts)
 		Until = (not sl.Freeze) and lookEnd or nil,
 		MaxLife = sl.Freeze and 3600 or (S.MaxHold + 2 + lookEnd + T.MaxLifePad),
 		Budget = (type(zd.Budgets) == "table" and zd.Budgets.CrossSlash) and "CrossSlash" or T.Budget,
-		Own = sl.OwnChar,                                       -- your own cast is never thinned by Reduce Enemy VFX
+		-- your own cast is never thinned by Reduce Enemy VFX, nor (2026-10-19, audit P5F-06) a teammate's
+		Own = sl.OwnChar or (type(zd.Friendly) == "function" and zd.Friendly(character) == true),
 		OnEnd = function()
 			if casts[character] == sl then casts[character] = nil end
 			local k = sl.Kick                                   -- a look that ended early lets its held punch go

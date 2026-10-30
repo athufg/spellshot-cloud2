@@ -42,6 +42,11 @@
 	("SpellshotTerraWall", bound only while a wall is drawn -- the contract gives each module its own BulkMoveTo).
 	NOT PORTED (the contract, decision 7): the caster's flinch / recoil / press-down poses, the hitpause, the camera
 	shake. The Blender boulders are not ported either: the hits are whatever really hits the wall.
+	WRAPS (2026-10-25, the ladder's round 2; each on its own skin field, so Default and Obsidian Magma are as before): the
+	wall's stone in the wrap's material (Stone, ChargedRock's grey copies: prewarmed at the raise, the kit's ground plates
+	cloned plain -- they keep the floor's colour), Epic crystals on its pieces (CrystalsBaked: a "Crystal" part the budget
+	shows like the strips), Mythic molten break faces (Core, in ChargedRock), the break's ground ring (Shock) and star
+	embers rising off the standing wall (Drift). The void and the slot stay Default (readability).
 	EVERY NUMBER HERE IS A PROPOSAL (the Blender build's, unless a comment says otherwise).
 ]]
 
@@ -59,7 +64,7 @@ TerraFX_Wall.Tuning = {
 	MaxParts = 160,                 -- visual parts per wall at once (the contract: a third of the Blender peak)
 	MaxStruck = 3,                  -- slabs showing the fine cut at once
 	Late = 0.35,                    -- a one-shot beat (dust, a knock-off's flight) this late is skipped
-	MaxHold = 30,                   -- a wall still standing this long (no WallDrop came) sinks on its own
+	MaxHold = 30,                   -- 2026-10-23: unused; a standing wall waits for the server's WallDrop (stepWall)
 
 	-- THE RAISE (bulwark_wall_bl.py rise_raw: -9 * (1 - outBack(u, 1.2)), u = (t - 0.06) / 0.26; hidden at -9.5 before)
 	RiseAt = 0.06, RiseTime = 0.26, RiseDepth = 9, RiseOver = 1.2, RiseHidden = 9.5,
@@ -122,11 +127,12 @@ local STASH = CFrame.new(0, 5e4, 0)
 local BIND = "SpellshotTerraWall"
 local OPTIONAL = { "Brk", "Lit", "Dead" }
 -- the budget's priorities per optional part, by what the piece is doing (higher shows first)
+-- (2026-10-25, round 2) Crystal: an Epic wrap's crystal on the piece (ChargedRock CrystalsBaked), only where one exists
 local PRIO = {
-	Whole = { Lit = 60, Dead = 25 },
-	Tpl = { Lit = 55, Brk = 30, Dead = 15 },
-	Fly = { Brk = 70, Lit = 45, Dead = 12 },
-	Rest = { Brk = 65, Lit = 40, Dead = 8 },
+	Whole = { Lit = 60, Dead = 25, Crystal = 50 },
+	Tpl = { Lit = 55, Brk = 30, Dead = 15, Crystal = 35 },
+	Fly = { Brk = 70, Lit = 45, Dead = 12, Crystal = 40 },
+	Rest = { Brk = 65, Lit = 40, Dead = 8, Crystal = 30 },
 }
 -- emitter kinds that emit from the host's rim (VFXLibrary: A = AFTERSHOCK_KIT, B = BOULDER_KIT)
 local DISC = { AKick = true, ASkirt = true, AHaze = true, AFront = true, BRing = true, BSettle = true }
@@ -464,6 +470,49 @@ local function loadKit()
 			end
 		end
 	end
+	-- (2026-10-25, round 2) the wrap ladder's Stone and crystals (ChargedRock.KitHint): the ground's plates are the floor,
+	-- not the wall's stone (no grey copy is built for them; Raise clones them plain); a stone's strata height is over
+	-- BW_Origin; its crystal grows out of a face the wall shows -- the front (kit +Z) or the back, whichever half of its
+	-- slab it is in (either for a whole slab), and the top of the top course
+	if type(CR.KitHint) == "function" then
+		local ground = { [W.Origin] = true }
+		for _, list in ipairs({ g.Slot, g.Rim }) do
+			if type(list) == "table" then
+				for _, e in ipairs(list) do
+					if type(e) == "table" and type(e.Name) == "string" then ground[e.Name] = true end
+				end
+			end
+		end
+		local mid, topY = {}, -math.huge     -- [name] = the kit-Z of the middle of the slab the piece is cut from
+		for _, ks in ipairs(kit.Slabs) do
+			topY = math.max(topY, ks.Rest.Y + ks.Size.Y / 2)
+			mid[ks.Name] = ks.Rest.Z
+			for _, c in ipairs(ks.Coarse) do mid[c.Name] = ks.Rest.Z end
+		end
+		if kit.Tpl then
+			local z = 0
+			for _, E in ipairs(kit.Tpl.Pieces) do z += E.KitRest.Z end
+			z /= #kit.Tpl.Pieces
+			for _, E in ipairs(kit.Tpl.Pieces) do mid[E.Name] = z end
+		end
+		local front, back = o:VectorToWorldSpace(Vector3.zAxis), o:VectorToWorldSpace(-Vector3.zAxis)
+		local up = o:VectorToWorldSpace(Vector3.yAxis)
+		pcall(CR.KitHint, model, {
+			Skip = ground,
+			Height = function(stone) return o:PointToObjectSpace(stone.Position).Y end,
+			Faces = function(stone)
+				local r = o:ToObjectSpace(stone.CFrame)
+				local s = stone.Size
+				local dz = r.Z - (mid[stone.Name] or 0)
+				local out = {}
+				if dz > -0.2 then out[#out + 1] = front end
+				if dz < 0.2 then out[#out + 1] = back end
+				local top = r.Y + 0.5 * (math.abs(r.RightVector.Y) * s.X + math.abs(r.UpVector.Y) * s.Y + math.abs(r.LookVector.Y) * s.Z)
+				if top >= topY - 0.45 then out[#out + 1] = up end
+				return out
+			end,
+		})
+	end
 	kitCache = kit
 	return kit
 end
@@ -501,10 +550,15 @@ local function burst(fx, lib, kind, cf, count, scale, radius)
 	if radius then h.Size = Vector3.new(radius * 2, 0.2, radius * 2) end
 	scale = math.max(0.1, math.floor((scale or 1) * 10 + 0.5) / 10)
 	local key = lib .. kind .. "@" .. scale
+	-- (2026-10-25) a wrap's Dust (SkinCatalog Dust) recolours the kind's Default dust roles, its sequence kept
+	-- (ChargedRock.DustColor). fx.Emitters is this cast's own; the wrap's key in the emitter's is belt and braces.
+	local dw = fx.Wrap and fx.Wrap.Skin.Dust and fx.Wrap
+	if dw then key ..= "#" .. dw.Key end
 	local pe = fx.Emitters[key]
 	if not pe then
 		local fn = lib == "A" and VFX.AftershockBurst or VFX.BoulderBurst
-		local ok, made = pcall(fn, DISC[lib .. kind] and h or fx.Point, kind, 0, fx.Thin)
+		local cs = dw and CR.DustColor(dw, lib, kind)
+		local ok, made = pcall(fn, DISC[lib .. kind] and h or fx.Point, kind, 0, fx.Thin, cs and { Color = cs } or nil)
 		if not (ok and made) then return end
 		pe = made
 		pe.Rate = 0
@@ -522,6 +576,13 @@ local function burst(fx, lib, kind, cf, count, scale, radius)
 	local density = (Settings.EffectDensity or 1) * ((fx.Thin and Settings.ThinEnemyVFX) and 0.5 or 1)
 	local n = math.floor(count * density + 0.5)
 	if n > 0 then pe:Emit(n) end
+	-- (2026-10-25) a wrap's added Layers (Rare+): each layer's Share.Wall of this burst's own count, from TerraWrap's
+	-- pooled hosts at `cf` (the raw count: TerraWrap applies Graphics Quality and Reduce Enemy VFX itself, once)
+	local sk = fx.Wrap and fx.Wrap.Skin
+	if sk and sk.Layers then
+		local TW = CR.TerraWrap()
+		if TW then pcall(TW.LayerBurst, sk, "Wall", count, nil, cf, fx.Thin) end
+	end
 end
 
 --- A scuff decal on a thin inert part (its Top), hidden until placed.
@@ -536,6 +597,9 @@ local function newScuff(fx, size, kind)
 	d.Texture = W.Scuff
 	d.Face = Enum.NormalId.Top
 	d.Transparency = 1
+	-- (2026-10-25) a wrap's Scuff (SkinCatalog Scuff) tints the print: Decal.Color3 multiplies the texture
+	local tone = fx.Wrap and fx.Wrap.Skin.Scuff
+	if typeof(tone) == "Color3" then d.Color3 = tone end
 	d.Parent = p
 	p.Parent = fxFolder()
 	local sc = { Part = p, Decal = d, Kind = kind, Alpha = 0 }
@@ -586,6 +650,7 @@ local function rebalance(fx)
 		for _, kind in ipairs(OPTIONAL) do
 			if piece[kind] and prio[kind] then cand[#cand + 1] = { piece, kind, prio[kind] + bonus } end
 		end
+		if piece.Crystal and prio.Crystal then cand[#cand + 1] = { piece, "Crystal", prio.Crystal + bonus } end
 	end
 	for _, s in ipairs(fx.Slabs) do
 		if s.Whole then add(s.Whole, PRIO.Whole, 0) end
@@ -642,6 +707,12 @@ local function addLoose(fx, piece, cf, v, w, kind, t)
 	return b
 end
 
+-- (2026-10-19, audit P5B-05) Reduce Flashing: a broken piece's level and every hit flare at half (the Tomb halves its
+-- levels the same way, TerraFX_Tomb); the standing slabs' damage-stage glow is left whole (it is the wall's health read)
+local function flareK()
+	return (CR and CR.Calm and CR.Calm()) and 0.5 or 1
+end
+
 local function looseLevel(b, t)
 	local L = 0
 	if b.Mode == "at" then
@@ -649,7 +720,7 @@ local function looseLevel(b, t)
 	elseif b.Mode == "after" then
 		L = CR.AfterBreak(t - b.LevelAt)
 	end
-	return L + CR.AfterHit(t - b.HitAt)
+	return (L + CR.AfterHit(t - b.HitAt)) * flareK()
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -730,7 +801,7 @@ local function slabLevel(s, t)
 			L = p + (L - p) * clamp01(a / W.Snap)
 		end
 	end
-	return L + CR.AfterHit(t - s.HitAt)
+	return L + CR.AfterHit(t - s.HitAt) * flareK()
 end
 
 local function placeStanding(fx, s, t)
@@ -1159,10 +1230,24 @@ local function sinkDust(fx, home)
 	end
 end
 
+-- (2026-10-25, round 2) a Mythic wall's Drift on (its own rate, as TerraWrap made it) or off; written on a change only
+local function driftOn(fx, on)
+	local dr = fx.Drift
+	if not dr or dr.On == on then return end
+	dr.On = on
+	pcall(function() dr.E.Rate = on and dr.Rate or 0 end)
+end
+
 --- Everything of a wall gone at once: pieces back to their pools, scuffs, the void and (once its dust is out) the host.
 local function teardown(fx)
 	if fx.Gone then return end
 	fx.Gone = true
+	-- (2026-10-25, round 2) the Drift stops now and its host goes with the dust host (its embers rise out first)
+	local dr = fx.Drift
+	if dr then
+		driftOn(fx, false)
+		task.delay(3, function() pcall(function() dr.Host:Destroy() end) end)
+	end
 	if walls[fx.Key] == fx then walls[fx.Key] = nil end
 	for _, s in ipairs(fx.Slabs) do
 		if s.Whole then CR.Release(s.Whole) end
@@ -1184,6 +1269,7 @@ end
 local function sinkWall(fx, tr, late)
 	fx.State, fx.SinkAt, fx.EndAt = "Sink", tr, tr
 	fx.Late = late
+	driftOn(fx, false)                          -- (2026-10-25, round 2: no-op without a Drift)
 	fx.RimGoneAt = tr + W.SinkLead + W.SinkTime + W.RimLinger
 	for _, b in ipairs(fx.Loose) do b.Hold = math.min(b.Hold, 0.2) end
 	if not late then sinkDust(fx, false) end
@@ -1196,7 +1282,9 @@ local function stepWall(fx, now)
 	fx.Puffs = 0
 	if fx.State == "Up" then
 		local c = fx.Character
-		if t > W.MaxHold or not (typeof(c) == "Instance" and c.Parent) then sinkWall(fx, t, true) end
+		-- 2026-10-23: no MaxHold sink: the server's wall has no time cap (FREE MANA holds it for good), so the look waits
+		-- for its WallDrop as the collider does; only the caster's body gone takes it down here
+		if not (typeof(c) == "Instance" and c.Parent) then sinkWall(fx, t, true) end
 	end
 	if not fx.RaiseDust and t >= W.RiseAt then
 		fx.RaiseDust = true
@@ -1207,6 +1295,8 @@ local function stepWall(fx, now)
 		local i = #moveList + 1
 		moveList[i], moveCFs[i] = fx.Void, fx.K * CFrame.new(0, 0.03, 0)
 	end
+	-- (2026-10-25, round 2) a Mythic wall's Drift: on once it has risen, for as long as it stands
+	if fx.Drift then driftOn(fx, fx.State == "Up" and t >= W.RiseAt + W.RiseTime) end
 	-- the break's wave
 	local changed = false
 	for i = #fx.Pending, 1, -1 do
@@ -1311,9 +1401,15 @@ function TerraFX_Wall.Raise(character, cf, size, t0)
 	local local_ = Players.LocalPlayer
 	local fx = { Character = character, Key = character, CF = cf, K = cf * kit.Turn, T0 = t0, Kit = kit, ServerSize = size,
 		Wrap = CR and CR.WrapOf(character, "BulwarkWall"),   -- the caster's wrap (SkinCatalog), or nil: Default
-		Thin = not (local_ and character == local_.Character), Slabs = {}, Loose = {}, Rim = {}, Scuffs = {}, Pending = {},
+		-- (2026-10-19, audit P5F-06) Reduce Enemy VFX's "an enemy's": VFXLibrary.IsEnemy (a teammate's wall is whole)
+		Thin = if VFX and type(VFX.IsEnemy) == "function" then VFX.IsEnemy(character) else not (local_ and character == local_.Character),
+		Slabs = {}, Loose = {}, Rim = {}, Scuffs = {}, Pending = {},
 		Emitters = {}, State = "Up", HitAt = -math.huge, HitDir = -1, Now = os.clock(), Puffs = 0,
 		Rng = Random.new(math.floor(t0 * 1000) % 2147483647) }
+	-- (2026-10-25, round 2) a wrap's Stone: the kit's grey copies queued now (ChargedRock; cheap once they are built) --
+	-- the slabs cloned below ask for theirs first
+	local sk = fx.Wrap and fx.Wrap.Skin
+	if sk and sk.Stone and type(CR.Prewarm) == "function" then pcall(CR.Prewarm, kit.Model) end
 	local fy, hit = floorAt(cf.Position + Vector3.new(0, 0.5, 0), cf.Position.Y)
 	fx.FloorY = fy
 	local tone = W.PlateTone
@@ -1329,6 +1425,28 @@ function TerraFX_Wall.Raise(character, cf, size, t0)
 	local point = Instance.new("Attachment")
 	point.Parent = host
 	fx.Point = point
+	-- (2026-10-25, round 2) MYTHIC Drift: star embers rising off the standing wall -- TerraWrap's emitter on a host the
+	-- wall's size, rated while the wall stands (stepWall), zeroed at its sink or break, gone with it (teardown)
+	if sk and type(sk.Drift) == "table" then
+		local TW = CR.TerraWrap and CR.TerraWrap()
+		if TW and type(TW.DriftSet) == "function" then
+			local size = typeof(kit.Data.Size) == "Vector3" and kit.Data.Size or Vector3.new(12.3, 8.4, 1.6)
+			local dh = Instance.new("Part")
+			dh.Name = "TerraWallDrift"
+			dh.Anchored, dh.CanCollide, dh.CanQuery, dh.CanTouch, dh.CastShadow = true, false, false, false, false
+			dh.Transparency = 1
+			dh.Size = size
+			dh.CFrame = fx.K * CFrame.new(0, size.Y / 2, 0)
+			dh.Parent = fxFolder()
+			local ok, pe = pcall(TW.DriftSet, sk, dh, fx.Thin)
+			if ok and typeof(pe) == "Instance" and pe:IsA("ParticleEmitter") then
+				fx.Drift = { Host = dh, E = pe, Rate = pe.Rate, On = false }
+				pe.Rate = 0
+			else
+				dh:Destroy()
+			end
+		end
+	end
 	for i, ks in ipairs(kit.Slabs) do
 		local s = { K = ks, Whole = CR.Clone(kit.Model, ks.Name, fx.Wrap), Stage = 0, PrevStage = 0, StageAt = -math.huge,
 			HitAt = -math.huge, JoltAt = -math.huge, JoltAmp = 0, JoltDir = -1, Down = false }
@@ -1348,7 +1466,7 @@ function TerraFX_Wall.Raise(character, cf, size, t0)
 	fx.Void = void
 	if t < W.SlotAt + W.Late then
 		for _, e in ipairs(kit.Slot) do
-			local piece = CR.Clone(kit.Model, e.Name, fx.Wrap)
+			local piece = CR.Clone(kit.Model, e.Name, fx.Wrap, true)   -- (plain: the floor, not the wall's stone)
 			if piece then
 				piece.Stone.Color = tone
 				local R = fx.K.Rotation
@@ -1359,7 +1477,7 @@ function TerraFX_Wall.Raise(character, cf, size, t0)
 		end
 	end
 	for _, e in ipairs(kit.Rim) do
-		local piece = CR.Clone(kit.Model, e.Name, fx.Wrap)
+		local piece = CR.Clone(kit.Model, e.Name, fx.Wrap, true)     -- (plain: the floor, not the wall's stone)
 		if piece then
 			piece.Stone.Color = tone
 			fx.Rim[#fx.Rim + 1] = { D = e, Piece = piece, RollSign = fx.Rng:NextNumber() < 0.5 and -1 or 1 }
@@ -1448,6 +1566,7 @@ function TerraFX_Wall.Drop(character, reason, t0)
 	end
 	fx.State, fx.BreakAt, fx.EndAt, fx.Late = "Broken", td, td, late
 	fx.RimGoneAt = td + W.RimLingerBroken
+	driftOn(fx, false)                          -- (2026-10-25, round 2: no-op without a Drift)
 	-- the wave runs from the worst damage (the slab with the most hits, the latest of those), else the wall's middle
 	local worst = nil
 	for _, s in ipairs(fx.Slabs) do
@@ -1494,6 +1613,16 @@ function TerraFX_Wall.Drop(character, reason, t0)
 		local base = CFrame.new(fx.K * Vector3.new(0, 0.2, 0))
 		burst(fx, "A", "Skirt", base, W.BreakSkirt, 1, 3)
 		burst(fx, "A", "Haze", base, W.BreakHaze, 1, 5)
+		-- (2026-10-25, round 2) MYTHIC Shock: the break's ring on the floor under its worst damage (TerraWrap draws it
+		-- by the settings: thinner / off at LOW, no flash under Reduce Flashing)
+		local sk = fx.Wrap and fx.Wrap.Skin
+		local R = sk and type(sk.Shock) == "table" and type(sk.Shock.Radius) == "table" and tonumber(sk.Shock.Radius.Wall)
+		if R and R > 0 then
+			local TW = CR.TerraWrap and CR.TerraWrap()
+			if TW and type(TW.Shockwave) == "function" then
+				pcall(TW.Shockwave, sk, CFrame.new(c.X, fx.FloorY + 0.03, c.Z), R, fx.Thin)
+			end
+		end
 	end
 	rebalance(fx)
 end

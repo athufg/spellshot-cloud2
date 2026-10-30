@@ -166,6 +166,7 @@
 	  views
 	    ZD.FirstPerson() -> bool (the local camera is the first-person viewmodel view)   ZD.IsLocal(character) -> bool
 	    ZD.Calm() -> bool (Reduce Flashing)   ZD.Density(own) -> number   ZD.CameraCF() -> CFrame
+	    ZD.Friendly(character) -> bool (not an enemy's: pass as Own so a teammate's effect is not thinned; audit P5F-06)
 	  canvases and the driver
 	    ZD.new(name, prewarm?{Spans, Sprites, Lights, Emitters}, opts?{Own, Budget}) -> cv
 	    cv:Begin(t) / cv:End() -> beams, lights / cv:Clear() / cv:Destroy() / cv:Tag(name) / cv:Count(n) /
@@ -1118,6 +1119,20 @@ function ZephyrDraw.IsLocal(character)
 	return p ~= nil and character ~= nil and p.Character == character
 end
 
+--- (2026-10-19, audit P5F-06) this character is NOT an enemy of the local player (VFXLibrary.IsEnemy: yours, a teammate's
+--- in your match, an ally dummy's): what Reduce Enemy VFX spares. A caller passes it as Play's / new's Own -- Own reads
+--- nothing here but Density -- for a teammate's effect, so only an enemy's is thinned. Not a character: false.
+function ZephyrDraw.Friendly(character)
+	if typeof(character) ~= "Instance" then return false end
+	if ZephyrDraw.IsLocal(character) then return true end
+	loadLibs()
+	if vfxLib and type(vfxLib.IsEnemy) == "function" then
+		local ok, enemy = pcall(vfxLib.IsEnemy, character)
+		if ok then return enemy ~= true end
+	end
+	return false
+end
+
 function ZephyrDraw.CameraCF()
 	local c = workspace.CurrentCamera
 	return c and c.CFrame or CFrame.new()
@@ -1966,6 +1981,14 @@ function Canvas:Begin(t)
 	self.CamPos, self.CamLook = camPos, camLook
 	self.T = t or 0
 	self.frame += 1
+	-- (2026-10-19, audit P5E-06) the settings re-read every 30 frames, not only at new(): a long-lived canvas (Wind
+	-- Blade's shared bursts) follows a Graphics Quality or Reduce Enemy VFX change mid-session
+	if self.frame % 30 == 1 then
+		self.Density = ZephyrDraw.Density(self.Own)
+		-- (2026-10-19, audit P5E-22) Graphics Quality ALONE (never the enemy factor, so no hazard is thinned by it):
+		-- every ribbon's span budget x this (LOW halves the Beams of a ribbon; rings keep their exact 90-degree arcs)
+		self.SpanK = clamp(ZephyrDraw.Density(true), 0.5, 1)
+	end
 	self.nSpan, self.nSprite, self.nLight = 0, 0, 0
 	self.Pieces, self.Glints, self.Lights, self.Beams = 0, 0, 0, 0
 	for k in pairs(self.TagPieces) do self.TagPieces[k] = 0 end
@@ -2135,7 +2158,9 @@ local function ribbonCore(cv, pts, wO, Ko, Ki, wI, o, oi)
 	local fadeO = opt(o, "fade", 1)
 	if fadeO <= 0 and not Ki then return 0 end
 	local closed = opt(o, "closed", false)
-	local L = zChain(pts, n, closed, opt(o, "maxSpans", Config.MaxSpans), not opt(o, "straight", false))
+	local ms = opt(o, "maxSpans", Config.MaxSpans)
+	if (cv.SpanK or 1) < 1 then ms = max(1, floor(ms * cv.SpanK + 0.5)) end   -- (2026-10-19, audit P5E-22)
+	local L = zChain(pts, n, closed, ms, not opt(o, "straight", false))
 	if KN < 2 then return 0 end
 	local nO, sO = opt(o, "n", nil), opt(o, "side", nil)
 	local face = (nO == nil and sO == nil)
@@ -2569,6 +2594,12 @@ end
 ----------------------------------------------------------------------------------------------------
 -- LIGHTS (za5.aqua_light / light_set, and RadiantDraw's LightPool)
 ----------------------------------------------------------------------------------------------------
+-- (2026-10-19, audit P5E-14) a block, like the strokes' below: lightWrite and the calm cache stay out of the module top
+-- level. The strokes' block held exactly 200 declared locals; now 177 top-level + 20 = 197 (the module's peak is 198, in
+-- the block above). luau-compile, which folds constant locals, found 6 spare registers there before and 9 now.
+-- calmNow alone stays top-level (the Light pieces further down read it), declared here and filled in inside the block.
+local calmNow
+do
 local function lightWrite(s, p, b, range, col)
 	if s.p ~= p then s.p = p; s.Att.Position = p end
 	if s.b ~= b then s.b = b; s.L.Brightness = b end
@@ -2590,7 +2621,7 @@ end
 
 --- za5.aqua_light + light_set: a soft aqua PointLight of `watts` (the kit's energy) with the two-sine flicker
 local CALM_T, CALM_V = -1, false
-local function calmNow()
+calmNow = function()
 	local now = os.clock()
 	if now - CALM_T > 0.5 then                                      -- the setting read at most twice a second
 		CALM_T, CALM_V = now, calm()
@@ -2612,6 +2643,7 @@ function Canvas:Light(p, watts, o)
 	lightWrite(s, p, b, opt(o, "range", Config.LightRange), opt(o, "color", C.Light3))
 	countL(self, 1, opt(o, "tag", nil))
 	return s.L
+end
 end
 
 ----------------------------------------------------------------------------------------------------

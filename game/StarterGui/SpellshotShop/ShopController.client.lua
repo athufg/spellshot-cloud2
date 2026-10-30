@@ -14,7 +14,9 @@
 	  Fire("page", "Today" | "Catalog" | "Caches" | "Pass")
 	  Fire("segment", "Skin" | "Tint" | "Bundle")      (plural and any case accepted; shows the Catalog)
 	  Fire("sort", "Rarity" | "Element" | "Price")     (any case; shows the Catalog)
-	  Fire("select", itemId | "cache" | "pass")         opens the confirm (opens the shop first if it is closed)
+	  Fire("select", itemId | bundleId | "cache" | "pass")   opens the confirm (opens the shop first if it is closed)
+	(2026-10-26, bundle cards) The Bundles segment shows Catalog.BUNDLES on its own wall (CardKit.buildBundleGrid, no
+	sort control) and a bundle's confirm is its own sheet (CardKit.fillConfirm); still a demo: nothing is charged.
 	  Fire("buy")  Fire("cancel")  Fire("claim")
 	  Fire("theme", "Newsprint" | "Ink")   (any case, a 3+ letter prefix is enough; anything else falls back to Newsprint)
 	  The active theme is the gui attribute Theme (default "Newsprint"): set it in Studio, or at runtime, and it applies.
@@ -192,7 +194,8 @@ local function liftCard(card)
 	card.ZIndex = Z_LIFT
 	if s.fx then
 		if not s.fx.Visible then for _, p in ipairs(s.parts) do p[1][p[2]] = 1 end; s.fx.Visible = true end
-		for _, p in ipairs(s.parts) do play(s, p[1], FADE_IN, { [p[2]] = p[3] }) end
+		-- through fade(): a bundle card's HoverFX holds slabs, whose ink Shadows must not dip the tiles grey (2026-10-26)
+		for _, p in ipairs(s.parts) do fade(s, p, FADE_IN, p[3]) end
 	end
 	if s.up then play(s, s.face, FADE_IN, { Position = s.up }) end
 	if s.stroke then play(s, s.stroke, FADE_IN, { Thickness = s.hoverStroke }) end
@@ -210,7 +213,7 @@ local function dropCard(card)
 	if s.rest then play(s, s.face, FADE_OUT, { Position = s.rest }) end
 	if s.scale then last = play(s, s.scale, FADE_OUT, { Scale = 1 }) end
 	-- the last tween ends the drop: where there is one, a tween a press cannot replace (a fade, the border)
-	for _, p in ipairs(s.parts) do last = play(s, p[1], FADE_OUT, { [p[2]] = 1 }) end
+	for _, p in ipairs(s.parts) do last = fade(s, p, FADE_OUT, 1) or last end
 	if s.stroke then last = play(s, s.stroke, FADE_OUT, { Thickness = s.restStroke }) end
 	if not last then settle(card, s); return end
 	last.Completed:Connect(function(st)
@@ -293,7 +296,7 @@ end
 -- Confirm OPEN: the dim fades 1 -> its built 0.35 (0.18 s Quad Out) while the card pops from PopScale 0.9 to 1
 -- (0.22 s Back Out) and every card element fades 1 -> its built transparency (0.18 s Quad Out). CLOSE reverses it,
 -- quicker: 0.14 s Quad In, card to 0.94, then Visible = false; input is ignored meanwhile, and a select cancels it.
--- No CanvasGroup (it would clip the card's stroke); built values are read once per instance (weak table).
+-- No CanvasGroup (it would clip the card's stroke); built values are read once per instance (modalBase).
 -- Toast: rises 16 px while fading in (0.2 s Quad Out), holds, sinks/fades out (0.25 s Quad In), hidden at 2.2 s;
 -- a new toast replaces an old one through a fading copy. Buy/Cancel press their Face into the Shadow.
 ----------------------------------------------------------------------------------------------------
@@ -379,7 +382,11 @@ end
 -- fillConfirm, which places it by its top-left corner. A scrim dot screen (modal.Dots; v4 builds none) would fade with the scrim.
 -- Cancel / Buy are kit slab buttons: a press moves the button's Face into its Shadow (no scale).
 local modalAnim = { gen = 0, tweens = {} }
-local modalBase = setmetatable({}, { __mode = "k" }) -- instance -> built transparencies (Content is rebuilt per select)
+-- instance -> built transparencies. STRONG keys (2026-10-26): with weak keys the GC could drop a static part's entry while
+-- the card sat faded out, and the next open then read its faded 1 as "built" and left the sheet, its head bar and the
+-- button words invisible (the bundle sheet's many rebuilt parts made the GC run often enough to show it). Content is
+-- rebuilt per select, so openConfirm drops the entries of parts no longer in the card instead.
+local modalBase = {}
 local DIM = modal.BackgroundTransparency
 local scrimDots = modal:FindFirstChild("Dots")
 local DOTS = scrimDots and scrimDots.ImageTransparency or 1
@@ -412,6 +419,7 @@ local function openConfirm()
 	closing = false
 	centred(mCard)
 	for face, up in pairs(pressFaces) do face.Position = up end
+	for x in pairs(modalBase) do if not x:IsDescendantOf(mCard) then modalBase[x] = nil end end -- the old Content's
 	local parts = partsOf(mCard, modalBase)
 	for _, p in ipairs(parts) do p[1][p[2]] = 1 end
 	popScale.Scale = POP_FROM
@@ -575,6 +583,11 @@ local function paintCatalog(animate)
 	end
 	segments:SetAttribute("Selected", state.segment)
 	sortControl:SetAttribute("Selected", state.sort)
+	-- (2026-10-26) a bundle has no single rarity or Element to sort by: on Bundles the sort (and its rule) steps away
+	local sortable = state.segment ~= "Bundle"
+	sortControl.Visible = sortable
+	local rule = filterBar:FindFirstChild("Divider")
+	if rule then rule.Visible = sortable end
 end
 
 --- TopFold: a card the scroller cuts at its top ends on an ink rule; nothing is cut while the wall is at its top
@@ -583,7 +596,11 @@ grid:GetPropertyChangedSignal("CanvasPosition"):Connect(paintTopFold)
 --- the grid is rebuilt from the Catalog module on every change: old cards destroyed, new ones from CardKit.wallCard
 local function rebuildGrid()
 	restAll()
-	K.buildGrid(grid, K.ofKind(Cat.ITEMS, state.segment), SORTS[state.sort])
+	if state.segment == "Bundle" then -- (2026-10-26) bundles have their own cards and wall (Catalog.BUNDLES), no sort
+		K.buildBundleGrid(grid, Cat.BUNDLES, Cat.BUNDLE_GROUPS, Cat.BUNDLE_VALUE)
+	else
+		K.buildGrid(grid, K.ofKind(Cat.ITEMS, state.segment), SORTS[state.sort])
+	end
 	for _, ch in ipairs(grid:GetChildren()) do
 		if isCard(ch) then hook(ch) end
 	end
@@ -815,6 +832,10 @@ function selectThing(id)
 	if id == "cache" then t = { type = "cache", cache = Cat.CACHE }
 	elseif id == "pass" then t = { type = "pass", pass = Cat.PASS }
 	elseif type(id) == "string" and Cat.BYID[id] then t = { type = "item", it = Cat.BYID[id] }
+	elseif type(id) == "string" and Cat.BUNDLE_BYID and Cat.BUNDLE_BYID[id] then
+		-- (2026-10-26) a bundle's sheet; the Roster takes its deduction off the Elements the server says this player owns
+		t = { type = "bundle", b = Cat.BUNDLE_BYID[id], owned = Economy.ParseOwned(player:GetAttribute("OwnedElements")),
+			robux = Cat.BAL.robux }
 	end
 	if not t then warn("[SpellshotShop] select: unknown id " .. tostring(id)); return false end
 	if not state.open then setOpen(true) end
@@ -828,7 +849,9 @@ end
 local function buy()
 	if not modalUp() then return false end -- closed, or already closing: a second click does nothing
 	local what = state.selected
+	local blocked = mCard:GetAttribute("Blocked") -- (2026-10-26) e.g. a Roster Bundle whose every Element is owned
 	closeConfirm()
+	if type(blocked) == "string" and blocked ~= "" then showToast(blocked); return false end
 	gui:SetAttribute("LastBuy", what)
 	showToast("Demo: purchase not connected yet, nothing was charged")
 	return true
@@ -860,6 +883,16 @@ end
 local function buyPack(pack)
 	if (tonumber(pack.ProductId) or 0) <= 0 then
 		showToast("Sparks packs aren't on sale yet")
+		return
+	end
+	-- (2026-10-19, audit P2-13) no prompt while the save can't take the Sparks: ProcessReceipt pays only into a loaded
+	-- save, so a purchase now would charge the Robux and hold the pack until a later join on a healthy server
+	if player:GetAttribute("DataError") == true then
+		showToast("Your save is unavailable on this server, so purchases are paused here")
+		return
+	end
+	if player:GetAttribute("DataLoaded") ~= true then
+		showToast("Your save is still loading, try again in a moment")
 		return
 	end
 	local ok = pcall(function() MarketplaceService:PromptProductPurchase(player, pack.ProductId) end)
@@ -1029,8 +1062,8 @@ if game:GetService("RunService"):IsStudio() then
 	end)
 end
 
--- another menu opening, or the Arena, closes the shop
-for _, a in ipairs({ "QuickPlayOpen", "LoadoutOpen" }) do
+-- another menu opening, or the Arena, closes the shop ((2026-10-19, audit GA-20) the Reactions tablet too, as it closes for the shop)
+for _, a in ipairs({ "QuickPlayOpen", "LoadoutOpen", "ReactionsOpen" }) do
 	player:GetAttributeChangedSignal(a):Connect(function()
 		if player:GetAttribute(a) and state.open then setOpen(false) end
 	end)

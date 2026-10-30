@@ -81,14 +81,18 @@ local Config = require(spellFolder:WaitForChild("SpellshotConfig"))
 ----------------------------------------------------------------------------------------------------
 task.spawn(function()
 	local folder = ReplicatedStorage:WaitForChild("Spellshot", 30)
-	local remote = folder and folder:FindFirstChild("SettingsSync") or folder:WaitForChild("SettingsSync", 30)
+	-- (2026-10-19, audit P5B-20) `folder and A or folder:WaitForChild(...)` indexed a nil folder when it never came
+	local remote = folder and (folder:FindFirstChild("SettingsSync") or folder:WaitForChild("SettingsSync", 30))
 	if not remote then
 		warn("[SettingsRuntime] SettingsSync missing; settings will not be saved this session")
 		return
 	end
 	remote.OnClientEvent:Connect(function(tbl)
-		Settings.Load(tbl)
-		Settings.MarkSaved()          -- what just arrived IS the save; do not send it straight back
+		-- what just arrived IS the save; do not send it straight back -- unless Load kept changes the player made
+		-- before it arrived (2026-10-19, audit P2-09): then the merged whole is due, and goes out on the debounce
+		if not Settings.Load(tbl) then
+			Settings.MarkSaved()
+		end
 	end)
 	remote:FireServer("request")
 	RunService.Heartbeat:Connect(function()
@@ -118,15 +122,24 @@ grade.Parent = Lighting
 -- ~13 L* with nothing crushed, but the palette is already light, so +0.15 clipped 36% of the picture to pure white and
 -- +0.30 clipped 53% and flattened its contrast. The bright half therefore tops out at +0.10.
 local BRIGHT_DOWN, BRIGHT_UP = 0.30, 0.10
-Settings.Bind("Brightness", function(v)
+-- (2026-10-19, audit P5C-11) while an Eclipse's grade is on (UmbraFX sets the client-local Lighting.UmbraGrade) the
+-- slider may darken but not brighten, so a high Brightness cannot cancel the darkness an enemy's Eclipse paints;
+-- the slider's own value is kept and re-applied when the grade lifts.
+local function applyBrightness()
+	local v = Settings.Get("Brightness")
+	local b, c
 	if v <= 50 then
-		grade.Brightness = (v - 50) / 50 * BRIGHT_DOWN
-		grade.Contrast = (50 - v) / 50 * 0.06
+		b = (v - 50) / 50 * BRIGHT_DOWN
+		c = (50 - v) / 50 * 0.06
 	else
-		grade.Brightness = (v - 50) / 50 * BRIGHT_UP
-		grade.Contrast = 0
+		b = (v - 50) / 50 * BRIGHT_UP
+		c = 0
 	end
-end)
+	if Lighting:GetAttribute("UmbraGrade") then b = math.min(b, 0) end
+	grade.Brightness, grade.Contrast = b, c
+end
+Settings.Bind("Brightness", applyBrightness)
+Lighting:GetAttributeChangedSignal("UmbraGrade"):Connect(applyBrightness)
 
 ----------------------------------------------------------------------------------------------------
 -- quality
@@ -142,7 +155,8 @@ local QUALITY = {
 
 Settings.Bind("GraphicsQuality", function(v)
 	local q = QUALITY[v] or QUALITY[3]
-	Lighting.GlobalShadows = q.shadows
+	Settings.QualityShadows = q.shadows
+	Settings.ApplyShadows()           -- (2026-10-19, audit P5F-13) AND the zone's light profile (HubClient)
 	Settings.EffectDensity = q.density
 end)
 
@@ -309,6 +323,9 @@ local HAND_PARTS = { "LeftHand", "RightHand" }
 local function tonesFor(element)
 	local def = Config.Elements[element]
 	if not def then return nil end
+	-- (2026-10-19, audit P5C-01) an Element the safe palette has no entry for (Aqua) keeps its own three: ElementColor's
+	-- gold fallback is no colour of its, and painting it would restyle a whole Element nobody asked to move
+	if not Settings.ElementColors[element] then return def.Base, def.Dark, def.Light end
 	local base = Settings.Get("ColorblindSafe") and Settings.ElementColor(element) or def.Base
 	-- Only the Elements the safe palette actually moves get derived tones. The rest keep the three
 	-- the artist chose, so turning the setting on does not quietly restyle six Elements to fix two.
@@ -319,12 +336,23 @@ end
 local function paint(character, element)
 	local torso, sleeve, hand = tonesFor(element)
 	if not torso then return end
-	for _, list in ipairs({ { TORSO_PARTS, torso }, { SLEEVE_PARTS, sleeve }, { HAND_PARTS, hand } }) do
+	for _, list in ipairs({ { TORSO_PARTS, torso }, { SLEEVE_PARTS, sleeve } }) do   -- (2026-10-27) hands are skin now (UniformAvatar), not repainted
 		for _, name in ipairs(list[1]) do
 			local part = character:FindFirstChild(name)
 			if part and part:IsA("BasePart") then part.Color = list[2] end
 		end
 	end
+end
+
+-- (2026-10-19, audit P5C-01) UMBRA'S DECOY DOUBLE is a server-side copy of the body (workspace.UmbraDecoys, stamped
+-- DecoyOwner = the owner's UserId), so it arrives in the server's colours. Left alone, the safe palette paints the real
+-- Umbra and not the copy, and the setting becomes a decoy detector. The copy is painted as its owner is, on arrival
+-- (before DecoyPeel reads its colours) and again a beat later in case a part lands late.
+local decoyFolder = nil
+local function paintDecoy(decoy)
+	if not decoy:IsA("Model") then return end
+	local owner = Players:GetPlayerByUserId(decoy:GetAttribute("DecoyOwner") or 0)
+	if owner then paint(decoy, owner:GetAttribute("Element") or Config.DefaultLoadout.Element) end
 end
 
 local function repaintAll()
@@ -334,12 +362,39 @@ local function repaintAll()
 			paint(character, p:GetAttribute("Element") or Config.DefaultLoadout.Element)
 		end
 	end
+	if decoyFolder then
+		for _, decoy in ipairs(decoyFolder:GetChildren()) do paintDecoy(decoy) end
+	end
 end
+
+local function watchDecoys(folder)
+	if decoyFolder or not folder:IsA("Folder") then return end
+	decoyFolder = folder
+	for _, decoy in ipairs(folder:GetChildren()) do paintDecoy(decoy) end
+	folder.ChildAdded:Connect(function(decoy)
+		paintDecoy(decoy)
+		task.delay(0.6, function()
+			if decoy.Parent == folder then paintDecoy(decoy) end
+		end)
+	end)
+end
+if workspace:FindFirstChild("UmbraDecoys") then watchDecoys(workspace.UmbraDecoys) end
+workspace.ChildAdded:Connect(function(c)
+	if c.Name == "UmbraDecoys" then watchDecoys(c) end
+end)
 
 local function watchPlayer(p)
 	local function onCharacter(character)
 		-- UniformAvatar's ApplyDescription lands a beat after the character does
 		task.delay(0.6, function()
+			if p.Character == character then
+				paint(character, p:GetAttribute("Element") or Config.DefaultLoadout.Element)
+			end
+		end)
+		-- (2026-10-19, audit P5F-11) and again each time the server says its uniform write has landed (UniformStamp,
+		-- set after the colours): a slow ApplyDescription or an Element change without a respawn no longer leaves the
+		-- server's colours on top of this viewer's paint
+		character:GetAttributeChangedSignal("UniformStamp"):Connect(function()
 			if p.Character == character then
 				paint(character, p:GetAttribute("Element") or Config.DefaultLoadout.Element)
 			end

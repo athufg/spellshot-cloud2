@@ -29,7 +29,9 @@
 	                            decided here).
 	  TECHNIQUE POSITION TRADE  the body nearest the aim line -- ally, enemy or training dummy -- and the caster dissolve for
 	                            DissolveTime, then each is moved to where the other stood, keeping its own facing.
-	                            Precheck: a press with nobody to swap with costs nothing.
+	                            Precheck: a press with nobody to swap with costs nothing. An enemy's Decoy Double counts as
+	                            somebody (2026-10-19, audit P5C-05): the press is paid, and the trade breaks the decoy
+	                            instead of moving anyone.
 	  TECHNIQUE BENEDICTION     HELD (2026-09-30: the owner, "as long as u hold it, it can be used"): the press pays the
 	                            start cost (SpellshotService's held path) and roots the caster (SpeedCapUlt 0, and a jump
 	                            lock through AbilityHandler's JumpLock bindable); WindUp later the staff is planted (T0),
@@ -38,11 +40,13 @@
 	                            (a tap still pulses once), an interrupt, an empty bar, the leash, the floor going, death, a
 	                            clear, a new Epoch, or MaxChannel; the cooldown starts when it ends.
 
-	ALLIES: this game has no teams. An ally is another player's living body, in the caster's Zone (never the Hub) and
-	PARTY (the same Map and DuelMatch: maps are shared by several matches), that the caster may not hurt
-	(CombatCore.IsFriendly) -- so in a 1v1 duel there are none, and Blessing and Benediction fall back to the caster. Once
-	teams exist, IsFriendly's Team clause makes teammates allies with no change here. Position Trade takes a player only
-	from the caster's own party (the opponent, or an ally), and never over a drop (FloorProbe, both ends). The rule is
+	ALLIES: an ally is another player's living body, in the caster's Zone (never the Hub) and PARTY (the same Map and
+	DuelMatch: maps are shared by several matches), that the caster may not hurt (CombatCore.IsFriendly) -- so in a 1v1
+	duel there are none, and Blessing and Benediction fall back to the caster. (2026-10-19, audit P3-24) Team matches
+	exist since 2026-10-18: teammates are allies through Config.MayHurt's MatchTeam clause (IsFriendly -> IsAllyOf), not
+	through Roblox Teams. Position Trade takes a player only from the caster's own MATCH (the opponent, or a teammate) --
+	never a Solo Test stranger on the same map (2026-10-19, audit P1-14) -- and never over a drop (FloorProbe, both ends).
+	The rule is
 	CombatCore.IsAllyOf (2026-09-30), shared by every support kit; it also counts the range's ALLY DUMMIES
 	(ServerScriptService.AllyDummies), so Blessing, Benediction, Halo's share and Position Trade can be practised solo.
 
@@ -159,8 +163,8 @@ local function aimOrigin(player, character, humanoid, root, origin)
 	local head = eyeOf(character, root)
 	if origin == nil then return head end
 	if not Core.ValidVector(origin) then return false end
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid and humanoid.WalkSpeed or 0)
-	if (origin - head).Magnitude > T.LightLance.OriginSlack + speed * (0.35 + pingOf(player)) then return false end
+	local speed = Core.TrailSpeed(root, humanoid and humanoid.WalkSpeed or 0)
+	if (origin - head).Magnitude > T.LightLance.OriginSlack + speed * (0.35 + Core.Lag(pingOf(player))) then return false end
 	return origin
 end
 
@@ -228,7 +232,9 @@ local function floorBelow(model, root, depth)
 end
 
 --- The body nearest the aim line out of the eye (Mark's lock rule): in front, within LockRadius of the line and range
---- of the caster, in sight, and accepted by `accept(model, humanoid)`. Walls, decoys and veiled bodies never.
+--- of the caster, in sight, and accepted by `accept(model, humanoid)`. Walls and veiled bodies never; a Decoy Double
+--- only when `accept` takes it (2026-10-19, audit P5C-05: an enemy's, for Position Trade -- Blessing's ally test never
+--- does), so skipping decoys here no longer tells a Radiant which body is the illusion.
 local function pickOnAim(player, character, root, aimAt, range, lockRadius, accept)
 	local eye = eyeOf(character, root)
 	local aim = Core.ValidVector(aimAt) and (aimAt - eye) or root.CFrame.LookVector
@@ -237,7 +243,7 @@ local function pickOnAim(player, character, root, aimAt, range, lockRadius, acce
 	local best, bestPerp, bestDist = nil, math.huge, math.huge
 	for hum, model in pairs(Core.HumanoidsNear(root.Position, range + 4, character)) do
 		local r = rootOf(model)
-		if r and hum.Health > 0 and model ~= character and not Core.IsWall(model) and not model:GetAttribute("DecoyOwner")
+		if r and hum.Health > 0 and model ~= character and not Core.IsWall(model)
 			and not Core.IsVeiled(model) and accept(model, hum) then
 			local rel = r.Position - eye
 			local along = rel:Dot(aim)
@@ -345,6 +351,7 @@ end
 
 remote.OnServerEvent:Connect(function(player, action, a)
 	if action == "RadiantLanceStop" then
+		if not Core.Allow(player, "LanceStop", 10, 15) then return end   -- (2026-10-19, audit P1-07) no unthrottled reflector
 		local L = lances[player]
 		if L and (type(a) ~= "table" or a.Id == nil or a.Id == L.Id) then
 			stopLance(player, "Released")
@@ -516,7 +523,9 @@ Status.OnLapse(function(humanoid, kind, rec)
 	if healed <= 0 then return end
 	local cc = caster.Character
 	if cc and cc.Parent then cc:SetAttribute("PassiveProc", serverNow()) end
-	broadcast("RadiantOverflow", { Character = humanoid.Parent, Caster = caster.UserId, Amount = healed })
+	-- (2026-10-19, audit P5C-12) the CASTER's Blessing skin, named here: the helper would stamp the recipient's
+	broadcast("RadiantOverflow", { Character = humanoid.Parent, Caster = caster.UserId, Amount = healed,
+		Skin = SkinCatalog.Chosen(caster, "Blessing") })
 end)
 
 ----------------------------------------------------------------------------------------------------
@@ -632,15 +641,27 @@ end)
 ----------------------------------------------------------------------------------------------------
 -- TECHNIQUE: POSITION TRADE
 ----------------------------------------------------------------------------------------------------
---- A body Position Trade may take: a player of the caster's own party (the opponent, or an ally -- never someone in
---- another match on a shared map), a training dummy, or an ally dummy of the caster's (Core.IsAllyOf, 2026-09-30).
+--- A body Position Trade may take: a player of the caster's own match (the opponent, or a teammate -- never someone in
+--- another match on a shared map, nor a Solo Test stranger: audit P1-14), a training dummy, or an ally dummy of the
+--- caster's (Core.IsAllyOf, 2026-09-30).
 --- No other NPC is fair game.
 local function swappable(player, model)
+	-- (2026-10-19, audit P5C-05) an enemy's Decoy Double answers exactly as the body it copies would, so the free
+	-- precheck can no longer tell the two apart; the trade itself then breaks it (castPositionTrade)
+	local decoyOwner = model:GetAttribute("DecoyOwner")
+	if decoyOwner then
+		local owner = Players:GetPlayerByUserId(decoyOwner)
+		return owner ~= nil and owner ~= player and owner.Character ~= nil and owner.Character ~= model
+			and not Core.IsFriendly(player, model) and swappable(player, owner.Character)
+	end
 	if model:GetAttribute("Burrowed") then return false end
 	local other = Players:GetPlayerFromCharacter(model)
 	if other then
 		local zone = player:GetAttribute("Zone")
+		-- (2026-10-19, audit P1-14) and a MATCH: two players in no duel (Solo Test) are one party but may not hurt each
+		-- other, and a server PivotTo of a stranger is griefing. sameParty already makes the two DuelMatch values equal
 		return zone ~= "Hub" and other:GetAttribute("Zone") == zone and sameParty(player, other)
+			and player:GetAttribute("DuelMatch") ~= nil
 	end
 	return model:GetAttribute("TrainingDummy") ~= nil or Core.IsAllyOf(player, model)
 end
@@ -669,6 +690,32 @@ do
 	end
 end
 
+-- 2026-10-23: an ANCHORED range dummy goes back to where it stood TRADE_DUMMY_RETURN s after the swap, once no player
+-- stands on that spot (Cyclone's DummyReturn rule); before, it stayed where the trade left it for the session
+local TRADE_DUMMY_RETURN = 3
+local dummyHome = setmetatable({}, { __mode = "k" })   -- [dummy] = { Pivot, At (its root), Token }, from its FIRST trade
+local function returnTradedDummy(model)
+	local entry = dummyHome[model]
+	if not entry then return end
+	entry.Token += 1
+	local token = entry.Token
+	task.delay(TRADE_DUMMY_RETURN, function()
+		while dummyHome[model] == entry and entry.Token == token and model.Parent do
+			local busy = false
+			for _, pl in ipairs(Players:GetPlayers()) do
+				local r = pl.Character and rootOf(pl.Character)
+				if r and (r.Position - entry.At).Magnitude < 4 then busy = true end
+			end
+			if not busy then
+				dummyHome[model] = nil
+				model:PivotTo(entry.Pivot)
+				return
+			end
+			task.wait(0.5)
+		end
+	end)
+end
+
 local function castPositionTrade(player, character, humanoid, root, payload, role)
 	local target = tradeTarget(player, character, root, payload.Target)
 	if not target or plants[player] or trades[player] then
@@ -690,6 +737,16 @@ local function castPositionTrade(player, character, humanoid, root, payload, rol
 	task.delay(dissolve, function()
 		if trades[player] ~= tr then return end
 		trades[player] = nil
+		-- (2026-10-19, audit P5C-05) the trade reached an enemy's Decoy Double: the illusion fails (UmbraHandler breaks it
+		-- on DecoyTraded and the Tell lights), nobody moves, and the cast stays spent -- the price the real body's swap paid
+		if target:GetAttribute("DecoyOwner") then
+			if Core.Epoch(player) == epoch and player.Character == character and humanoid.Parent and humanoid.Health > 0
+				and target.Parent then
+				target:SetAttribute("DecoyTraded", true)
+			end
+			broadcast("RadiantTradeIn", { Character = character, Other = target, Cancelled = true })
+			return
+		end
 		if Core.Epoch(player) ~= epoch or player.Character ~= character or not (humanoid.Parent and humanoid.Health > 0)
 			or not (target.Parent and tHum.Health > 0 and tRoot.Parent) or not swappable(player, target) then
 			broadcast("RadiantTradeIn", { Character = character, Other = target, Cancelled = true })
@@ -707,12 +764,19 @@ local function castPositionTrade(player, character, humanoid, root, payload, rol
 		local aTo = CFrame.new(b.Position) * (a - a.Position)
 		local bTo = CFrame.new(a.Position) * (b - b.Position)
 		-- each model's pivot keeps its offset from its root (a character's pivot IS its root; a dummy's may not be)
+		-- (2026-10-19, audit P1-03) both are server moves: the movement guard lets each body be (a dummy is not guarded)
+		Core.AllowMove(character)
+		Core.AllowMove(target)
+		if tRoot.Anchored and target:GetAttribute("TrainingDummy") ~= nil and not dummyHome[target] then   -- (2026-10-23)
+			dummyHome[target] = { Pivot = target:GetPivot(), At = tRoot.Position, Token = 0 }
+		end
 		character:PivotTo(aTo * (root.CFrame:Inverse() * character:GetPivot()))
 		target:PivotTo(bTo * (tRoot.CFrame:Inverse() * target:GetPivot()))
 		root.AssemblyLinearVelocity = Vector3.zero
 		if not tRoot.Anchored then tRoot.AssemblyLinearVelocity = Vector3.zero end
 		broadcast("RadiantTradeIn", { Character = character, Other = target, A = aTo.Position, B = bTo.Position,
 			T0 = serverNow() })
+		returnTradedDummy(target)
 	end)
 end
 

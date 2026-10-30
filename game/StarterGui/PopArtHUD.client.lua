@@ -89,17 +89,13 @@ local UI = {
 	Grey = Color3.fromRGB(120, 116, 106),
 }
 
--- Heat Rush's meter climbs the Pyro heat ramp -- Base, Light, WhiteHot, the body glow's own colours
-local HEAT_RAMP = { Color3.fromRGB(242, 92, 13), Color3.fromRGB(255, 199, 77), Color3.fromRGB(255, 244, 214) }
-local function heatColour(h)
-	local pos = math.clamp(h, 0, 1) * 2
-	local i = math.min(1, math.floor(pos))
-	return HEAT_RAMP[i + 1]:Lerp(HEAT_RAMP[i + 2], pos - i)
-end
 
 -- M1 is intentionally absent: it has no cooldown, no cost and no state to show.
 local ROW = { "Primary", "Mobility", "Defense" }
-local KEY_LABEL = { Primary = "F", Mobility = "Q", Defense = "E", Ultimate = "R" }   -- the binds in SpellshotInput
+-- the binds in SpellshotInput: the authored defaults; (2026-10-19, audit P5F-18) the chips follow the live Bind_<role> /
+-- Pad_<role> settings (refreshKeys, below), the pad column while the last input is a gamepad
+local KEY_LABEL = { Primary = "F", Mobility = "Q", Defense = "E", Ultimate = "R" }
+local keyChips = {}   -- [role] = { tab = the KeyTab frame, cap = its label }
 local COOLDOWN_ROLES = ROW
 
 -- on-screen slot sizes, smaller than the authored plate; the plate is 9-sliced so it holds up
@@ -505,15 +501,17 @@ local function buildSlot(role, size, x, isUlt)
 			Name = "Key", AnchorPoint = Vector2.new(0.5, 0),
 			Position = UDim2.new(0.5, 0, 0, -11),
 			Size = UDim2.fromOffset(kw, 22), ZIndex = 8 })
-		caps(tab, { Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, -2),
+		local cap = caps(tab, { Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, -2),
 			TextSize = 10, Text = key, ZIndex = 9 })
+		keyChips[role] = { tab = tab, cap = cap }
 	end
 
 	local charge = image(root, "", { Name = "Charge", AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(size - 16, size - 16),
 		ZIndex = 5, Visible = false })
 
-	-- CHARGE COUNT BADGE, for an ability that holds several uses (Frost Slide's 3 dashes). A flat
+	-- CHARGE COUNT BADGE, for an ability that holds several uses. (2026-10-19, audit GA-08) no ability row defines Charges
+	-- today (Frost Slide's 3 dashes, its first user, is gone), so the badge never shows; kept for a future one. A flat
 	-- white chip with the kit's ink stroke and the same LuckiestGuy numeral as the countdown, tucked
 	-- over the slot's bottom-right corner the way the keybind tab sits over its top edge. Built for
 	-- every row slot and hidden; the per-frame loop shows it only while the character carries a
@@ -552,9 +550,6 @@ local function buildSlot(role, size, x, isUlt)
 	-- logo, so Pyro's for Immolate (applyLoadout sets it). Built for every row slot and hidden; the per-frame loop
 	-- shows them while the character carries StacksMax_<role>, lit up to Stacks_<role>.
 	local pips, pipImages
-	-- HEAT RUSH'S METER: Heat as a bar across the bottom of the slot that climbs the heat ramp as it fills, with
-	-- a white tick where the ranged-hit reduction starts. Shown while the slot holds Heat Rush.
-	local heatBar, heatFill, heatTick
 	if not isUlt then
 		pips = make("Frame", {
 			Name = "Pips", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 1, 0),
@@ -568,22 +563,11 @@ local function buildSlot(role, size, x, isUlt)
 			pipImages[i] = image(pips, "", { Name = "Stack" .. i, LayoutOrder = i,
 				Size = UDim2.fromOffset(28, 28), ScaleType = Enum.ScaleType.Fit, ZIndex = 8 })
 		end
-
-		heatBar = make("Frame", {
-			Name = "Heat", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -7),
-			Size = UDim2.new(1, -20, 0, 7), BackgroundColor3 = UI.Ink, BorderSizePixel = 0, ZIndex = 8, Visible = false,
-		}, root)
-		make("UIStroke", { Color = UI.Ink, Thickness = 2 }, heatBar)
-		heatFill = make("Frame", { Name = "Fill", Size = UDim2.fromScale(0, 1), BackgroundColor3 = UI.Gold,
-			BorderSizePixel = 0, ZIndex = 9 }, heatBar)
-		heatTick = make("Frame", { Name = "Threshold", AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.fromScale(0.6, 0), Size = UDim2.new(0, 2, 1, 0), BackgroundColor3 = UI.White,
-			BorderSizePixel = 0, ZIndex = 10 }, heatBar)
 	end
 
 	return { root = root, glyph = glyph, veilClip = veilClip, count = count,
 		name = nameTag, charge = charge, charges = charges, chargesText = chargesText,
-		pips = pips, pipImages = pipImages, heatBar = heatBar, heatFill = heatFill, heatTick = heatTick,
+		pips = pips, pipImages = pipImages,
 		escape = escape, escapeFill = escapeFill,                 -- (2026-10-18, umbra)
 		size = size, isUlt = isUlt }
 end
@@ -607,6 +591,17 @@ local passiveGem = image(passivePill, "", { Name = "Gem", AnchorPoint = Vector2.
 local passiveText = caps(passivePill, { Name = "Text", AnchorPoint = Vector2.new(0, 0.5),
 	Position = UDim2.new(0, 44, 0.5, 0), Size = UDim2.new(1, -58, 1, 0),
 	TextXAlignment = Enum.TextXAlignment.Left, TextSize = 12, ZIndex = 4 })
+-- (2026-10-19, audit GA-10) THE PASSIVE'S STACKS: a passive that publishes StacksMax_Passive / Stacks_Passive on the
+-- character (Terra's Bedrock, TerraHandler: 5) gets a row of its Element's logos at the pill's right end, lit up to
+-- the count, as Immolate's pips are on a slot. Pips are made as the max needs them; hidden while there is no max.
+local passivePips = make("Frame", {
+	Name = "Pips", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -16, 0.5, 0),
+	Size = UDim2.new(0.5, 0, 0, 20), BackgroundTransparency = 1, ZIndex = 5, Visible = false,
+}, passivePill)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+	HorizontalAlignment = Enum.HorizontalAlignment.Right, VerticalAlignment = Enum.VerticalAlignment.Center,
+	SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 1) }, passivePips)
+local passivePipImages = {}
 
 ----------------------------------------------------------------------------------------------------
 -- responsive scale
@@ -673,6 +668,36 @@ local function applyTextSize()
 	for _, e in ipairs(textBase) do
 		e.o.TextSize = math.max(6, math.floor(e.v * k + 0.5))
 	end
+end
+
+-- (2026-10-19, audit P5F-18) the slot chips show the player's own binds, not a hardcoded F/Q/E/R
+do
+	local UserInputService = game:GetService("UserInputService")
+	local function onPad()
+		local t = UserInputService:GetLastInputType()
+		return t ~= nil and t.Name:find("^Gamepad") ~= nil
+	end
+	local function refreshKeys()
+		local pad = onPad()
+		for role, chip in pairs(keyChips) do
+			local text = Settings.KeyText((pad and "Pad_" or "Bind_") .. role)
+			if chip.cap then chip.cap.Text = text end
+			if chip.tab then chip.tab.Size = UDim2.fromOffset(math.max(30, #text * 8 + 14), 22) end
+		end
+	end
+	for role in pairs(keyChips) do
+		Settings.OnChange("Bind_" .. role, refreshKeys)
+		Settings.OnChange("Pad_" .. role, refreshKeys)
+	end
+	local lastPad = onPad()
+	UserInputService.LastInputTypeChanged:Connect(function()
+		local pad = onPad()
+		if pad ~= lastPad then
+			lastPad = pad
+			refreshKeys()
+		end
+	end)
+	refreshKeys()
 end
 
 applyScale()
@@ -770,6 +795,7 @@ local function applyLoadout()
 	passiveGem.Image = (Art.Gem.Dot and Art.Gem.Dot[pe]) or ""
 	local def = Config.Elements[pe]
 	passiveText.Text = ((def and def.Passive.Name) or ""):upper()
+	for _, pip in ipairs(passivePipImages) do pip.Image = Icons.Element[pe] or "" end   -- (2026-10-19, audit GA-10)
 end
 
 applyLoadout()
@@ -796,7 +822,11 @@ RunService.RenderStepped:Connect(function(dt)
 	local maxHp = (humanoid and humanoid.MaxHealth > 0) and humanoid.MaxHealth or Config.MaxHealth
 	local hFrac = math.clamp(hp / maxHp, 0, 1)
 	if hFrac < lastHealthFrac - 0.002 and _G.SpellshotReactions then
-		_G.SpellshotReactions.Pulse("BurnTick", { Amount = math.ceil((lastHealthFrac - hFrac) * maxHp) })
+		-- (2026-10-19, audit GA-07) any HP loss is not a burn tick: a neutral "Damage" burst once StatusReactions
+		-- advertises one (RX.Handles.Damage), the burn art only until then
+		local RX = _G.SpellshotReactions
+		RX.Pulse((RX.Handles and RX.Handles.Damage) and "Damage" or "BurnTick",
+			{ Amount = math.ceil((lastHealthFrac - hFrac) * maxHp) })
 	end
 	lastHealthFrac = hFrac
 	shownHealth += (hFrac - shownHealth) * math.clamp(16 * dt, 0, 1)
@@ -866,16 +896,6 @@ RunService.RenderStepped:Connect(function(dt)
 				end
 			end
 		end
-		-- Heat Rush's meter
-		if slot.heatBar then
-			local showHeat = slotIds[role] == "HeatRush"
-			slot.heatBar.Visible = showHeat
-			if showHeat then
-				local h = math.clamp(attr(character, "Heat", 0), 0, 1)
-				slot.heatFill.Size = UDim2.fromScale(h, 1)
-				slot.heatFill.BackgroundColor3 = heatColour(h)
-			end
-		end
 
 		-- nobody to target (Detonate with no recent hit): the glyph dims as it does for a cooldown, with no veil or count
 		local targetAttr = TARGET_UNTIL[slotIds[role]]
@@ -885,6 +905,25 @@ RunService.RenderStepped:Connect(function(dt)
 		slot.veilClip.Size = UDim2.new(1, 0, frac, 0)
 		slot.count.Text = remain > 0 and string.format(remain >= 10 and "%d" or "%.1f", remain) or ""
 		slot.glyph.ImageTransparency = (remain > 0 or noTarget) and 0.45 or 0
+	end
+
+	-- (2026-10-19, audit GA-10) the passive's stacks (Bedrock): lit up to Stacks_Passive, dark past it
+	do
+		local maxP = attr(character, "StacksMax_Passive", nil)
+		maxP = (type(maxP) == "number" and maxP >= 1) and math.min(math.floor(maxP), 8) or nil
+		passivePips.Visible = maxP ~= nil
+		if maxP then
+			for i = #passivePipImages + 1, maxP do
+				passivePipImages[i] = image(passivePips, Icons.Element[current.Element] or "", { Name = "Stack" .. i,
+					LayoutOrder = i, Size = UDim2.fromOffset(20, 20), ScaleType = Enum.ScaleType.Fit, ZIndex = 5 })
+			end
+			local lit = attr(character, "Stacks_Passive", 0)
+			for i, pip in ipairs(passivePipImages) do
+				pip.Visible = i <= maxP
+				pip.ImageTransparency = (i <= lit) and 0 or 0.55
+				pip.ImageColor3 = (i <= lit) and UI.White or Color3.fromRGB(60, 52, 48)
+			end
+		end
 	end
 
 	do
@@ -921,12 +960,13 @@ RunService.RenderStepped:Connect(function(dt)
 	local endsAt = player:GetAttribute("RoundEndsAt")
 	if type(endsAt) == "number" then
 		local left = math.max(0, math.ceil(endsAt - workspace:GetServerTimeNow()))
+		-- (2026-10-19, audit GA-09) both sizes x Text Size, as applyTextSize scales every other label
 		roundMid.Text = string.format("%d:%02d", left // 60, left % 60)
-		roundMid.TextSize = 22
+		roundMid.TextSize = math.max(6, math.floor(22 * Settings.Scale("TextSize") + 0.5))
 		roundMid.TextColor3 = (left <= 10) and UI.Red or roundMidColor
 	elseif roundMid.Text ~= "ROUND" then
 		roundMid.Text = "ROUND"
-		roundMid.TextSize = 15
+		roundMid.TextSize = math.max(6, math.floor(15 * Settings.Scale("TextSize") + 0.5))
 		roundMid.TextColor3 = roundMidColor
 	end
 end)
@@ -945,7 +985,12 @@ function HUD.PulseHealthBorder(on)
 	if pulseConn then pulseConn:Disconnect(); pulseConn = nil end
 	if not on then healthBar.pulse.Thickness = 0; return end
 	pulseConn = RunService.RenderStepped:Connect(function()
-		healthBar.pulse.Thickness = 1 + 2 * math.abs(math.sin(os.clock() * 8))
+		-- (2026-10-19, audit GA-11) under Reduce Flashing the border holds steady at its middle width (no 2.5 Hz pulse)
+		if Settings.Get("ReduceFlashing") then
+			healthBar.pulse.Thickness = 2
+		else
+			healthBar.pulse.Thickness = 1 + 2 * math.abs(math.sin(os.clock() * 8))
+		end
 	end)
 end
 
@@ -956,7 +1001,7 @@ function HUD.SetCharge(role, alpha)
 	slot.charge.Visible = true
 	slot.charge.Image = Art.Charge[math.clamp(math.floor(alpha * #Art.Charge) + 1, 1, #Art.Charge)]
 	if alpha >= 1 and _G.SpellshotReactions then
-		_G.SpellshotReactions.Pulse("Ready", { Slot = "SlotUltimate" })
+		_G.SpellshotReactions.Pulse("Ready", { Slot = "Slot" .. role })   -- (2026-10-19, audit GA-08) the role's own slot
 		slot.charge.Visible = false
 	end
 end

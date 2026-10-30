@@ -19,13 +19,16 @@
 	                GustPad { Caster (character), Position (the floor point), T0, Life, Pad (id), Radius }.
 
 	THE PAD. Armed ArmTime (0.26, the look's bloom) after the press, for Life (10) seconds from it.
-	  A STEP      any body -- the caster, allies, enemies, training and ally dummies -- whose root is within Radius (3.4)
-	              of the centre, flat, with its FEET between StepBelow under and StepAbove (3) over the pad's floor. (The
-	              plan's "less than 3 studs over the pad" is read at the feet: a standing R15 root is 3.0 over its floor,
-	              so a root rule would sit exactly on the line.) It is COILED: GustPadStep { Pad, Character, T0, At }
-	              goes out (the step ripple and the pull-in), and the launch comes Coil (0.26) later, At. Players must be
-	              in the caster's Zone and party (CombatCore.SameParty: maps are shared by several matches); Bulwark
-	              Walls, Decoy Doubles and a Skyrider's rider (Holding_<slot> = "Skyrider", on the bird) are never taken.
+	  A STEP      any body -- the caster, enemies, training and ally dummies; never a player the caster may not hurt (a
+	              teammate in a team match, a stranger in a Solo Test: 2026-10-19, audit P1-14 / P5E-04) -- whose root is
+	              within Radius (3.4) of the centre, flat, with its FEET between StepBelow under and StepAbove (3) over the
+	              pad's floor. (The plan's "less than 3 studs over the pad" is read at the feet: a standing R15 root is 3.0
+	              over its floor, so a root rule would sit exactly on the line.) It is COILED: GustPadStep { Pad,
+	              Character, T0, At } goes out (the step ripple and the pull-in), and the launch comes Coil (0.26) later,
+	              At. Players must be in the caster's Zone and party (CombatCore.SameParty: maps are shared by several
+	              matches) and someone the caster may hurt (CombatCore.IsFriendly, Config.MayHurt's rules -- a launch is
+	              crowd control); Bulwark Walls, Decoy Doubles and a Skyrider's rider (Holding_<slot> = "Skyrider", on
+	              the bird) are never taken.
 	  THE LAUNCH  At At, a body still within Radius + CoilSlack (a dash out of the coil escapes it) is thrown STRAIGHT UP
 	              at GustPad.LaunchSpeed() -- the speed that tops out at ApexHeight (19 studs) at workspace.Gravity --
 	              its horizontal velocity cut to GustPad.KeptFlat (a third, at most MaxFlat 8 studs/s):
@@ -40,6 +43,11 @@
 	  LIMITS      each body is locked out of THIS pad from its step until Lockout (1.0 s) after its LANDING (the launch
 	              plus GustPad.FlightTime: a lockout from the launch ran out in mid-air and did nothing); a pad gives
 	              at most MaxLaunches (8): then it is spent ("Spent"). A step that escaped its coil gives its launch back.
+	  KNOCKED     a launched player other than the caster is stamped KnockedUntil (server time) for the launch and its fall
+	              (2026-10-19, audit P4-04): an enemy's pad is not Updraft's air. The caster's own launch is.
+	  LATE JOIN   a player who joins while pads are down hears each live pad once, as its press was announced, with
+	              Resync = true (2026-10-19, audit P5E-19), so the press itself is not played again (once ZephyrGustPad
+	              reads the flag).
 	  THE END     GustPadEnd { Pad, Reason, T0 }: "Expired" (its Life, once no launch is still coiled), "Replaced", "Spent",
 	              "Clear" (CombatCore.ClearPlayer: the arena left, a duel round reset), "Left" (the game). A coiled launch
 	              dies with its pad, except a spent pad's, which only ends once its last launch is thrown. The caster
@@ -115,12 +123,60 @@ local function floorUnder(point)
 	return nil
 end
 
+--- (2026-10-19, audit P1-09 / P5E-15) LINE OF SIGHT for the aimed spot (PyroHandler's inSight, for the Ring of Fire). The
+--- honest client can only pick a spot its camera sees, so the server asks the same of its own copy of the world: from the
+--- caster's eye to the spot -- or to a point a few studs over it, so low cover in front of the spot does not hide it --
+--- nothing solid may stand in between. Bodies never count; a Bulwark Wall does (Core.Blocked's rule). Returns the spot
+--- when it is in sight, else the point just short of the first thing in the way, for spotFor to find the floor under.
+local SIGHT_RISES = { 0.5, 3, 5 }
+local function sightPoint(character, root, spot)
+	local head = character:FindFirstChild("Head")
+	local eye = head and head.Position or (root.Position + Vector3.new(0, 1.5, 0))
+	local list = { character }
+	local fx = Core.FxFolder()
+	if fx then list[#list + 1] = fx end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.RespectCanCollide = true
+	local stop
+	for _, rise in ipairs(SIGHT_RISES) do
+		local d = spot + Vector3.new(0, rise, 0) - eye
+		local len = d.Magnitude
+		if len < 0.5 then return spot end
+		local dir = d / len
+		stop = nil
+		for _ = 1, 8 do
+			params.FilterDescendantsInstances = list
+			local hit = workspace:Raycast(eye, d, params)
+			if not hit then break end
+			local depth = (hit.Position - eye):Dot(dir)
+			if depth >= len - Core.SameSurface then break end
+			local model = hit.Instance:FindFirstAncestorOfClass("Model")
+			if not (model and model:FindFirstChildOfClass("Humanoid")) or model:GetAttribute("WallOwner") then
+				stop = eye + dir * math.max(0, depth - 1)
+				break
+			end
+			list[#list + 1] = model
+		end
+		if not stop then return spot end
+	end
+	return stop
+end
+
 --- The pad's spot for a press aimed at `target` from `root`, or nil (no floor there: refused).
 local function spotFor(root, target)
 	if not Core.ValidVector(target) then return nil end
 	local p = Core.ClampTarget(root, target, range() + T.RangeSlack)
 	local hit = floorUnder(p)
 	if not hit or hit.Normal.Y < T.MinFloorUp then return nil end
+	-- (2026-10-19, audit P1-09 / P5E-15) a floor out of the caster's sight -- behind a wall, or the top of a thin floor
+	-- aimed at from under it -- is looked for again under where the sight line stops (floorUnder starts FloorUp over the
+	-- point it is given, so it starts there): the pad comes back to this side, or the press is refused at no cost
+	local seen = sightPoint(root.Parent, root, hit.Position)
+	if seen ~= hit.Position then
+		hit = floorUnder(seen - Vector3.new(0, T.FloorUp, 0))
+		if not hit or hit.Normal.Y < T.MinFloorUp then return nil end
+	end
 	return hit.Position
 end
 
@@ -213,6 +269,10 @@ local function eligible(pad, model, humanoid)
 		if victim ~= caster then
 			if victim:GetAttribute("Zone") ~= caster:GetAttribute("Zone") then return false end
 			if not Core.SameParty(caster, victim) then return false end
+			-- (2026-10-19, audit P1-14) ...and only a player the caster may hurt: a launch is crowd control, and every other
+			-- CC follows damage's rule (Core.IsFriendly -> Config.MayHurt). SameParty alone took any stranger on the same
+			-- Solo Test map, where players "cannot hurt each other"
+			if Core.IsFriendly(caster, model) then return false end
 			-- a teammate in a team match is left alone (2026-10-18, team mode): teammates put no CC on each other, and this
 			-- check is SameParty's, not Core.IsFriendly's, so Config.MayHurt's teammate rule does not reach it on its own
 			local team = caster:GetAttribute("MatchTeam")
@@ -259,6 +319,11 @@ local function launch(pad, model, now)
 	if victim then
 		-- Hold, not a server-clock Until: the client times it from its own receipt (an Until had passed a ping ago)
 		tell(victim, "GustPadKnock", { Pad = pad.Id, Speed = speed, Hold = hold, T0 = now })
+		-- (2026-10-19, audit P4-04) thrown by someone else's pad is not Updraft's air (ZephyrUpdraftServer); the caster's
+		-- own launch is. `now` is server time here; the 0.3 covers the knock reaching the victim a ping later
+		if victim ~= pad.Player then
+			model:SetAttribute("KnockedUntil", math.max(now + hold + flight + 0.3, model:GetAttribute("KnockedUntil") or 0))
+		end
 	elseif serverOwned(root) then
 		launchDummy(root, speed, hold)
 	elseif root.Anchored then
@@ -393,4 +458,17 @@ end)
 
 Players.PlayerRemoving:Connect(function(player)
 	endPad(player, "Left")
+end)
+
+-- (2026-10-19, audit P5E-19) A client knows a pad only from its GustPad announcement, so one that joins while pads are down
+-- hears each live pad once (the RemoteEvent queues it until AbilityFX is listening), with the press's own T0 so its look
+-- picks up where it is in its life. Resync = true: not a new press -- the caster's body does not play the press again
+-- once ZephyrGustPad reads the flag (until then it does, on that one screen).
+Players.PlayerAdded:Connect(function(newcomer)
+	for _, pad in pairs(pads) do
+		tell(newcomer, "GustPad", {
+			Caster = pad.Character, Position = pad.At, T0 = pad.T0, Life = T.Life, Pad = pad.Id, Radius = pad.Radius,
+			Resync = true,
+		})
+	end
 end)

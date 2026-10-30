@@ -368,17 +368,28 @@ local function fxFolder()
 	return f
 end
 
-local effects, bound = {}, false
+-- (2026-10-19, audit P5B-18) effects.Fail[fn]: what to run if fn errors (addEffect's onFail), so a failed effect's rock
+-- or pieces do not stay in the world. A field of `effects` (its array part is the live list): no new top-level local.
+local effects, bound = { Fail = {} }, false
 local function step()
 	local now = os.clock()
 	for i = #effects, 1, -1 do
-		local ok, keep = pcall(effects[i], now)
-		if not ok or keep == false then table.remove(effects, i) end
+		local fn = effects[i]
+		local ok, keep = pcall(fn, now)
+		if not ok then
+			local onFail = effects.Fail[fn]
+			if onFail then pcall(onFail) end
+		end
+		if not ok or keep == false then
+			effects.Fail[fn] = nil
+			table.remove(effects, i)
+		end
 	end
 end
 
---- Runs fn(now) every frame until it returns false.
-local function addEffect(fn)
+--- Runs fn(now) every frame until it returns false; `onFail` (optional) cleans up if fn errors.
+local function addEffect(fn, onFail)
+	if onFail then effects.Fail[fn] = onFail end
 	table.insert(effects, fn)
 	if not bound then
 		bound = true
@@ -733,12 +744,16 @@ end
 --- it goes out -- stone again.
 local function glowAt(rock, t)
 	local u = rock.U
+	-- (2026-10-19, audit P5B-05) Reduce Flashing (read once per rock): no landing, full-charge or tier flares and no
+	-- flight flicker -- the steady stage glow, as the wrapped rock already draws
+	if rock.Calm == nil then rock.Calm = (Settings and Settings.Get and Settings.Get("ReduceFlashing")) == true end
+	local fl = rock.Calm and 0 or 1
 	local seam = t >= 0.10 and (0.5 + 1.7 * smooth(u)) or 0
 	for _, tm in ipairs(rock.Merges) do
-		if t >= tm and t < tm + 0.08 then seam += 1.2 * (1 - (t - tm) / 0.08) end
+		if t >= tm and t < tm + 0.08 then seam += 1.2 * (1 - (t - tm) / 0.08) * fl end
 	end
 	local full = rock.FullAt
-	if full and t >= full and t < full + 0.16 then seam += 3.0 * (1 - (t - full) / 0.16) end
+	if full and t >= full and t < full + 0.16 then seam += 3.0 * (1 - (t - full) / 0.16) * fl end
 	local c = {}
 	for n, tier in ipairs({ 1 / 3, 2 / 3 }) do
 		local lit = rock.TierAt[n]
@@ -746,7 +761,7 @@ local function glowAt(rock, t)
 			lit = t
 			rock.TierAt[n] = t
 		end
-		c[n] = lit and (1.3 + 1.1 * smooth(u) + 3.0 * math.max(0, 1 - (t - lit) / 0.14)) or 0
+		c[n] = lit and (1.3 + 1.1 * smooth(u) + 3.0 * math.max(0, 1 - (t - lit) / 0.14) * fl) or 0
 	end
 	return seam, c[1], c[2]
 end
@@ -773,6 +788,8 @@ end
 --- A wrapped rock's glow: a static brightness per stage -- the kit's own tiers (Low, Mid from the first, Max from the
 --- second) -- never a flare, a flicker or a pulse; the fissures and seams of a loose piece stay dark until it is locked
 --- in, and the break puts them out a fifth of a second later, as the stone goes cold.
+--- (2026-10-25) ...unless the wrap BREATHES (Pulse, Epic up) or FLOWS (Flow, Mythic): see the block after the stages.
+--- Obsidian Magma has neither, so for it all of the above still holds.
 local function wrapGlow(rock, t)
 	local set = rock.Wrap
 	local stage = (rock.TierAt[2] and "Max") or (rock.TierAt[1] and "Mid") or "Low"
@@ -782,11 +799,17 @@ local function wrapGlow(rock, t)
 		local docked = rock.Broken or (cell.DockedAt ~= nil and t >= cell.DockedAt)
 		local want = (prof and docked) and stage or "Off"
 		for _, e in ipairs(cell.Parts) do
-			if e.Glow ~= want and (e.Kind == "Seam" or e.Kind == "Fissure") then
+			if e.Glow ~= want and (e.Kind == "Seam" or e.Kind == "Fissure" or e.Kind == "Crystal") then
 				e.Glow = want
 				if e.Kind == "Seam" then
 					e.Part.Material = want == "Off" and Enum.Material.SmoothPlastic or Enum.Material.Neon
 					e.Part.Color = want == "Off" and set.Skin.SeamOff or prof.Seam
+				elseif e.Kind == "Crystal" then
+					-- (2026-10-25) a crystal cluster's brightness: the stage's grey (it multiplies the cluster's baked faces),
+					-- Glow.Off while its cell is loose and once the stone goes cold
+					local G = set.Skin.Crystals.Glow
+					local g = (G and G[want]) or 1
+					e.Part.Color = Color3.new(g, g, g)
 				elseif want == "Off" then
 					e.Part.Transparency = 1
 				else
@@ -798,9 +821,47 @@ local function wrapGlow(rock, t)
 			end
 		end
 	end
+	-- (2026-10-25) THE BREATH AND THE FLOW (gated on the wrap's Pulse / Flow): every lit fissure, seam and crystal is
+	-- multiplied by TerraWrap.GlowMul each frame -- its stage's own colour (white for a fissure, as baked: the meshes are
+	-- baked at the peak and only ever dimmed; the stage's Seam; the crystal's stage grey) x the field x the breath.
+	-- GlowMul hands back colours quantised to 1/255, so a part is written only when its colour moves; that cache is
+	-- FxCol / FxAt, never e.Glow, which the stage switch above compares (FxAt: the stage it was written for, so a stage
+	-- change always takes the breath over again). Cold pieces (Off) hold still. TerraWrap's clocks are os.clock() --
+	-- never `t`, which in the aftermath counts from the break. The field is sampled at each cell's place IN THE ROCK
+	-- (cell.Centre, full size): the field still runs across neighbouring cells and drifts on its own clock, but a rock
+	-- flying at 200 studs/s (and tumbling at 12 rad/s) never sweeps through it -- sampled in the world it would flicker.
+	-- (the fields are tested first, so a wrap without them -- Obsidian Magma -- never calls into the new helpers)
+	local skin = set.Skin
+	local fx = (skin.Pulse ~= nil or skin.Flow ~= nil) and TerraWrap.HasGlowFx(skin)
+	if fx then
+		for _, cell in ipairs(rock.Cells) do
+			local pos = cell.Centre
+			for _, e in ipairs(cell.Parts) do
+				local st = e.Glow
+				if st and st ~= "Off" and (e.Kind == "Seam" or e.Kind == "Fissure" or e.Kind == "Crystal") then
+					local col
+					if e.Kind == "Fissure" then
+						col = TerraWrap.GlowMul(skin, pos)
+					elseif e.Kind == "Seam" then
+						col = TerraWrap.GlowMul(skin, pos, prof.Seam)
+					else
+						local G = skin.Crystals.Glow
+						local g = (G and G[st]) or 1
+						col = TerraWrap.GlowMul(skin, pos, Color3.new(g, g, g))
+					end
+					if e.FxCol ~= col or e.FxAt ~= st then
+						e.FxCol, e.FxAt = col, st
+						e.Part.Color = col
+					end
+				end
+			end
+		end
+	end
 	if rock.Light then
 		local near = (rock.Eye and (rock.K or 1) < 0.999) and (0.2 + 0.8 * smooth(((rock.K or 1) - 0.3) / 0.7)) or 1
 		rock.Light.Brightness = prof and prof.Light * (0.25 + 1.25 * set.Glow) * (rock.Thin and 0.8 or 1) * near or 0
+		-- (2026-10-25) ...and the light breathes with the stone (Pulse; no Pulse or Reduce Flashing: PulseK is 1)
+		if prof and fx then rock.Light.Brightness *= TerraWrap.PulseK(skin) end
 	end
 end
 
@@ -979,6 +1040,10 @@ local function decalAt(rock, position, normal, size, texture, spin)
 	d.Face = Enum.NormalId.Top
 	d.Texture = texture
 	d.Transparency = 1
+	-- (2026-10-25) a wrap's Scuff (it multiplies the texture): the divots and the crater in the wrap's own ground, not
+	-- Terra's tan. Default and Obsidian Magma have no Scuff and keep the texture's own colour
+	local scuff = rock.Wrap and rock.Wrap.Skin.Scuff
+	if scuff then d.Color3 = scuff end
 	d.Parent = host
 	host.Parent = fxFolder()
 	return { Host = host, Decal = d }
@@ -1061,6 +1126,37 @@ local function newBoulder(opts)
 			parts[#parts + 1] = { Part = p, Rel = wc.Fissure.Rel, Size = wc.Fissure.Size, Kind = "Fissure",
 				Stages = wc.Fissure, Glow = "Off" }
 		end
+		-- (2026-10-25) RARE: the cell's raw-metal facets -- its best outer faces, copied by TerraWrap into one small mesh
+		-- lifted off the stone (their colour baked, so Part.Color stays white as m1Piece leaves it). Metal and its
+		-- Reflectance only at the wrap's Graphics Quality floor (MinQ); below it, flat SmoothPlastic. Appended after the
+		-- stone (Parts[1] stays the stone), so it rides the cell everywhere -- gather, hold, flight, debris, the sink.
+		if wc and wc.Facet and wrap.Skin.Facets then
+			local F = wrap.Skin.Facets
+			local p = m1Piece({ Source = wc.Facet.Source, Kind = "Facet" })
+			if TerraWrap.Density(nil, F.MinQ) > 0 then
+				local mat = F.Material or "Metal"
+				if type(mat) == "string" then
+					local okM, m = pcall(function() return Enum.Material[mat] end)
+					mat = okM and m or nil
+				end
+				if typeof(mat) == "EnumItem" and mat.EnumType == Enum.Material then p.Material = mat end
+				p.Reflectance = F.Reflectance or 0
+			end
+			parts[#parts + 1] = { Part = p, Rel = wc.Facet.Rel, Size = wc.Facet.Size, Kind = "Facet" }
+		end
+		-- (2026-10-25) EPIC: the violet clusters bursting through the shell -- TerraWrap's shared Neon cluster meshes (flat
+		-- face colours baked at full glow), one entry per placement. Part.Color is their brightness, a grey: Glow.Off while
+		-- the cell is loose or cold, then the rock's stage (wrapGlow). Cosmetic only, like every piece here.
+		if wc and wc.Crystals and wrap.Skin.Crystals then
+			local G = wrap.Skin.Crystals.Glow
+			local off = (G and G.Off) or 1
+			for _, cr in ipairs(wc.Crystals) do
+				local p = m1Piece({ Source = cr.Source, Kind = "Crystal" })
+				p.Material = Enum.Material.Neon
+				p.Color = Color3.new(off, off, off)
+				parts[#parts + 1] = { Part = p, Rel = cr.Rel, Size = cr.Size, Kind = "Crystal", Glow = "Off" }
+			end
+		end
 		rock.Cells[i] = {
 			Centre = src.Centre, Parts = parts,
 			Ts = rng:NextNumber(0, 0.04), Ta = 0.10 + (BS.Core - 0.10) * (n - 1) / math.max(1, #order - 1),
@@ -1102,6 +1198,14 @@ local function newBoulder(opts)
 		light.Shadows = false
 		light.Parent = host
 		rock.Light = light
+	end
+	-- (2026-10-25) RARE+: a wrap's added layers (flecks, motes, twinkles), one emitter per layer on the core, all at
+	-- Rate 0 until a site rates them: the hold's from the gather (gatherStep), the flight's from the Trail and Embers
+	-- (beginFlight / flyBoulder). Never while the rock is drawn in the first-person lens. They go with the model.
+	-- (pcall: this runs in the caller's cast, outside any effect -- a bad layer row must not stop the throw)
+	if wrap and wrap.Skin.Layers then
+		local okL, layers = pcall(TerraWrap.LayerSet, wrap.Skin, host, rock.Thin)
+		rock.Layers = okL and type(layers) == "table" and layers or nil
 	end
 	return rock
 end
@@ -1148,13 +1252,35 @@ local function gatherStep(rock, A, t)
 		h.Size = Vector3.new(8, 0.2, 8)
 		h.Parent = rock.Model
 		rock.Gather = h
-		rock.GatherDust = VFXLibrary.BoulderEmitter(h, "Gather", rock.Thin)
+		-- (2026-10-25) a wrap's Dust recolours the gather's dust (TerraWrap.Particles "Gather"); nil keeps Terra's tan
+		rock.GatherDust = VFXLibrary.BoulderEmitter(h, "Gather", rock.Thin,
+			rock.Wrap and rock.Wrap.Skin.Dust and wrapFx(rock, "Gather") or nil)
 		rock.GatherGrit = VFXLibrary.BoulderEmitter(h, "GatherGrit", rock.Thin, wrapFx(rock, "GatherGrit"))
 	end
 	local on = t >= 0.02 and not rock.Tu
 	local rate = on and (14 + 20 * span(t, 0, BS.ChargeTime)) or 0
 	VFXLibrary.BoulderRate(rock.GatherDust, rate, rock.Thin)
 	VFXLibrary.BoulderRate(rock.GatherGrit, rate * 1.6, rock.Thin)
+	-- (2026-10-25) THE HOLD SITE of a wrap's added layers: a share of the gather's own rate, dust + grit = 2.6 x `rate`
+	-- (the dust's 14 -> 34 a second, the grit's 1.6 x that), taken BEFORE Graphics Quality -- BoulderRate applies it
+	-- to the gather, TerraWrap to the layers, once (so `scaled` is 1); written only when it moves by a whole particle.
+	-- None while the rock is drawn in the first-person lens (k < 0.99: a puff let go there hangs full-size beside it,
+	-- the reason the flight's Trail waits). Out of the lens the core is grown to the rock while it is held, so a layer
+	-- emitted off its surface comes off the stone, not from inside it (nothing else reads the core's size before
+	-- beginFlight sets it for the Trail).
+	if rock.Layers and not rock.Flight then
+		local lens = rock.Eye ~= nil and (rock.K or 1) < 0.99
+		local lr = lens and 0 or math.floor(rate * 2.6 + 0.5)
+		if lr ~= rock.LayerHold then
+			rock.LayerHold = lr
+			TerraWrap.LayerRates(rock.Wrap.Skin, "Hold", rock.Layers, lr, nil, rock.Thin)
+		end
+		local d = FULL * (rock.S or 1)
+		if not lens and math.abs((rock.LayerCore or 0) - d) > 0.02 * d then
+			rock.LayerCore = d
+			rock.Host.Size = Vector3.one * d
+		end
+	end
 	if on then
 		local f = floorUnder(rock, A)
 		local at = f and f.Position or (A - Vector3.new(0, 2, 0))
@@ -1513,13 +1639,22 @@ local function breakBoulder(rock, hit, body, dir, quiet)
 	-- the rock's own emitters stop; its light goes with the glow
 	if rock.Trail then rock.Trail.Enabled = false end
 	if rock.Embers then rock.Embers.Enabled = false end
+	-- (2026-10-25) ...a wrap's added layers and its streak too (what they already let go finishes: the core stays in the
+	-- model until the teardown)
+	if rock.Layers or rock.Streak then
+		rock.LayerFlight = nil
+		for _, pe in pairs(rock.Layers or {}) do
+			if typeof(pe) == "Instance" and pe:IsA("ParticleEmitter") then pe.Enabled = false end
+		end
+		if rock.Streak then rock.Streak.Enabled = false end
+	end
 	VFXLibrary.BoulderRate(rock.GatherDust, 0, rock.Thin)
 	VFXLibrary.BoulderRate(rock.GatherGrit, 0, rock.Thin)
 	local floorHit = floorUnder(rock, hp, body)
 	rock.FloorY = floorHit and floorHit.Position.Y or nil
 	if not quiet then
 		local H = rock.Kit.Half
-		local thinK = rock.Thin and 0.5 or 1
+		local thinK = (rock.Thin and Settings.ThinEnemyVFX) and 0.5 or 1   -- (2026-10-19, audit P5B-16) only under the setting
 		-- chunks: broken out of the rock's body, thrown harder
 		for _ = 1, math.floor(BS.DebrisChunks * thinK + 0.5) do
 			local l = Vector3.new(rng:NextNumber(-0.6, 0.6) * H.X, rng:NextNumber(-0.6, 0.6) * H.Y, rng:NextNumber(-0.5, 0.5) * H.Z)
@@ -1552,10 +1687,17 @@ local function breakBoulder(rock, hit, body, dir, quiet)
 		host.CFrame = CFrame.lookAt(hp + back * 0.3, hp + back * 0.3 + look)
 		host.Parent = fxFolder()
 		rock.ImpactHost = host
-		VFXLibrary.BoulderBurst(host, "Cloud", 21, rock.Thin,
-			{ Shape = Enum.ParticleEmitterShape.Sphere, ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume })
-		VFXLibrary.BoulderBurst(host, "Cloud", 5, rock.Thin, { Shape = Enum.ParticleEmitterShape.Sphere,
-			ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume, Color = ColorSequence.new(Color3.fromRGB(117, 97, 69)) })
+		local cloud = { Shape = Enum.ParticleEmitterShape.Sphere, ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume }
+		local cloudDark = { Shape = Enum.ParticleEmitterShape.Sphere,
+			ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume, Color = ColorSequence.new(Color3.fromRGB(117, 97, 69)) }
+		-- (2026-10-25) a wrap's Dust recolours both clouds (TerraWrap.Particles "Cloud" / "CloudDark": the dark one is
+		-- hard-coded here, so its colour is replaced, not added to)
+		if rock.Wrap and rock.Wrap.Skin.Dust then
+			for name, v in pairs(wrapFx(rock, "Cloud") or {}) do cloud[name] = v end
+			for name, v in pairs(wrapFx(rock, "CloudDark") or {}) do cloudDark[name] = v end
+		end
+		VFXLibrary.BoulderBurst(host, "Cloud", 21, rock.Thin, cloud)
+		VFXLibrary.BoulderBurst(host, "Cloud", 5, rock.Thin, cloudDark)
 		local sparkLook = (back * 0.7 + Vector3.new(0, 0.4, 0)).Unit
 		local sparks = Instance.new("Attachment")
 		sparks.CFrame = host.CFrame:ToObjectSpace(CFrame.lookAt(hp, hp + sparkLook))
@@ -1564,6 +1706,31 @@ local function breakBoulder(rock, hit, body, dir, quiet)
 		local centre = Instance.new("Attachment")
 		centre.Parent = host
 		VFXLibrary.BoulderBurst(centre, "Flash", 1, false, wrapFx(rock, "Flash"))
+		-- (2026-10-25) THE IMPACT SITE of a wrap's added layers: a share of the impact's own bursts, their Default counts
+		-- before Graphics Quality (Cloud 21 + dark Cloud 5 + Spark 16 + Flash 1 + Settle 10 below = 53, so `scaled` is 1),
+		-- thrown back off the break the way the cloud is (the host's up along `look`). pcall: a failure here would leave
+		-- the impact host behind
+		if rock.Wrap and rock.Wrap.Skin.Layers then
+			local at = hp + back * 0.3
+			pcall(TerraWrap.LayerBurst, rock.Wrap.Skin, "Impact", 21 + 5 + 16 + 1 + 10, nil,
+				CFrame.lookAt(at, at + look) * CFrame.Angles(-math.pi / 2, 0, 0), rock.Thin)
+		end
+		-- (2026-10-25) EPIC: a wrap's Shatter -- crystal shards flung out with the debris (TerraWrap.Shatter, its own count,
+		-- Graphics Quality and life), from where the cloud goes, thrown back off the break the same way (up along `look`).
+		-- MYTHIC: a wrap's Shock -- the flat ring on the floor under the break (TerraWrap.Shockwave, Shock.Radius.Boulder),
+		-- only when the break is near a floor (a rock that bursts on a wall high up throws no ring onto the ground below).
+		-- Each only for a wrap that has the field; pcall: a failure here would leave the impact host behind
+		local wsk = rock.Wrap and rock.Wrap.Skin
+		if wsk and wsk.Shatter and TerraWrap and type(TerraWrap.Shatter) == "function" then
+			local at = hp + back * 0.3
+			pcall(TerraWrap.Shatter, wsk, CFrame.lookAt(at, at + look) * CFrame.Angles(-math.pi / 2, 0, 0), rock.Thin)
+		end
+		local shock = wsk and wsk.Shock
+		local shockR = type(shock) == "table" and type(shock.Radius) == "table" and tonumber(shock.Radius.Boulder)
+		if shockR and shockR > 0 and rock.FloorY and hp.Y - rock.FloorY < 6 and TerraWrap
+			and type(TerraWrap.Shockwave) == "function" then
+			pcall(TerraWrap.Shockwave, wsk, CFrame.new(hp.X, rock.FloorY, hp.Z), shockR, rock.Thin)
+		end
 		if rock.FloorY then
 			local fy = rock.FloorY
 			local at = Vector3.new(hp.X, fy + 0.4, hp.Z) + back * 0.8
@@ -1617,7 +1784,12 @@ local function breakBoulder(rock, hit, body, dir, quiet)
 			end
 		end
 	end
-	addEffect(function(now) return aftermath(rock, now) end)
+	addEffect(function(now) return aftermath(rock, now) end, function()      -- (2026-10-19, audit P5B-18)
+		for _, m in ipairs(rock.Marks) do m.Host:Destroy() end
+		if rock.ImpactHost then rock.ImpactHost:Destroy() end
+		if rock.BurstHost then rock.BurstHost:Destroy() end
+		destroyRock(rock)
+	end)
 end
 
 --- What is left of a broken rock, every frame: the glow going out, the flash, the grit, a puff where each big piece
@@ -1720,6 +1892,11 @@ function TerraFX.Charge(getCharge, hand, opts)
 		fadeMarks(rock, now)
 		flushMoves()
 		return true
+	end, function()                                                  -- (2026-10-19, audit P5B-18)
+		if rock.Thrown then return end
+		releaseArm(rock)
+		for _, m in ipairs(rock.Marks) do m.Host:Destroy() end
+		destroyRock(rock)
 	end)
 	return rock
 end
@@ -1748,14 +1925,62 @@ local function beginFlight(rock, origin, v0, dir)
 	rock.Host.Size = Vector3.one * (2.2 * sz)
 	-- (first person, the trail waits until the rock is drawn at its own size: puffs let go at k < 1 would hang full-size
 	-- beside the lens -- flyBoulder switches it on)
-	rock.Trail = VFXLibrary.BoulderEmitter(rock.Host, "Trail", rock.Thin, {
+	local trail = {
 		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1.2 * sz), NumberSequenceKeypoint.new(1, 3.0 * sz) }),
 		Rate = BS.TrailDust,
-	})
+	}
+	-- (2026-10-25) a wrap's Dust recolours the flight's dust (TerraWrap.Particles "Trail"); its size and rate stay these
+	local trailFx = rock.Wrap and rock.Wrap.Skin.Dust and wrapFx(rock, "Trail") or nil
+	if trailFx then
+		for name, v in pairs(trailFx) do
+			if name ~= "Size" and name ~= "Rate" then trail[name] = v end
+		end
+	end
+	rock.Trail = VFXLibrary.BoulderEmitter(rock.Host, "Trail", rock.Thin, trail)
 	rock.Trail.Enabled = not F.FP
 	local ea = Instance.new("Attachment")
 	ea.Parent = rock.Host
 	rock.Embers = VFXLibrary.BoulderEmitter(ea, "Ember", rock.Thin, wrapFx(rock, "Ember"))
+	-- (2026-10-25) THE FLIGHT SITE of a wrap's added layers: a share of the Trail's and the Embers' own rates (60 + 13 a
+	-- second at density 1), read off the two emitters as made -- x EffectDensity, and halved for an enemy's under Reduce
+	-- Enemy VFX -- so that factor goes back to TerraWrap as `scaled` and density is applied once. The hold's rates stop
+	-- here; flyBoulder rates the flight's, and lights the streak, from when the Trail itself shows (k >= 0.99).
+	local skin = rock.Wrap and rock.Wrap.Skin
+	if rock.Layers then
+		TerraWrap.LayerRates(skin, "Flight", rock.Layers, 0, nil, rock.Thin)
+	end
+	-- MYTHIC: the falling star's streak, a Trail across the core (two Attachments, Width apart, the core never turns:
+	-- it is moved by position alone), from that same moment to the break; none below the wrap's Graphics Quality floor
+	local sk = skin and skin.Streak
+	if sk and TerraWrap.Density(rock.Thin, sk.MinQ) > 0 then
+		local w = (sk.Width or 1) / 2
+		local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
+		a0.Name, a1.Name = "StreakTop", "StreakBottom"
+		a0.Position, a1.Position = Vector3.new(0, w, 0), Vector3.new(0, -w, 0)
+		a0.Parent, a1.Parent = rock.Host, rock.Host
+		local cs = sk.Colors or {}
+		local c1 = cs[1] or WHITE
+		local c2 = cs[2] or c1
+		local tr = Instance.new("Trail")
+		tr.Name = "WrapStreak"
+		tr.Attachment0, tr.Attachment1 = a0, a1
+		tr.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, c1), ColorSequenceKeypoint.new(0.5, c2),
+			ColorSequenceKeypoint.new(1, cs[3] or c2) })
+		tr.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) })
+		tr.WidthScale = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0.15) })
+		tr.Lifetime = sk.Life or 0.3
+		tr.LightEmission = sk.LightEmission or 1
+		tr.LightInfluence = 0
+		tr.FaceCamera = true
+		tr.MinLength = 0
+		tr.Enabled = false
+		tr.Parent = rock.Host
+		rock.Streak = tr
+	end
+	if rock.Layers or rock.Streak then
+		rock.LayerFlight = { Rate = rock.Trail.Rate + rock.Embers.Rate,
+			Scaled = math.max(0.01, (Settings.EffectDensity or 1) * ((rock.Thin and Settings.ThinEnemyVFX) and 0.5 or 1)) }
+	end
 	rock.NextChip = BS.Trigger + 0.06
 	rock.Flight = F
 	return F
@@ -1798,9 +2023,16 @@ local function flyBoulder(rock, now, t)
 	queueMove(rock.Host, CFrame.new(project(eye, P, k)))
 	if rock.Light then rock.Light.Range = eye and (8 * k + 1.5) or 8 end
 	if rock.Trail and not rock.Trail.Enabled and k >= 0.99 then rock.Trail.Enabled = true end
+	-- (2026-10-25) ...and a wrap's flight layers and its streak with it (beginFlight left them waiting)
+	local lf = rock.LayerFlight
+	if lf and k >= 0.99 then
+		rock.LayerFlight = nil
+		if rock.Layers then TerraWrap.LayerRates(rock.Wrap.Skin, "Flight", rock.Layers, lf.Rate, lf.Scaled, rock.Thin) end
+		if rock.Streak then rock.Streak.Enabled = true end
+	end
 	-- the glow rides it, flickering; the chips peel off it and fall for real
 	local seam, c2, c3 = glowAt(rock, now - rock.T0)
-	applyGlow(rock, seam * (1 + 0.15 * math.sin(now * 90)), c2, c3, now - rock.T0)
+	applyGlow(rock, seam * (rock.Calm and 1 or (1 + 0.15 * math.sin(now * 90))), c2, c3, now - rock.T0)
 	local rng = rock.Rng
 	local rate = BS.TrailChips * ((rock.Thin and Settings.ThinEnemyVFX) and 0.5 or 1) * (Settings.EffectDensity or 1)
 	-- the film's 45 a second over the film's quarter-second flight is a dozen chips; a throw into the sky flies the whole
@@ -1827,26 +2059,64 @@ end
 --- Builds every wrap a player has chosen for Boulder Shot as soon as it is chosen (their attribute replicates), so
 --- the first cast seen already wears it. TerraWrap.Get only starts a build; it never yields here.
 function TerraFX.WatchWraps()
-	local function watch(pl)
-		local function check()
-			for _, a in ipairs({ "BoulderShot", "BulwarkCharge", "Bedrock" }) do
-				local id = pl:GetAttribute("Skin_" .. a)
-				if type(id) == "string" and id ~= "Default" then wrapFor(id, boulderKit(), pl == Players.LocalPlayer) end
+	-- (2026-10-25) THE BAKED KITS' MATERIAL, warmed for the caster's own wrap: a wrap with a Stone (SkinCatalog: the Wall,
+	-- Tomb and Aftershock stones as grey copies in the wrap's tones, ChargedRock) has its kits' stones queued the moment it
+	-- is worn (ChargedRock.Prewarm: in the background, low priority, under MeshBudget), so its first Bulwark Wall, Earthen
+	-- Tomb and Aftershock already show the material rather than the tint a piece keeps until its copy is built. Each kit
+	-- only where Stone.Kits lists it; nothing for Default or a wrap without Stone. The copies are the same for every wrap,
+	-- so a switch re-queues only what is not built (ChargedRock's own bookkeeping).
+	local function prewarmStone(pl, S)
+		task.spawn(function()
+			local kits = {}
+			pcall(function()
+				for ability, kitName in pairs({ BulwarkWall = "TerraWall2", EarthenTomb = "TerraTomb2", Aftershock = "TerraAftershock" }) do
+					local sid = S.Chosen(pl, ability)
+					local sk = type(sid) == "string" and sid ~= "Default" and S.Resolve("Terra", ability, sid)
+					local st = type(sk) == "table" and type(sk.Stone) == "table" and sk.Stone
+					if st and type(st.Kits) == "table" and st.Kits[kitName] then kits[#kits + 1] = kitName end
+				end
+			end)
+			if #kits == 0 then return end
+			local folder = ReplicatedStorage:WaitForChild(MESH_FOLDER, 30)
+			local okC, CR = pcall(function() return require(ReplicatedStorage:WaitForChild("IceMagic"):WaitForChild("ChargedRock")) end)
+			if not (folder and okC and type(CR) == "table" and type(CR.Prewarm) == "function") then return end
+			for _, kitName in ipairs(kits) do
+				local kit = folder:FindFirstChild(kitName)
+				-- the Wall's kit is read first (newLook: what its first raise does anyway), so its ChargedRock.KitHint is
+				-- in before the walk: the hint Skips the kit's ground plates (the floor, never dressed), which a walk
+				-- without it would queue for grey copies nothing ever wears
+				if kit and kitName == "TerraWall2" then pcall(newLook, "TerraFX_Wall") end
+				if kit then pcall(CR.Prewarm, kit) end
 			end
+		end)
+	end
+	local function watch(pl)
+		-- (2026-10-25) the player's one Terra wrap (Chosen: ElementWrap_Terra while they are Terra, or the character's
+		-- WrapStudio in Studio), not a Skin_<ability> per ability any more
+		local function check()
+			local ok, S = pcall(require, ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("SkinCatalog"))
+			if not ok then return end
+			local id = S.Chosen(pl, "BoulderShot")
+			if type(id) == "string" and id ~= "Default" then wrapFor(id, boulderKit(), pl == Players.LocalPlayer) end
+			-- (2026-10-25) ...and, for the caster's own, their wrap's Stone kits (above)
+			if pl == Players.LocalPlayer and type(id) == "string" and id ~= "Default" then prewarmStone(pl, S) end
 		end
-		for _, a in ipairs({ "BoulderShot", "BulwarkCharge", "Bedrock" }) do
-			pl:GetAttributeChangedSignal("Skin_" .. a):Connect(check)
-		end
-		-- the caster's own: every Terra wrap starts building the moment they are Terra (2026-10-10: built only on the
-		-- pick, the first casts after it drew Default while it built), so it is ready before they open WRAPS
+		pl:GetAttributeChangedSignal("ElementWrap_Terra"):Connect(check)
+		pl:GetAttributeChangedSignal("Element"):Connect(check)
+		-- the caster's own: their wrap starts building the moment they are Terra (2026-10-10: built only on the pick, the
+		-- first casts after it drew Default while it built), so it is ready before the first cast
 		if pl == Players.LocalPlayer then
 			local function own()
 				if pl:GetAttribute("Element") ~= "Terra" then return end
 				local ok, S = pcall(require, ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("SkinCatalog"))
 				if not ok then return end
-				for _, id in ipairs(S.List("Terra", "BoulderShot")) do
-					if id ~= "Default" then wrapFor(id, boulderKit(), true) end
-				end
+				-- (2026-10-25) the WORN wrap only, no longer every id in ElementWraps.Terra: with the ladder's four wraps
+				-- listed that was five full sets (~12 EditableMesh units each) against the ~14 a client has free -- the
+				-- prewarm alone filled the budget, and its failed builds kept retrying on their backoff. A new pick builds on
+				-- its ElementWrap_Terra change (check, above), so the first casts after a switch may draw Default while it
+				-- builds (a few seconds).
+				local id = S.Chosen(pl, "BoulderShot")
+				if type(id) == "string" and id ~= "Default" then wrapFor(id, boulderKit(), true) end
 			end
 			pl:GetAttributeChangedSignal("Element"):Connect(own)
 			own()
@@ -1920,6 +2190,9 @@ function TerraFX.FireBoulder(origin, dir, charge, exclude, from, onHit, wrap)
 		flyBoulder(rock, now, t)
 		flushMoves()
 		return true
+	end, function()                                                  -- (2026-10-19, audit P5B-18)
+		for _, m in ipairs(rock.Marks) do m.Host:Destroy() end
+		destroyRock(rock)
 	end)
 end
 
@@ -1966,7 +2239,7 @@ function TerraFX.BulwarkTrail(character, alive, wrap)
 	local torso = character:FindFirstChild("UpperTorso") or root
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local own = Players.LocalPlayer ~= nil and character == Players.LocalPlayer.Character
-	local thin = not own
+	local thin = not own and (VFXLibrary.IsEnemy == nil or VFXLibrary.IsEnemy(character))   -- (2026-10-19, audit P5F-06)
 	-- the caster's wrap: from the broadcast for somebody else's charge, from their own choice for the caster's
 	wrap = wrapFor(wrap, boulderKit(), own) or (wrap == nil and wrapOf(character, "BulwarkCharge", own)) or nil
 	local fullSpeed = T.BulwarkCharge.Distance / T.BulwarkCharge.Time
@@ -1997,13 +2270,27 @@ function TerraFX.BulwarkTrail(character, alive, wrap)
 		local stage = (sp >= 0.75 and "Max") or (sp >= 0.35 and "Mid") or "Low"
 		for _, p in ipairs(plates) do
 			plateStage(p.plate, p.locked and stage or nil)
+			-- (2026-10-25) a wrap's crystals and breathing / flowing seam (plate.GlowStep, only on a plate that has them),
+			-- its field sampled at the plate's place on the torso so a running charge does not sweep through it. pcall:
+			-- an error in this effect would leave the armour in the world
+			if p.plate.GlowStep then pcall(p.plate.GlowStep, p.plate, p.locked and stage or nil, p.at) end
 			local u = math.clamp((now - p.born) / 0.09, 0, 1)
 			local cf = body * CFrame.new(p.at * (1 + 1.2 * (1 - u))) * CFrame.Angles(0, p.yaw, 0)
 			placeRock(p.plate, cf)
 			if u >= 1 and not p.locked then
 				p.locked = true
 				if not own then
-					VFXLibrary.TerraSpark(cf.Position + cf.LookVector * 0.25, cf.LookVector, 0.9, thin, wrapFx({ Wrap = wrap }, "Chips"))
+					-- (2026-10-25) a wrap's skin is the clink's palette: its Burst on the comic burst, its Dust under the chips
+					VFXLibrary.TerraSpark(cf.Position + cf.LookVector * 0.25, cf.LookVector, 0.9, thin, wrapFx({ Wrap = wrap }, "Chips"),
+						wrap and wrap.Skin or nil)
+					-- (2026-10-25) THE PLATE SITE of a wrap's added layers: a share of the clink's own chips (TerraSpark's 5,
+					-- before Graphics Quality, so `scaled` is 1), off the plate's face like them; only where Default's chips
+					-- go off (never on the caster's own plates, which are not drawn for them)
+					if wrap and wrap.Skin.Layers and TerraWrap then
+						local at = cf.Position + cf.LookVector * 0.25
+						pcall(TerraWrap.LayerBurst, wrap.Skin, "Plate", 5, nil,
+							CFrame.lookAt(at, at + cf.LookVector) * CFrame.Angles(-math.pi / 2, 0, 0), thin)
+					end
 				end
 			end
 		end
@@ -2015,7 +2302,8 @@ function TerraFX.BulwarkTrail(character, alive, wrap)
 			local from = root.Position + root.CFrame.RightVector * 0.55 * foot
 			local hit = workspace:Raycast(from, Vector3.new(0, -(root.Size.Y * 0.5 + hip + 2), 0), params)
 			if hit then
-				VFXLibrary.TerraDustKick(hit.Position + Vector3.new(0, 0.15, 0), -root.CFrame.LookVector, thin)
+				-- (2026-10-25) ...in the wrap's Dust (its skin is the palette; Default's tan without one)
+				VFXLibrary.TerraDustKick(hit.Position + Vector3.new(0, 0.15, 0), -root.CFrame.LookVector, thin, wrap and wrap.Skin or nil)
 			end
 		end
 		return true
@@ -2026,8 +2314,9 @@ end
 --- geometry rather than a glow -- the Element's own version of the impact-burst the other kits stamp.
 function TerraFX.BulwarkHit(position, dir, thin, wrap)
 	libs()
-	-- a wrap (the broadcast's): obsidian spikes in the wrap's bands, ink #080E1A, obsidian chunks and ember grit; the
-	-- dust burst stays Terra's tan
+	-- a wrap (the broadcast's): obsidian spikes in the wrap's bands, ink #080E1A, obsidian chunks and ember grit -- and
+	-- (2026-10-25) the comic burst in the wrap's own Burst colours too (its skin is the palette): no Terra tan left on a
+	-- wrapped knockdown. A wrap without Burst keeps the tan burst.
 	wrap = wrapFor(wrap, boulderKit(), not thin)
 	local fwd = (typeof(dir) == "Vector3" and dir.Magnitude > 0.1) and dir.Unit or Vector3.zAxis
 	local right = fwd:Cross(Vector3.yAxis)
@@ -2053,11 +2342,37 @@ function TerraFX.BulwarkHit(position, dir, thin, wrap)
 	end
 	if VFXLibrary.TerraRockDebris then
 		VFXLibrary.TerraRockDebris(position, thin == true, 18, 12, fwd,
-			wrap and { Chunks = wrapFx({ Wrap = wrap }, "Chunks"), Grit = wrapFx({ Wrap = wrap }, "Grit") } or nil)
+			wrap and { Chunks = wrapFx({ Wrap = wrap }, "Chunks"), Grit = wrapFx({ Wrap = wrap }, "Grit") } or nil,
+			wrap and wrap.Skin or nil)
 	end
 	-- VFX polish: the CONTACT -- the flat comic burst right where the shoulder landed, and a camera punch for
 	-- whoever is near it (Camera Shake scales it; Reduce Flashing takes it away)
-	VFXLibrary.TerraBurst(position - fwd * 0.5 + up * 0.3, 3.6, thin == true)
+	VFXLibrary.TerraBurst(position - fwd * 0.5 + up * 0.3, 3.6, thin == true, wrap and wrap.Skin or nil)
+	-- (2026-10-25) MYTHIC: a wrap's Shock -- the flat ring on the floor under the knockdown (TerraWrap.Shockwave, at
+	-- Shock.Radius.BulwarkHit), the floor found straight down from the contact (the FX folder and every player looked
+	-- through, a dummy too). Only for a wrap with Shock: Default and the rest draw nothing new. pcall: it is only a look
+	local shock = wrap and wrap.Skin.Shock
+	local shockR = type(shock) == "table" and type(shock.Radius) == "table" and tonumber(shock.Radius.BulwarkHit)
+	if shockR and shockR > 0 and TerraWrap and type(TerraWrap.Shockwave) == "function" then
+		pcall(function()
+			local list = { fxFolder() }
+			for _, pl in ipairs(Players:GetPlayers()) do
+				if pl.Character then list[#list + 1] = pl.Character end
+			end
+			floorParams.FilterDescendantsInstances = list
+			local from = position + Vector3.new(0, 1, 0)
+			for _ = 1, 3 do
+				local hit = workspace:Raycast(from, Vector3.new(0, -9, 0), floorParams)
+				if not hit then return end
+				local model = hit.Instance:FindFirstAncestorOfClass("Model")
+				if not (model and model:FindFirstChildOfClass("Humanoid")) then
+					TerraWrap.Shockwave(wrap.Skin, CFrame.new(hit.Position), shockR, thin == true)
+					return
+				end
+				floorParams:AddToFilter(model)
+			end
+		end)
+	end
 	punchNear(position, 0.5, 28)
 	local born = os.clock()
 	addEffect(function(now)
@@ -2218,9 +2533,67 @@ local function curvedPlate(size, tone, own, variant, scale, wrap)
 			if own then VFXLibrary.RegisterProximityFade(crack) end
 			pieces[2] = { part = crack, cf = MESH_TURN, pivot = true, crack = true }
 		end
+		-- (2026-10-25) EPIC: the wrap's crystal clusters bursting through the plate -- the set's shared Neon cluster
+		-- meshes, each placed like the seam: a clone whose PivotOffset (TerraWrap's) lands it on the plate's outer face
+		-- when it is pivoted to the plate's pivot, sized with the plate. Cold grey (Glow.Off) until the plate locks.
+		local crystals, cold = nil, nil
+		local skin = wrap and wrap.Skin
+		local list = skin and skin.Crystals and wrap.PlateCrystals and wrap.PlateCrystals[variant]
+		if list and #list > 0 then
+			local G = skin.Crystals.Glow
+			local off = (G and G.Off) or 1
+			cold = Color3.new(off, off, off)
+			crystals = {}
+			for _, e in ipairs(list) do
+				local c = e.Source:Clone()
+				c.Anchored, c.CanCollide, c.CanQuery, c.CanTouch, c.CastShadow = true, false, false, false, false
+				c.Material = Enum.Material.Neon
+				c.Transparency = 0
+				if e.PivotOffset then c.PivotOffset = e.PivotOffset end
+				c.Size = (e.Size or c.Size) * scale
+				c.Color = cold
+				c.Parent = model
+				if own then VFXLibrary.RegisterProximityFade(c) end
+				crystals[#crystals + 1] = c
+				pieces[#pieces + 1] = { part = c, cf = MESH_TURN, pivot = true, crystal = true }
+			end
+		end
+		-- ...and what drives them each frame, called next to plateStage (Bulwark Charge's loop, Bedrock's): the crystals'
+		-- grey by the plate's stage, and -- the wrap breathing (Pulse) or flowing (Flow) -- the seam and the crystals x
+		-- TerraWrap.GlowMul at `pos` (the plate's place on the body, never the world: the body runs). GlowMul's colours
+		-- are quantised, so a part is written only when its colour moves. A plate with neither has no GlowStep at all.
+		local fx = skin ~= nil and (skin.Pulse ~= nil or skin.Flow ~= nil) and TerraWrap ~= nil and TerraWrap.HasGlowFx(skin)
+		local glowStep = nil
+		if crystals or (crack and fx) then
+			local G = skin.Crystals and skin.Crystals.Glow
+			-- (2026-10-25, review) the seam's breath and flow multiply its OWN colour as cloned -- its static look, which
+			-- plateStage never writes and every other wrap's seam shows -- as the boulder's Seam takes prof.Seam (white
+			-- here drew an Epic / Mythic plate seam brighter than its stage whenever the template is not white); and a
+			-- stage change (plateStage's ApplyMesh) always takes it over again, as the boulder's FxAt does
+			local seamBase = crack and crack.Color
+			glowStep = function(plate, stage, pos)
+				local c = plate.Crack
+				if c and fx and stage then
+					local col = TerraWrap.GlowMul(skin, pos, seamBase)
+					if plate.SeamCol ~= col or plate.SeamAt ~= stage then
+						plate.SeamCol, plate.SeamAt = col, stage
+						c.Color = col
+					end
+				end
+				if plate.Crystals then
+					local g = (G and G[stage or "Off"]) or 1
+					local col = Color3.new(g, g, g)
+					if fx and stage then col = TerraWrap.GlowMul(skin, pos, col) end
+					if plate.CrystalCol ~= col then
+						plate.CrystalCol = col
+						for _, cr in ipairs(plate.Crystals) do cr.Color = col end
+					end
+				end
+			end
+		end
 		model.Parent = fxFolder()
 		return { Model = model, Pieces = pieces, Own = own, Mesh = true, Variant = variant, Scale = scale, Wrap = wrap,
-			Crack = crack, Cracks = cracks }
+			Crack = crack, Cracks = cracks, Crystals = crystals, GlowStep = glowStep, CrystalCol = cold }
 	end
 	local B = T.Bedrock
 	size = size * scale
@@ -2275,8 +2648,13 @@ end
 local SkinCatalog = nil
 wrapOf = function(character, ability, own)
 	local plr = character and Players:GetPlayerFromCharacter(character)
-	if not plr then return nil end
 	SkinCatalog = SkinCatalog or require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForChild("SkinCatalog"))
+	if not plr then
+		-- (2026-10-25) Studio: a test rig's WrapStudio previews any Terra wrap (a staged one included)
+		local ws = game:GetService("RunService"):IsStudio() and typeof(character) == "Instance" and character:GetAttribute("WrapStudio")
+		local w = type(ws) == "string" and SkinCatalog.Skins[ws]
+		return (type(w) == "table" and w.Wrap == "Terra") and wrapFor(ws, boulderKit(), own) or nil
+	end
 	return wrapFor(SkinCatalog.Chosen(plr, ability), boulderKit(), own)
 end
 
@@ -2328,7 +2706,17 @@ local function dropPlate(plate, out, delay, thin)
 				p.axis = Vector3.new(rnd:NextNumber(-1, 1), rnd:NextNumber(-1, 1), rnd:NextNumber(-1, 1)).Unit
 				p.spin = rnd:NextNumber(4, 9)
 			end
-			if not plate.Own then VFXLibrary.TerraSpark(at + out * 0.3, out, 0.9, thin, wrapFx(plate, "Chips")) end
+			if not plate.Own then
+				-- (2026-10-25) a wrap's skin is the break's palette (its Burst, its Dust under the chips), as the clinks'
+				VFXLibrary.TerraSpark(at + out * 0.3, out, 0.9, thin, wrapFx(plate, "Chips"), plate.Wrap and plate.Wrap.Skin or nil)
+				-- (2026-10-25) THE PLATE SITE of a wrap's added layers, as the clinks: a share of TerraSpark's 5 chips (before
+				-- Graphics Quality: `scaled` 1), off the break with them. pcall: this effect has no clean-up of its own
+				if plate.Wrap and plate.Wrap.Skin.Layers and TerraWrap then
+					local p0 = at + out * 0.3
+					pcall(TerraWrap.LayerBurst, plate.Wrap.Skin, "Plate", 5, nil,
+						CFrame.lookAt(p0, p0 + out) * CFrame.Angles(-math.pi / 2, 0, 0), thin)
+				end
+			end
 		end
 		local t = now - born
 		local k = t < 0.38 and 1 or 1 - (t - 0.38) / 0.2
@@ -2357,7 +2745,9 @@ local function inkPulse(shell)
 	local copies = {}
 	for _, plate in ipairs(shell.Plates) do
 		for _, e in ipairs(plate.Pieces) do
-			if e.crack then continue end
+			-- (2026-10-25: nor a wrap's crystals -- their own Z is not the plate's back, so a copy pushed along it could
+			-- land in front of them)
+			if e.crack or e.crystal then continue end
 			local c = e.part:Clone()
 			for _, ch in ipairs(c:GetChildren()) do ch:Destroy() end
 			c.Color = INK_COL
@@ -2401,7 +2791,7 @@ function TerraFX.Bedrock(character, stacks, wrap)
 	libs()
 	local B = T.Bedrock
 	local own = Players.LocalPlayer ~= nil and character == Players.LocalPlayer.Character
-	local thin = not own
+	local thin = not own and (VFXLibrary.IsEnemy == nil or VFXLibrary.IsEnemy(character))   -- (2026-10-19, audit P5F-06)
 	if stacks <= 0 then
 		clearShell(character, thin)
 		return
@@ -2449,11 +2839,23 @@ function TerraFX.Bedrock(character, stacks, wrap)
 		if not plate.Locked and (i < n or u >= 1) then
 			plate.Locked = true
 			if i == n and not own then
-				VFXLibrary.TerraSpark(at + out * 0.3, out, 1.1, thin, wrapFx(shell, "Chips"))
+				-- (2026-10-25) a wrap's skin is the clink's palette: its Burst on the comic burst, its Dust under the chips
+				VFXLibrary.TerraSpark(at + out * 0.3, out, 1.1, thin, wrapFx(shell, "Chips"), shell.Wrap and shell.Wrap.Skin or nil)
+				-- (2026-10-25) THE PLATE SITE of a wrap's added layers: a share of the clink's own chips (TerraSpark's 5,
+				-- before Graphics Quality: `scaled` 1), off the plate's face with them. pcall: this loop has none of its own
+				if shell.Wrap and shell.Wrap.Skin.Layers and TerraWrap then
+					local p0 = at + out * 0.3
+					pcall(TerraWrap.LayerBurst, shell.Wrap.Skin, "Plate", 5, nil,
+						CFrame.lookAt(p0, p0 + out) * CFrame.Angles(-math.pi / 2, 0, 0), thin)
+				end
 			end
 		end
 		-- a wrap: every plate locked in lights its magma seam, brighter with the stacks (1 Low, 2-3 Mid, 4+ Max)
-		plateStage(plate, plate.Locked and ((n >= 4 and "Max") or (n >= 2 and "Mid") or "Low") or nil)
+		local st = plate.Locked and ((n >= 4 and "Max") or (n >= 2 and "Mid") or "Low") or nil
+		plateStage(plate, st)
+		-- (2026-10-25) ...and its crystals and breathing / flowing seam (only a plate that has them), the field sampled at
+		-- the plate's place in the ring, not the world. pcall: an error in this Heartbeat would stop every shell's
+		if plate.GlowStep then pcall(plate.GlowStep, plate, st, at - root.Position) end
 	end
 	if n >= B.MaxStacks and not shell.Full and shell.Plates[n].Locked then
 		shell.Full = true
@@ -2592,7 +2994,8 @@ function TerraFX.WallRaise(character, cf, T0)
 	libs()
 	clearWall(character)
 	local B = T.BulwarkWall
-	local thin = character ~= Players.LocalPlayer.Character
+	-- (2026-10-19, audit P5F-06) thin = an ENEMY's (VFXLibrary.IsEnemy), not just anybody else's: a teammate's is whole
+	local thin = if VFXLibrary.IsEnemy then VFXLibrary.IsEnemy(character) else character ~= Players.LocalPlayer.Character
 	-- the slabs' baked lit face (their front, -Z) is turned to THIS client's camera, as the Tomb's blast is (litToward):
 	-- the slabs have no lit back, so the caster behind her own wall saw a black one (Play test, 2026-09-19). Decided once,
 	-- at the raise; the wall's body, the server's, does not turn. Hits, the break and the sink all draw from this frame.
@@ -2634,8 +3037,8 @@ function TerraFX.WallRaise(character, cf, T0)
 end
 
 --- A HIT at `point`: a burst and chips there, and the nearest whole slab cracks to a broken half.
-function TerraFX.WallHit(character, point, left)
-	do local nl = lookFor(wallLook, character, "TerraFX_Wall") if nl then return nl.Hit(character, point, left) end end
+function TerraFX.WallHit(character, point, left, t0)   -- (2026-10-19, audit P5B-17) t0: the server's moment, forwarded
+	do local nl = lookFor(wallLook, character, "TerraFX_Wall") if nl then return nl.Hit(character, point, left, t0) end end
 	libs()
 	local fx = wallFx[character]
 	if not (fx and fx.State == "Up" and typeof(point) == "Vector3") then return end
@@ -2661,8 +3064,8 @@ function TerraFX.WallHit(character, point, left)
 end
 
 --- DOWN, however it went. "Broken": the big burst and every slab toppling out; otherwise they sink back into the floor.
-function TerraFX.WallDrop(character, reason)
-	do local nl = lookFor(wallLook, character, "TerraFX_Wall") if nl then wallLook[character] = nil return nl.Drop(character, reason) end end
+function TerraFX.WallDrop(character, reason, t0)   -- (2026-10-19, audit P5B-17) t0: the server's moment, forwarded
+	do local nl = lookFor(wallLook, character, "TerraFX_Wall") if nl then wallLook[character] = nil return nl.Drop(character, reason, t0) end end
 	libs()
 	local fx = wallFx[character]
 	if not fx then return end
@@ -3008,7 +3411,7 @@ function TerraFX.TombCast(character, victim, from, T0, grip, speed, reach)
 	local E = T.EarthenTomb
 	local vroot = victim and victim:FindFirstChild("HumanoidRootPart")
 	if not (vroot and typeof(from) == "Vector3") then return end
-	local thin = character ~= Players.LocalPlayer.Character
+	local thin = if VFXLibrary.IsEnemy then VFXLibrary.IsEnemy(character) else character ~= Players.LocalPlayer.Character   -- (P5F-06)
 	local fx = { Character = character, Victim = victim, State = "Cast", Segments = {}, T0 = T0, Thin = thin,
 		Grip = grip or E.GripTime, Speed = speed or E.FissureSpeed, Reach = reach or E.CatchReach,
 		HeadAt = from, Last = from, Dir = flatUnit(vroot.Position - from), Sim = 0 }
@@ -3104,7 +3507,8 @@ function TerraFX.TombCatch(character, victim, at, face, T0, rise, height)
 	local E = T.EarthenTomb
 	local fx = tombFx[character]
 	if not fx then
-		fx = { Character = character, Segments = {}, Thin = character ~= Players.LocalPlayer.Character }
+		fx = { Character = character, Segments = {},   -- (2026-10-19, audit P5F-06) Thin: an enemy's
+			Thin = if VFXLibrary.IsEnemy then VFXLibrary.IsEnemy(character) else character ~= Players.LocalPlayer.Character }
 		tombFx[character] = fx
 	end
 	if typeof(at) ~= "Vector3" then return end
@@ -3372,7 +3776,7 @@ function TerraFX.TombBurst(character, position, hit)
 		blowRocks(fx, 1)                                  -- the heap blown off by it
 	end
 	if typeof(position) ~= "Vector3" then return end
-	local thin = character ~= local_
+	local thin = if VFXLibrary.IsEnemy then VFXLibrary.IsEnemy(character) else character ~= local_   -- (2026-10-19, audit P5F-06)
 	local at = position + Vector3.new(0, 0.4, 0)
 	local size = E.BlastScale
 	local cam = workspace.CurrentCamera
@@ -3555,6 +3959,202 @@ local function chargedRockLib()
 	return CRLib
 end
 
+-- (2026-10-25) THE STONE (the wrap ladder: SkinCatalog Stone; ChargedRock's grey copies). A wrap whose Stone lists this
+-- kit (Stone.Kits.TerraAftershock) draws the plates, the erupting rocks and the flown grit in the WRAP'S MATERIAL instead
+-- of the bake x Tint: each kit mesh swapped for ChargedRock's shared grey copy of it (ChargedRock.GreyOf: the bake's grain
+-- and caps kept as light and dark, built lazily per client and shared by every wrap; ApplyMesh, the size kept) and
+-- coloured the piece's tone. The tone is ChargedRock's dress rule on a FLAT kit: the crust lies flat, so its strata run
+-- OUT from the centre instead of up -- one ring of plates is one stratum, Stone.Tones[ring % #Tones + 1], and a rock or
+-- a crumb takes the ring it comes out of (AS.RingAt); then a share of the pieces are the wrap's variants (Stone.Pieces,
+-- picked by a hash of the piece's name: rust patches, raw metal, crystal, glassy black ...), every piece brightness-
+-- jittered by Stone.Jitter off another hash. A piece whose grey copy is not built yet keeps today's tint (never wrong,
+-- just not upgraded). A wrap without Stone (or without the kit in Stone.Kits), and Default, are exactly as before.
+-- (These are fields of AS, not locals: TerraFX's chunk is near Luau's 200-local limit.)
+AS.StoneMats = { Metal = Enum.Material.Metal, Glass = Enum.Material.Glass, Neon = Enum.Material.Neon,
+	SmoothPlastic = Enum.Material.SmoothPlastic }
+
+--- The wrap's Stone when it covers this kit, else nil.
+function AS.StoneOf(wrap)
+	local st = type(wrap) == "table" and type(wrap.Skin) == "table" and wrap.Skin.Stone
+	if type(st) == "table" and type(st.Kits) == "table" and st.Kits[AS.Kit] and type(st.Tones) == "table"
+		and #st.Tones > 0 then
+		return st
+	end
+	return nil
+end
+
+--- A deterministic 0..1 of a string (ChargedRock's hashPhase walk, mixed by a seeded Random), so every client gives a
+--- piece the same variant and jitter.
+function AS.Hash(s)
+	local h = 7
+	for i = 1, #s do h = (h * 31 + string.byte(s, i)) % 1000003 end
+	return Random.new(h):NextNumber()
+end
+
+--- The ring of plates (the kit's own Ring, 0 the crater) that radius `r` from the centre lies in, or the nearest: the
+--- stratum of a rock or a crumb. The kit's ring extents are gathered once.
+function AS.RingAt(kit, r)
+	local rings = kit.StrataRings
+	if not rings then
+		rings = {}
+		local by = {}
+		for _, e in ipairs(kit.Plates or {}) do
+			local pd = e.Data
+			local g = type(pd) == "table" and tonumber(pd.Ring)
+			local lo, hi = g and tonumber(pd.RIn), g and tonumber(pd.ROut)
+			if lo and hi then
+				local b = by[g]
+				if not b then
+					b = { Ring = g, Lo = lo, Hi = hi }
+					by[g] = b
+					rings[#rings + 1] = b
+				end
+				b.Lo, b.Hi = math.min(b.Lo, lo), math.max(b.Hi, hi)
+			end
+		end
+		kit.StrataRings = rings
+	end
+	local best, bestD = 0, math.huge
+	for _, b in ipairs(rings) do
+		local d = (r < b.Lo and b.Lo - r) or (r > b.Hi and r - b.Hi) or 0
+		if d < bestD then best, bestD = b.Ring, d end
+	end
+	return best
+end
+
+--- A piece's look in Stone `st`: its variant's (Stone.Pieces, by the hash of `name`) or its ring's stratum's tone,
+--- jittered; the variant's material and reflectance. nil when the data gives no colour.
+function AS.StoneLook(st, ring, name)
+	local tones = st.Tones
+	local c = tones[(math.floor(tonumber(ring) or 0) % #tones) + 1]
+	local v = nil
+	if type(st.Pieces) == "table" then
+		local h, cum = AS.Hash(name .. "#v"), 0
+		for _, pc in ipairs(st.Pieces) do
+			cum += type(pc) == "table" and tonumber(pc.Share) or 0
+			if h < cum then
+				v = pc
+				break
+			end
+		end
+	end
+	if v and typeof(v.Tone) == "Color3" then c = v.Tone end
+	if typeof(c) ~= "Color3" then return nil end
+	local j = math.clamp(tonumber(st.Jitter) or 0, 0, 0.12) * (2 * AS.Hash(name .. "#j") - 1)
+	c = Color3.new(math.clamp(c.R * (1 + j), 0, 1), math.clamp(c.G * (1 + j), 0, 1), math.clamp(c.B * (1 + j), 0, 1))
+	local mat = v and type(v.Material) == "string" and AS.StoneMats[v.Material] or Enum.Material.SmoothPlastic
+	return c, mat, v and math.clamp(tonumber(v.Reflectance) or 0, 0, 0.3) or 0
+end
+
+--- Kit piece `p` (a clone of `src`) in Stone `st`: the grey copy applied (its size kept) and the look (AS.StoneLook) set.
+--- Returns true when it was upgraded; false (the piece untouched: today's tint) while the copy is still building, for a
+--- Part stand-in, or when the data has no colour. `p` is handed to GreyOf as the copy's WEARER (ChargedRock's freer then
+--- lets the copy go once no wearer is in the world any more -- with none it would be kept for the session).
+function AS.Dress(p, src, st, ring, salt)
+	if not (src and p:IsA("MeshPart")) then return false end
+	local CR = chargedRockLib()
+	if type(CR.GreyOf) ~= "function" then return false end
+	local c, mat, refl = AS.StoneLook(st, ring, src.Name .. (salt or ""))
+	if not c then return false end
+	local ok, grey = pcall(CR.GreyOf, src, p)
+	if not (ok and typeof(grey) == "Instance" and grey:IsA("MeshPart")) then return false end
+	local size = p.Size
+	local applied = pcall(function() p:ApplyMesh(grey) end)
+	p.Size = size
+	if not applied then return false end
+	p.Color, p.Material, p.Reflectance = c, mat, refl
+	return true
+end
+
+--- A plate set's plates in its wrap's Stone, each as soon as its grey copy exists -- run at the key (asAcquire), so a set
+--- taken from the pool upgrades what was not ready the last time. set.Grey[i] marks plate i done. A Default set (no wrap)
+--- and a wrap without Stone never get here: their plates are never touched.
+function AS.StonePlates(set)
+	local st = not set.StoneDone and AS.StoneOf(set.Wrap)
+	if not (st and type(chargedRockLib().GreyOf) == "function") then return end
+	set.Grey = set.Grey or {}
+	local left = 0
+	for i, e in ipairs(set.Kit.Plates) do
+		if not set.Grey[i] then
+			local p = set.Parts[i]
+			if not (e.Source and p) then
+				set.Grey[i] = true            -- a Part stand-in (no kit mesh to swap): it keeps the tint
+			elseif AS.Dress(p, e.Source, st, type(e.Data) == "table" and e.Data.Ring or 0) then
+				set.Grey[i] = true
+			else
+				left += 1
+			end
+		end
+	end
+	set.StoneDone = left == 0
+end
+
+--- ChargedRock.Prewarm on the Aftershock kit (a wrapped cast with Stone, at its key): every stone queued in the background,
+--- so the casts after this one upgrade as the copies land.
+function AS.Prewarm()
+	local CR = chargedRockLib()
+	local folder = ReplicatedStorage:FindFirstChild(MESH_FOLDER)
+	local model = folder and folder:FindFirstChild(AS.Kit)
+	if model and type(CR.Prewarm) == "function" then pcall(CR.Prewarm, model) end
+end
+
+-- (2026-10-25) EPIC: a wrap's CrystalsBaked on a share of the RING'S erupting rocks (never a strike's shard, which stands
+-- under a body): one of TerraWrap's shared crystal clusters (CrystalTemplates) cloned onto the rock's top -- its +Y side,
+-- up as it breaks out -- CrystalsBaked.Size of the rock across, Neon at the CrystalsBaked.Glow grey (it multiplies the
+-- cluster's baked faces), riding the rock (AS.Ride, beside each of its moves) and gone with it, breathing with the wrap's
+-- Pulse (AS.Breathe). Picked by a hash of the rock's place, so every client crowns the same rocks; none while the
+-- templates build.
+function AS.Crystal(fx, rk)
+	local sk = fx.Wrap.Skin
+	local CB = sk.CrystalsBaked
+	if not (rk.Snap and type(CB) == "table" and rk.Part) then return end
+	local h = AS.Hash(("%d:%d"):format(math.floor(rk.Pos.X * 8), math.floor(rk.Pos.Z * 8)))
+	if h >= (tonumber(CB.PerPiece) or 0) then return end
+	local TW = chargedRockLib().TerraWrap()
+	if not (TW and type(TW.CrystalTemplates) == "function") then return end
+	local ok, list = pcall(TW.CrystalTemplates, sk)
+	if not (ok and type(list) == "table" and #list > 0) then return end
+	local tpl = list[math.floor(h * 7919) % #list + 1]
+	if not (typeof(tpl) == "Instance" and tpl:IsA("BasePart")) then return end
+	local okC, made = pcall(function() return tpl:Clone() end)      -- (a template that will not clone: no crown)
+	if not (okC and made) then return end
+	local c = inert(made)
+	c.Material = Enum.Material.Neon
+	local ts = tpl.Size
+	c.Size = ts * (rk.Size * math.clamp(tonumber(CB.Size) or 0.6, 0.1, 2) / math.max(ts.X, ts.Y, ts.Z, 1e-3))
+	local g = math.clamp(tonumber(CB.Glow) or 1, 0, 1)
+	rk.CrystalGrey = Color3.new(g, g, g)
+	c.Color = rk.CrystalGrey
+	rk.CrystalRel = CFrame.new(0, rk.Half.Y * 0.8 + c.Size.Y * 0.25, 0) * CFrame.Angles(0, h * 61, 0)
+	c.CFrame = rk.F * rk.CrystalRel
+	c.Parent = fx.Model
+	rk.Crystal = c
+	table.insert(fx.Crystals, rk)
+end
+
+--- A crowned rock's crystal to wherever its rock goes this frame (`cf`, the rock's own move).
+function AS.Ride(rk, cf)
+	if rk.Crystal then queueMove(rk.Crystal, cf * rk.CrystalRel) end
+end
+
+--- The crystals' breath: TerraWrap.GlowMul on the CrystalsBaked grey at each (the wrap's Pulse, and its Flow if it has
+--- one), written only when the quantised colour moves; still under Reduce Flashing (TerraWrap's Calm).
+function AS.Breathe(fx)
+	local TW = chargedRockLib().TerraWrap()
+	if not (TW and type(TW.GlowMul) == "function") then return end
+	local sk = fx.Wrap.Skin
+	for _, rk in ipairs(fx.Crystals) do
+		local c = rk.Crystal
+		if c and c.Parent then
+			local col = TW.GlowMul(sk, rk.F.Position, rk.CrystalGrey)
+			if col ~= rk.CrystalCol then
+				rk.CrystalCol = col
+				c.Color = col
+			end
+		end
+	end
+end
+
 local function asPiece(e, size, tone)
 	local p
 	if e.Source then
@@ -3575,10 +4175,21 @@ end
 --- A set of the kit's plates, hidden, from the pool or built (the Cryo Flash Freeze / Chill Aura pattern): 162 MeshParts
 --- are cloned once per set for the session, not once per cast.
 local function asAcquire(kit, wrap)
-	while #AS.Pool > 0 do
-		local set = table.remove(AS.Pool)
-		if set.Kit == kit and set.Wrap == wrap and set.Parts[1] and set.Parts[1].Parent == set.Folder then return set end
-		pcall(function() set.Folder:Destroy() end)
+	-- (2026-10-19, audit P5B-19) a set of THIS kit and wrap is taken from anywhere in the pool; another wrap's set of the
+	-- same kit stays pooled for its own caster (one ObsidianMagma Terra and one Default used to destroy each other's set
+	-- and clone 162 plates every cast); a broken set or one of an older kit goes
+	for i = #AS.Pool, 1, -1 do
+		local set = AS.Pool[i]
+		local good = set.Kit == kit and set.Parts[1] and set.Parts[1].Parent == set.Folder
+		if good and set.Wrap == wrap then
+			table.remove(AS.Pool, i)
+			-- (2026-10-25) a wrap's Stone: the plates whose grey copies were not built last time take them now
+			if wrap and not set.StoneDone then AS.StonePlates(set) end
+			return set
+		elseif not good then
+			table.remove(AS.Pool, i)
+			pcall(function() set.Folder:Destroy() end)
+		end
 	end
 	local set = { Kit = kit, Wrap = wrap, Folder = Instance.new("Folder"), Parts = {} }
 	set.Folder.Name = "AftershockPlates"
@@ -3589,12 +4200,20 @@ local function asAcquire(kit, wrap)
 		p.Parent = set.Folder
 		set.Parts[i] = p
 	end
+	-- (2026-10-25) a wrap's Stone: every plate whose grey copy is built takes it and its tone (AS.StonePlates); the rest
+	-- keep the tint above until a later cast takes this set again. Sets are this wrap's own (set.Wrap), so the Default set
+	-- -- and every wrap without Stone -- never holds a grey mesh.
+	if wrap then AS.StonePlates(set) end
 	return set
 end
 
 local function asRelease(set)
 	for _, p in ipairs(set.Parts) do
 		if p.Transparency ~= 1 then p.Transparency = 1 end
+	end
+	if #AS.Pool >= AS.PoolMax then                       -- (P5B-19) full: the oldest set makes room for the newest
+		local old = table.remove(AS.Pool, 1)
+		pcall(function() old.Folder:Destroy() end)
 	end
 	if #AS.Pool < AS.PoolMax and set.Parts[1] and pcall(function() set.Folder.Parent = nil end)
 		and set.Parts[1].Parent == set.Folder then
@@ -3662,8 +4281,19 @@ local function asBurst(fx, kind, cf, count, scale, radius, variant, extra)
 	if radius then h.Size = Vector3.new(radius * 2, 0.2, radius * 2) end
 	scale = math.max(0.1, math.floor((scale or 1) * 10 + 0.5) / 10)
 	local key = kind .. (variant or "") .. "@" .. scale
+	-- (2026-10-25) a wrap's Dust (SkinCatalog Dust) recolours the kind's Default dust roles, its sequence kept
+	-- (ChargedRock.DustColor), merged into a copy of `extra`; a variant that brings its own Color (the slam's Dark and
+	-- Puff clouds) was given the wrap's by asSlam. fx.Emitters is this cast's own; the wrap's key is belt and braces.
+	local dw = fx.Wrap and fx.Wrap.Skin.Dust and fx.Wrap
+	if dw then key ..= "#" .. dw.Key end
 	local pe = fx.Emitters[key]
 	if not pe then
+		local cs = dw and not (extra and extra.Color) and chargedRockLib().DustColor(dw, "A", kind)
+		if cs then
+			local merged = { Color = cs }
+			for f, v in pairs(extra or {}) do merged[f] = v end
+			extra = merged
+		end
 		pe = VFXLibrary.AftershockBurst(AS.Disc[kind] and h or fx.BurstPoint, kind, 0, fx.Thin, extra)
 		pe.Rate = 0
 		if scale ~= 1 then
@@ -3681,6 +4311,14 @@ local function asBurst(fx, kind, cf, count, scale, radius, variant, extra)
 	local density = (Settings.EffectDensity or 1) * ((fx.Thin and Settings.ThinEnemyVFX) and 0.5 or 1)
 	local n = math.floor(count * density + 0.5)
 	if n > 0 then pe:Emit(n) end
+	-- (2026-10-25) a wrap's added Layers (Rare+): each layer's Share.Aftershock of this burst's own count, from
+	-- TerraWrap's pooled hosts at `cf` (the raw count: TerraWrap applies Graphics Quality and Reduce Enemy VFX itself).
+	-- Those hosts are shared, so the hitpause does not stop them.
+	local sk = fx.Wrap and fx.Wrap.Skin
+	if sk and sk.Layers then
+		local TW = chargedRockLib().TerraWrap()
+		if TW then pcall(TW.LayerBurst, sk, "Aftershock", count, nil, cf, fx.Thin) end
+	end
 end
 
 --- A shake on this client's camera through the Viewmodel's own path, fading out to nothing at ShakeReach from `from`
@@ -3713,6 +4351,11 @@ local function asNew(character, thin, seed)
 	local fx = { Character = character, Thin = thin, Rng = Random.new(seed), Kit = aftershockKit(), Born = os.clock(),
 		Wrap = chargedRockLib().WrapOf(character, "Aftershock"),   -- the caster's wrap (SkinCatalog), or nil
 		Rocks = {}, Grit = {}, Plates = {}, Beat = {}, Emitters = {}, EmitterList = {} }
+	-- (2026-10-25) a wrap's Stone (the kit in the wrap's material: AS.StoneOf) and its Epic crystals on the ring's rocks
+	-- (fx.Crystals, the crowned rocks: AS.Crystal), each only for a wrap that has the field -- nil for Default and the rest
+	fx.Stone = AS.StoneOf(fx.Wrap)
+	local cb = fx.Wrap and fx.Wrap.Skin.CrystalsBaked
+	if type(cb) == "table" and (tonumber(cb.PerPiece) or 0) > 0 then fx.Crystals = {} end
 	local model = Instance.new("Folder")
 	model.Name = "Aftershock"
 	model.Parent = fxFolder()
@@ -3777,6 +4420,14 @@ local function asRocks(fx, serverNow, scale, dt)
 				else
 					local fy = hit.Position.Y
 					local p = asPiece(rk.Entry, rk.Size, fx.Wrap and fx.Wrap.Tint.TerraAftershock or nil)
+					-- (2026-10-25) a wrap's Stone: the rock in the wrap's material, the stratum of the ring it breaks out of
+					-- (a strike's shard alone, with no ring centre, the crater's), salted by its place so rocks of one kit
+					-- mesh vary. Until its grey copy is built it keeps the tint above.
+					if fx.Stone then
+						local d = fx.At and Vector3.new(rk.Pos.X - fx.At.X, 0, rk.Pos.Z - fx.At.Z).Magnitude or 0
+						AS.Dress(p, rk.Entry.Source, fx.Stone, AS.RingAt(fx.Kit, d),
+							("@%d:%d"):format(math.floor(rk.Pos.X * 4), math.floor(rk.Pos.Z * 4)))
+					end
 					if rk.Size < 1 then p.CastShadow = false end
 					rk.Half = p.Size / 2
 					-- ...and one a little below it lands on the crust's plane, never under the underlay
@@ -3787,6 +4438,9 @@ local function asRocks(fx, serverNow, scale, dt)
 					p.CFrame = rk.F
 					p.Parent = fx.Model
 					rk.Part = p
+					-- (2026-10-25) EPIC: a crystal crown on a share of them. pcall: an added look must never stop the cast (an
+					-- error here would tear the whole Aftershock down through asRun)
+					if fx.Crystals then pcall(AS.Crystal, fx, rk) end
 					-- the eruption: a spurt of dust and crumbs where it breaks out
 					local g = CFrame.new(rk.Pos.X, fy + 0.35, rk.Pos.Z)
 					asBurst(fx, "Landing", g, 2, rk.Size < 1.2 and 0.9 or 1.5)
@@ -3797,14 +4451,17 @@ local function asRocks(fx, serverNow, scale, dt)
 			if p and not rk.Done then
 				if not p.Parent then
 					rk.Done = true
+					if rk.Crystal then rk.Crystal:Destroy() rk.Crystal = nil end   -- (2026-10-25) its crown with it
 				elseif age >= rk.SinkFrom then
 					local u = span(age, rk.SinkFrom, rk.SinkFrom + A.Sink)
 					if u >= 1 then
 						p:Destroy()
 						rk.Done = true
+						if rk.Crystal then rk.Crystal:Destroy() rk.Crystal = nil end
 					else
 						rk.SinkCF = rk.SinkCF or rk.F
 						queueMove(p, rk.SinkCF - Vector3.new(0, rk.Size * 2.2 * u * u, 0))
+						if rk.Crystal then AS.Ride(rk, rk.SinkCF - Vector3.new(0, rk.Size * 2.2 * u * u, 0)) end
 					end
 				elseif rk.Phase == "Rise" then
 					local w = rk.W.Magnitude
@@ -3817,6 +4474,7 @@ local function asRocks(fx, serverNow, scale, dt)
 						if rk.ReleaseV then rk.V = rk.ReleaseV end    -- a strike gave the rest of its speed to the body
 					end
 					queueMove(p, rk.F)
+					if rk.Crystal then AS.Ride(rk, rk.F) end
 				elseif rk.Phase == "Fly" and dt > 0 then
 					rk.V -= Vector3.new(0, A.DebrisGravity * dt, 0)
 					local w = rk.W.Magnitude
@@ -3840,9 +4498,11 @@ local function asRocks(fx, serverNow, scale, dt)
 					end
 					rk.F = CFrame.new(pos) * rot
 					queueMove(p, rk.F)
+					if rk.Crystal then AS.Ride(rk, rk.F) end
 					if age - (rk.FlyAt or 0) > 6 then       -- still going after 6 s: it left the world
 						p:Destroy()
 						rk.Done = true
+						if rk.Crystal then rk.Crystal:Destroy() rk.Crystal = nil end
 					end
 				end
 			end
@@ -4008,8 +4668,43 @@ local function asSlam(fx, t)
 			c.CFrame = u.CFrame + Vector3.new(0, 0.012, 0)
 			c.Parent = fx.Model
 			fx.UnderCool = c
+			-- (2026-10-25) a wrap's Pulse / Flow (Epic / Mythic) breathes and flows through both discs while they are
+			-- Neon (asFrame): fx.UnderGlow is TerraWrap, whose GlowMul drives them
+			local gsk = fx.Wrap.Skin
+			if gsk.Pulse or gsk.Flow then
+				local TW = chargedRockLib().TerraWrap()
+				local ok, on = pcall(function() return TW and TW.HasGlowFx(gsk) end)
+				fx.UnderGlow = ok and on and TW or nil
+			end
 		end
 		fx.Underlay, fx.UnderT, fx.UnderFill = u, 1, 0
+		-- (2026-10-25) MYTHIC: a wrap's Drift -- star embers drifting up off the scar while it lasts (TerraWrap.DriftSet,
+		-- its rate x Graphics Quality and Reduce Enemy VFX; none under Reduce Flashing if it twinkles): a flat host at the
+		-- floor, grown with the underlay (asFrame) as the square inside its disc (the emitter keeps DriftSet's own shape and
+		-- direction, so no ember rises off the floor outside the scar), stopped when the ground heals and gone with the
+		-- cast; frozen with the rest in the hitpause. Only for a wrap with Drift
+		local dsk = fx.Wrap and fx.Wrap.Skin
+		if dsk and dsk.Drift then
+			local TW = chargedRockLib().TerraWrap()
+			if TW and type(TW.DriftSet) == "function" then
+				local dh = inert(Instance.new("Part"))
+				dh.Name = "AftershockDrift"
+				dh.Transparency = 1
+				dh.Size = Vector3.new(0.4, 0.2, 0.4)
+				dh.CFrame = CFrame.new(at.X, fy + 0.2, at.Z)
+				dh.Parent = fx.Model
+				local ok, pe = pcall(TW.DriftSet, dsk, dh, fx.Thin)
+				if ok and typeof(pe) == "Instance" and pe:IsA("ParticleEmitter") then
+					if fx.FP then pe.Rate *= AS.FPThin end   -- the caster's own first person: at the slam's dust share
+					pe.TimeScale = fx.TimeScale or 1
+					pe.Enabled = true
+					table.insert(fx.EmitterList, pe)
+					fx.Drift, fx.DriftHost = pe, dh
+				else
+					dh:Destroy()
+				end
+			end
+		end
 	end
 	-- THE FRONT's wall of dust (and its grit): a Disc host the front's size, re-rated by the band it sweeps
 	local h = inert(Instance.new("Part"))
@@ -4019,19 +4714,45 @@ local function asSlam(fx, t)
 	h.CFrame = CFrame.new(at.X, fy + 0.35, at.Z)
 	h.Parent = fx.Model
 	fx.FrontHost = h
-	fx.FrontDust = VFXLibrary.AftershockEmitter(h, "Front", fx.Thin)
-	fx.FrontGrit = VFXLibrary.AftershockEmitter(h, "Grit", fx.Thin, { Shape = Enum.ParticleEmitterShape.Disc,
-		ShapeInOut = Enum.ParticleEmitterShapeInOut.Outward, ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface })
+	-- (2026-10-25) a wrap's Dust recolours the front's dust and grit as well (ChargedRock.DustColor: Front, Grit)
+	local dw = fx.Wrap and fx.Wrap.Skin.Dust and fx.Wrap
+	local frontCS = dw and chargedRockLib().DustColor(dw, "A", "Front")
+	fx.FrontDust = VFXLibrary.AftershockEmitter(h, "Front", fx.Thin, frontCS and { Color = frontCS } or nil)
+	local gritExtra = { Shape = Enum.ParticleEmitterShape.Disc, ShapeInOut = Enum.ParticleEmitterShapeInOut.Outward,
+		ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface }
+	if dw then gritExtra.Color = chargedRockLib().DustColor(dw, "A", "Grit") end
+	fx.FrontGrit = VFXLibrary.AftershockEmitter(h, "Grit", fx.Thin, gritExtra)
 	for _, pe in ipairs({ fx.FrontDust, fx.FrontGrit }) do
 		pe.Rate = 0
 		pe.TimeScale = fx.TimeScale or 1
 		table.insert(fx.EmitterList, pe)
 	end
+	-- (2026-10-25) ...and a wrap's added Layers (Rare+) ride it: TerraWrap's LayerSet on its host, rated off the front's
+	-- own rate in asFrame (Share.Aftershock), stopped with it, and frozen with the rest of the cast in the hitpause
+	local lsk = fx.Wrap and fx.Wrap.Skin
+	if lsk and lsk.Layers then
+		local TW = chargedRockLib().TerraWrap()
+		local ok, set = false, nil
+		if TW then ok, set = pcall(TW.LayerSet, lsk, h, fx.Thin) end
+		if ok and type(set) == "table" then
+			fx.FrontLayers = set
+			for _, pe in pairs(set) do
+				pe.Rate = 0
+				pe.TimeScale = fx.TimeScale or 1
+				-- off the front's rim, as its dust and grit are (a LayerEmitter's own Box / Sphere shape on this host would
+				-- fill the whole square the front spans, the caster's feet included)
+				pe.Shape = Enum.ParticleEmitterShape.Disc
+				pe.ShapeInOut = Enum.ParticleEmitterShapeInOut.Outward
+				pe.ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface
+				table.insert(fx.EmitterList, pe)
+			end
+		end
+	end
 	-- THE ROCKS: Rocks x EffectDensity (x0.5 for somebody else's), in rings from Inner out, each ring's share by its
 	-- length, jittered round and out as the film's Plan lays them, seeded by the server so every client erupts the same
 	-- ring; none within 3.6 studs of her root (the film's rule: not up round the caster, nor through the lens)
 	local R = A.Radius
-	local n = math.floor(A.Rocks * (Settings.EffectDensity or 1) * (fx.Thin and 0.5 or 1) + 0.5)
+	local n = math.floor(A.Rocks * (Settings.EffectDensity or 1) * ((fx.Thin and Settings.ThinEnemyVFX) and 0.5 or 1) + 0.5)   -- (P5B-16)
 	local rows, total = {}, 0
 	local r0 = A.Inner
 	while r0 <= R - 0.35 do
@@ -4079,16 +4800,22 @@ local function asSlam(fx, t)
 	-- THE SCUFF under the fists (M1's crater mark): its face at floor + 0.045, over the underlay's top and under the
 	-- plates' -- it shows in the crater and the cracks, and on the floor itself once the scar has sunk; faded in the heal
 	local m = decalAt(fx, Vector3.new(at.X, fy - 0.01, at.Z), Vector3.yAxis, 5, M1_TEXTURES.Scuff, rng:NextNumber(0, 6.28))
+	-- (2026-10-25) a wrap's Scuff (SkinCatalog Scuff) tints the mark: Decal.Color3 multiplies the texture
+	local scuffTone = fx.Wrap and fx.Wrap.Skin.Scuff
+	if typeof(scuffTone) == "Color3" then m.Decal.Color3 = scuffTone end
 	m.Host.Parent = fx.Model
 	fx.Mark, fx.MarkT = m, 1
 	if late then return end
 	-- THE DUST: the dome, a darker share of it, the first fast puff off the fists, the skirt thrown along the ground, and
-	-- the haze left hanging over it (the film's 36 / 14 / 24, about half)
+	-- the haze left hanging over it (the film's 36 / 14 / 24, about half). (2026-10-25) A wrap's Dust takes the two
+	-- hard-coded shares too: Dark -> Dust.Dark, Puff -> Dust.Pale.
 	local dome = CFrame.new(at.X, fy + 0.6, at.Z)
 	asBurst(fx, "Cloud", dome, 18 * k, 1)
-	asBurst(fx, "Cloud", dome, 4 * k, 1, nil, "Dark", { Color = ColorSequence.new(Color3.fromRGB(117, 97, 69)) })
+	asBurst(fx, "Cloud", dome, 4 * k, 1, nil, "Dark", { Color = dw and chargedRockLib().DustColor(dw, "A", "CloudDark")
+		or ColorSequence.new(Color3.fromRGB(117, 97, 69)) })
 	asBurst(fx, "Cloud", dome, 8 * k, 1, nil, "Puff", {
-		Color = ColorSequence.new(Color3.fromRGB(194, 173, 140)), Lifetime = NumberRange.new(0.5, 0.8),
+		Color = dw and chargedRockLib().DustColor(dw, "A", "CloudPuff") or ColorSequence.new(Color3.fromRGB(194, 173, 140)),
+		Lifetime = NumberRange.new(0.5, 0.8),
 		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.7), NumberSequenceKeypoint.new(1, 2.6) }),
 		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(0.4, 0.5),
 			NumberSequenceKeypoint.new(1, 1) }),
@@ -4096,13 +4823,29 @@ local function asSlam(fx, t)
 	asBurst(fx, "Skirt", CFrame.new(at.X, fy + 0.4, at.Z), 12 * k, 1, 1.2)
 	asBurst(fx, "Haze", CFrame.new(at.X, fy + 3, at.Z), 3 * k, 1, 3)
 	asBurst(fx, "Grit", CFrame.new(at.X, fy + 0.1, at.Z), 12, 1)
+	-- (2026-10-25) MYTHIC: a wrap's Shock -- the flat ring on the floor round the fists (TerraWrap.Shockwave at
+	-- Shock.Radius.Aftershock), only for a wrap with Shock. GAMEPLAY CLARITY: the ring's radius is held to twice the
+	-- rocks' inner radius (A.Inner), so it stays round the crater and never runs out ahead of the front -- the damage
+	-- (its plates and rocks) would read wrong behind a brighter ring. pcall: it is only a look
+	local ssk = fx.Wrap and fx.Wrap.Skin
+	local shock = ssk and ssk.Shock
+	local shockR = type(shock) == "table" and type(shock.Radius) == "table" and tonumber(shock.Radius.Aftershock)
+	if shockR and shockR > 0 then
+		local TW = chargedRockLib().TerraWrap()
+		if TW and type(TW.Shockwave) == "function" then
+			pcall(TW.Shockwave, ssk, CFrame.new(at.X, fy, at.Z), math.min(shockR, 2 * A.Inner), fx.Thin)
+		end
+	end
 	-- THE GRIT, flown: crumbs of the kit's crust thrown off the fists, bouncing low off the floor, sunk with the rubble
-	local ng = math.floor(AS.SlamGrit * (Settings.EffectDensity or 1) * (fx.Thin and 0.5 or 1) + 0.5)
+	local ng = math.floor(AS.SlamGrit * (Settings.EffectDensity or 1) * ((fx.Thin and Settings.ThinEnemyVFX) and 0.5 or 1) + 0.5)   -- (P5B-16)
 	for _ = 1, ng do
 		local d = Vector3.new(rng:NextNumber(-1, 1), rng:NextNumber(0.6, 2.0), rng:NextNumber(-1, 1)).Unit
 		local blocks = fx.Kit.Blocks
 		local size = rng:NextNumber(0.1, 0.2)
-		local p = asPiece(blocks[rng:NextInteger(1, #blocks)], size, fx.Wrap and fx.Wrap.Tint.TerraAftershock or nil)
+		local ge = blocks[rng:NextInteger(1, #blocks)]
+		local p = asPiece(ge, size, fx.Wrap and fx.Wrap.Tint.TerraAftershock or nil)
+		-- (2026-10-25) a wrap's Stone: the crumbs are the crater's stone (its ring's stratum), salted by their count
+		if fx.Stone then AS.Dress(p, ge.Source, fx.Stone, AS.RingAt(fx.Kit, 0), "#g" .. #fx.Grit) end
 		p.CastShadow = false
 		local pos = Vector3.new(at.X, fy + 0.1, at.Z) + d * 0.6
 		local q = CFrame.fromAxisAngle(randUnit(rng), rng:NextNumber(0, 6))
@@ -4180,6 +4923,13 @@ local function asFrame(fx, now)
 			if math.abs(r - (fx.UnderR or 0)) > 0.01 * r then
 				fx.UnderR = r
 				u.Size = Vector3.new(AS.UnderThick, 2 * r, 2 * r)
+				-- (2026-10-25) a wrap's Drift host (asSlam) covers the scar as it opens: the square inside its disc
+				if fx.DriftHost then fx.DriftHost.Size = Vector3.new(1.41 * r, 0.2, 1.41 * r) end
+			end
+			-- (2026-10-25) ...and its embers stop as the ground heals (what is up finishes; the host goes with the cast)
+			if fx.Drift and not fx.DriftOff and tau >= tSet + A.HealDelay then
+				fx.DriftOff = true
+				fx.Drift.Enabled = false
 			end
 			local cool = fx.UnderCool
 			if cool then
@@ -4192,6 +4942,7 @@ local function asFrame(fx, now)
 				if cool.Transparency ~= u.Transparency then cool.Transparency = u.Transparency end
 			end
 			local fill = smooth(span(tau, tSet, tSet + A.HealDelay))
+			local glowFill = fx.UnderFill       -- (2026-10-25) the fill the discs were last written at (the glow, below)
 			if math.abs(fill - fx.UnderFill) > 0.01 or (fill >= 1 and fx.UnderFill < 1) then
 				fx.UnderFill = fill
 				if fx.Wrap then
@@ -4205,6 +4956,26 @@ local function asFrame(fx, now)
 					end
 				else
 					u.Color = AS.Void:Lerp(AS.PlateTop, fill)
+				end
+			end
+			-- (2026-10-25) a wrap's Pulse / Flow (fx.UnderGlow, set in asSlam): while the discs are Neon, the colour the
+			-- block above gives them times TerraWrap's GlowMul at each disc (the breath, the world field), written only
+			-- when that quantised colour moves -- or again on a frame the block above wrote its plain lerp
+			local glow = fx.UnderGlow
+			if glow and fx.UnderFill < 0.5 then
+				local sk = fx.Wrap.Skin
+				local f, again = fx.UnderFill, fx.UnderFill ~= glowFill
+				local ok, hot = pcall(glow.GlowMul, sk, u.Position, sk.UnderlayHot:Lerp(sk.Seam.Dead, f))
+				if ok and typeof(hot) == "Color3" and (again or hot ~= fx.UnderGlowHot) then
+					fx.UnderGlowHot = hot
+					u.Color = hot
+				end
+				if cool then
+					local okc, c = pcall(glow.GlowMul, sk, cool.Position, sk.Underlay:Lerp(sk.Seam.Dead, f))
+					if okc and typeof(c) == "Color3" and (again or c ~= fx.UnderGlowCool) then
+						fx.UnderGlowCool = c
+						cool.Color = c
+					end
 				end
 			end
 			local heal = span(tau, tSet + A.HealDelay, tSet + A.HealDelay + A.Heal)
@@ -4222,6 +4993,12 @@ local function asFrame(fx, now)
 			local rate = AS.FrontDensity * 2 * math.pi * fr * v
 			VFXLibrary.AftershockRate(fx.FrontDust, rate, fx.Thin)
 			VFXLibrary.AftershockRate(fx.FrontGrit, rate * 1.2, fx.Thin)
+			-- (2026-10-25) a wrap's front layers (asSlam): their Share.Aftershock of both front emitters' rate (dust +
+			-- grit, 2.2 x rate, before density: TerraWrap applies Graphics Quality and Reduce Enemy VFX itself)
+			if fx.FrontLayers then
+				local TW = chargedRockLib().TerraWrap()
+				if TW then pcall(TW.LayerRates, fx.Wrap.Skin, "Aftershock", fx.FrontLayers, rate * 2.2, nil, fx.Thin) end
+			end
 			local st = (v / V0) ^ 0.6
 			if math.abs(st - (fx.FrontSt or 0)) > 0.04 then
 				fx.FrontSt = st
@@ -4232,6 +5009,9 @@ local function asFrame(fx, now)
 			fx.FrontOff = true
 			VFXLibrary.AftershockRate(fx.FrontDust, 0, fx.Thin)
 			VFXLibrary.AftershockRate(fx.FrontGrit, 0, fx.Thin)
+			if fx.FrontLayers then                -- (2026-10-25) the wrap's front layers with them
+				for _, pe in pairs(fx.FrontLayers) do pe.Rate = 0 end
+			end
 		end
 		-- the haze left hanging over the broken ground halfway out, and a last breath of dust as the rubble sinks
 		if not fx.HazeMid and tau >= A.RingTime * 0.5 then
@@ -4252,6 +5032,9 @@ local function asFrame(fx, now)
 		end
 	end
 	asRocks(fx, serverNow, scale, dt)
+	-- (2026-10-25) EPIC: the crowned rocks' crystals breathe with the wrap's Pulse (AS.Breathe). pcall: an added look
+	-- must never stop the cast
+	if fx.Crystals and #fx.Crystals > 0 then pcall(AS.Breathe, fx) end
 	-- the flown grit: a low bounce off the floor's plane, a skid to rest, sunk with the rubble
 	local sinkU = span(tau, tSet, tSet + A.Sink)
 	for _, g in ipairs(fx.Grit) do
@@ -4309,7 +5092,9 @@ function TerraFX.Aftershock(character, at, face, T0, opts)
 	if TerraFX.AftershockRingTau(t) >= asEndTau() then return nil end
 	local lp = Players.LocalPlayer
 	local thin = opts.Thin
-	if thin == nil then thin = not (lp and character == lp.Character) end
+	if thin == nil then   -- (2026-10-19, audit P5F-06) an enemy's (VFXLibrary.IsEnemy), not just anybody else's
+		thin = if VFXLibrary.IsEnemy then VFXLibrary.IsEnemy(character) else not (lp and character == lp.Character)
+	end
 	local seed = type(opts.Seed) == "number" and math.floor(opts.Seed) or math.random(1, 2 ^ 30)
 	local fx = asNew(character, thin, seed)
 	local root = typeof(character) == "Instance" and character:FindFirstChild("HumanoidRootPart")
@@ -4326,6 +5111,13 @@ function TerraFX.Aftershock(character, at, face, T0, opts)
 	-- not done) costs its 162 clones in the windup rather than on the slam's first frame; asSlam only parents it, and a
 	-- windup cut short returns it to the pool with the rest (asTeardown)
 	if #fx.Kit.Plates > 0 then fx.Set = asAcquire(fx.Kit, fx.Wrap) end
+	-- (2026-10-25) a wrap's Stone: the kit's grey copies queued in the background now (AS.Prewarm), so what this cast could
+	-- not upgrade the next one can; a wrap's crystal templates asked for at the key, so they are built by the eruption
+	if fx.Stone then AS.Prewarm() end
+	if fx.Crystals then
+		local TW = chargedRockLib().TerraWrap()
+		if TW and type(TW.CrystalTemplates) == "function" then pcall(TW.CrystalTemplates, fx.Wrap.Skin) end
+	end
 	asRun(fx, asFrame)
 	fx.Stop = function() asTeardown(fx) end
 	return fx

@@ -15,8 +15,9 @@
 	                     self-damage rule; ToxinHandler thins that damage). CasterOf says whose poison it is.
 	  Charged   Voltaic  stacks from hits; at MaxStacks it discharges a small chain to the nearest OTHER enemy of the
 	                     caster, and, when there is none (every 1v1 duel), into the charged target itself for AloneDamage
-	                     -- 0 in preset A, which is the manual read literally. No Chain Bolt exists yet (no Voltaic cast
-	                     path): raised from the dev panel until it calls Status.Apply on each hit.
+	                     (7 in preset A since the 2026-10-17 balance pass; 0 before, the manual read literally). Applied by
+	                     VoltaicHandler's Chain Bolt (and ElementalReactions' Storm Surge, and the dev panel). (2026-10-19,
+	                     audit P3-24: this said no Chain Bolt existed yet.)
 	  Marked    Umbra    KIT-OWNED since 2026-09-27 (Chill's arrangement): Umbra's Mark Technique -- self-only, stacks ripen,
 	                     a headshot pays the most -- is UmbraHandler's, which writes RX_Marked and its suffixes itself. The
 	                     team-primed Mark for Death that ran here is retired (ServerStorage.UmbraKitSuperseded).
@@ -251,6 +252,11 @@ function Status.Apply(caster, humanoid, kind, opts)
 		rec = { Stacks = 0, Model = model, VictimEpoch = epochOf(model) }
 		s[kind] = rec
 	end
+	-- (2026-10-19, audit P3-03) a SELF application (a Toxin in its own cloud) never takes over someone else's poison on it.
+	-- It overwrote the record's caster: the enemy's ticks became the Toxin's own (thinned by Symbiosis, nothing behind the
+	-- Vent), the enemy lost the credit, the Ultimate charge and the lifesteal, and Antitoxin Vent -- own poison only --
+	-- could then cleanse it. The enemy's poison runs on as theirs; the cloud adds nothing to it.
+	if not fresh and opts.Self == true and rec.Caster ~= nil and rec.Caster ~= caster then return nil end
 	rec.Caster = caster
 	rec.CasterEpoch = (typeof(caster) == "Instance" and caster:IsA("Player")) and Core.Epoch(caster) or nil
 	local token = {}
@@ -265,11 +271,16 @@ function Status.Apply(caster, humanoid, kind, opts)
 	end
 	rec.Total = duration
 	rec.ExpiresServer = workspace:GetServerTimeNow() + duration
+	-- (2026-10-19, audit GA-06) whether the status's end is its PAYOFF (BarFX plays the payoff word only on true): false
+	-- from every application; a Charged discharge and a Blessing soaked empty set it true before the flag drops, and a
+	-- lapse, a clear or a death leave it false. Outside SUFFIXES, so the flag dropping does not wipe it first.
+	if kind == "Charged" or kind == "Blessed" then model:SetAttribute("RX_" .. kind .. "_Paid", false) end
 
 	-- CHARGED: at the last stack it goes off at once and the stacks are spent
 	if kind == "Charged" and rec.Stacks >= t.MaxStacks then
 		publish(model, kind, rec)
 		discharge(rec, humanoid, t)
+		if model.Parent then model:SetAttribute("RX_Charged_Paid", true) end    -- (2026-10-19, audit GA-06) the payoff
 		Status.Clear(humanoid, kind)
 		-- the kit hears it (VoltaicHandler: Chain Reaction's duel trigger, 2026-10-17)
 		if Status.OnChargedFull then task.spawn(Status.OnChargedFull, caster, humanoid) end
@@ -357,13 +368,20 @@ end
 -- (MARK's payoff moved to UmbraHandler on 2026-09-27, at the same -10: the marker's own hit only, a flat bonus by stacks,
 -- the most on a headshot. The old team-primed +BonusPct modifier that stood here is in ServerStorage.UmbraKitSuperseded.)
 
--- BLESSING soaks after Cinder Shield (20): an absorb pool of its own, spent hit by hit, gone when empty.
+-- BLESSING soaks last (25): an absorb pool of its own, spent hit by hit, gone when empty.
 Core.AddModifier(25, function(victim, amount)
 	local rec = recordOf(victim, "Blessed")
 	if not rec or amount <= 0 then return amount end
 	local soak = math.min(amount, rec.Amount or 0)
 	rec.Amount = (rec.Amount or 0) - soak
 	if rec.Amount <= 0.01 then
+		-- (2026-10-19, audits GA-02 / GA-06) soaked EMPTY is a break, not a lapse: the amount at 0 and the payoff marker
+		-- before the flag drops, so BarFX plays the break
+		local model = rec.Model
+		if model and model.Parent then
+			model:SetAttribute("RX_Blessed_Amount", 0)
+			model:SetAttribute("RX_Blessed_Paid", true)
+		end
 		Status.Clear(victim, "Blessed")
 	else
 		publish(rec.Model, "Blessed", rec)

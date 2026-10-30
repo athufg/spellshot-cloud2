@@ -38,7 +38,10 @@
 	Meshes: ReplicatedStorage.IceMagicMeshes.CryoKit (crystals, chunks, splinters, prints, rings, arcs, panels). A kit
 	MeshPart's Color multiplies its baked vertex colours; the Frost Line pieces are baked white and drawn Neon in the line
 	colour. Frost, floors and edges are plain Parts. If a piece is missing it is skipped quietly: gameplay never waits on
-	a look. Everything goes through the Graphics Quality / Reduce Enemy VFX scaling (density, thinFor).
+	a look. Particle counts and the optional pieces go through the Graphics Quality / Reduce Enemy VFX scaling
+	(density, thinFor; "enemy" is FBX.Enemy = VFXLibrary.IsEnemy: not mine, not a teammate's, judged by the CASTER).
+	(2026-10-19, audit P5A-23) Not everything: a skin's set pieces such as Frost Dragon's Blizzard dragons stay whole
+	(only their emitters scale); the skin modules thin their own extras through CryoFX._H (thinFor / density / isEnemy).
 
 	Numbers: CryoTuning (the one table the server reads too; the look is CryoTuning.Look). Times on the wire are SERVER
 	time (T0), so a late message catches up instead of starting late.
@@ -71,7 +74,8 @@ local B, D, M = CryoTuning.Blizzard, CryoTuning.DeepFreeze, CryoTuning.MirrorCag
 -- HANDOFF_SPEC.md): for a caster who wears it, the pieces below draw ice KUNAI in place of the Default's crystals and
 -- panels -- the pierce and the low shatter (Flash Freeze), the trap (Deep Freeze), the ice clones throwing kunai (Mirror
 -- Cage), the nicks in the prints (Cold Momentum), the fence (Blizzard). Missing module or meshes not built yet: Default.
--- (one table, FBX, for all of it: this module is at Luau's limit of 200 locals)
+-- (one table, FBX, for all of it: this module is near Luau's limit of 200 top-level locals -- 196 on 2026-10-19; add
+-- new helpers to FBX or to a do-block, never as another top-level local)
 local FBX = { Module = nil, C = function(c) return c end, Bind = function(f) return f end, Lit = function(e) return e end, WrapRun = function(_, f, ...) return f(...) end }   -- C / Bind: CryoWrap's once CryoFX.Start installs it
 --- the kit, or nil
 function FBX.Kit()
@@ -136,7 +140,7 @@ function FBX.Dragon()
 	end
 	return FBX.DFX or nil
 end
--- Cryo's SNOW GLOBE skin (Epic, 2026-10-15; SnowGlobeKit + SnowGlobeFX, vfx_blocking/cryo/cryo_snowglobe_skin_2026_10_15):
+-- Cryo's SNOW GLOBE skin (Rare, 2026-10-15 -- audit P5A-23: was "Epic"; SnowGlobeKit + SnowGlobeFX, vfx_blocking/cryo/cryo_snowglobe_skin_2026_10_15):
 -- SnowGlobeFX takes the same calls as FrostLotusFX, so each Frost Lotus hook asks for whichever skin the caster wears.
 -- Deep Freeze is not hooked: it stays the Default.
 function FBX.Globe(caster)
@@ -287,16 +291,34 @@ local function isDead(model)
 	return hum ~= nil and hum.Health <= 0
 end
 
---- Graphics Quality / Reduce Enemy VFX: low density, or somebody else's effect with Reduce Enemy VFX on.
-local function thinFor(character)
-	return (Settings.EffectDensity or 1) < 0.75
-		or (Settings.ThinEnemyVFX and character ~= nil and character ~= VFXLibrary.LocalCharacter)
+--- (2026-10-19, audit P5A-12) "enemy" for Reduce Enemy VFX: a body that is not mine and not a TEAMMATE's (same
+--- DuelMatch, Config.MayHurt false: 2v2 / Squad Clash). Anyone else (a Hub player, a dummy) counts as before.
+function FBX.Enemy(character)
+	-- (2026-10-19, audit P5F-06) one rule for every module: VFXLibrary's (also spares an AllyDummy); the body below is
+	-- the fallback for a VFXLibrary without it
+	if VFXLibrary.IsEnemy then return VFXLibrary.IsEnemy(character) end
+	if character == nil then return false end
+	local me = VFXLibrary.LocalCharacter or player.Character
+	if character == me then return false end
+	local pl = Players:GetPlayerFromCharacter(character)
+	local match = pl and player and pl:GetAttribute("DuelMatch")
+	if match ~= nil and match == player:GetAttribute("DuelMatch") then
+		local ok, may = pcall(Config.MayHurt, pl, player)
+		if ok and may == false then return false end
+	end
+	return true
 end
 
---- The emitter count scale: Graphics Quality (0.4 .. 1), halved for somebody else's effect under Reduce Enemy VFX.
+--- Graphics Quality / Reduce Enemy VFX: low density, or an enemy's effect with Reduce Enemy VFX on.
+local function thinFor(character)
+	return (Settings.EffectDensity or 1) < 0.75
+		or (Settings.ThinEnemyVFX and FBX.Enemy(character)) or false
+end
+
+--- The emitter count scale: Graphics Quality (0.4 .. 1), halved for an enemy's effect under Reduce Enemy VFX.
 local function density(character)
 	local d = math.clamp(Settings.EffectDensity or 1, 0.4, 1)
-	if Settings.ThinEnemyVFX and character ~= nil and character ~= VFXLibrary.LocalCharacter then d *= 0.5 end
+	if Settings.ThinEnemyVFX and FBX.Enemy(character) then d *= 0.5 end
 	return d
 end
 
@@ -328,6 +350,8 @@ end
 --- The cold flash of an impact: a PointLight that dies off fast (RECIPE: #73D6FF, about 3 -> 0 in 0.2 s).
 local function lightFlash(parent, brightness, range, fade)
 	if Lighting.Brightness < 0.05 then return end       -- the flat comic light profile: a light only greys it
+	-- (2026-10-19, audit P5A-09) Reduce Flashing: the flash at 40%, fading half as fast (the skin paths' `calm` rule)
+	if Settings.Get and Settings.Get("ReduceFlashing") then brightness, fade = brightness * 0.4, fade * 2 end
 	local l = Instance.new("PointLight")
 	l.Color, l.Brightness, l.Range, l.Shadows = COL.Flash, brightness, range, false
 	l.Parent = parent
@@ -1122,8 +1146,8 @@ local function tintItems(model)
 	return items
 end
 
-local SHADE = L.FrozenShade
-local SHADE_MUL = Vector3.new(SHADE.R, SHADE.G, SHADE.B)     -- the same tint as a multiplier (clothing, decals, vertex colour)
+-- (2026-10-19, audit P5A-17) SHADE / SHADE_MUL were never read (applyTint reads L.FrozenShade live, so a wrap's swap
+-- shows): removed, two of this module's 200 top-level locals back
 
 --- Two colours the same to within 8-bit storage (a part's Color reads back quantized a frame later, so an exact compare
 --- took our own write for somebody else's and re-based on it every frame -- the tint compounded all the way to the
@@ -1682,6 +1706,9 @@ function FBX.Shatter(enc)
 	local c = Vector3.new(enc.At.X, enc.Feet, enc.At.Z)
 	local piece = kit.ShatterPiece or "FB_Frag"
 	local frag = kit.Kind(kit.ShatterPiece and "Mote" or "Frag")
+	-- (2026-10-19, audit P5A-07) the fragment's size from whichever shape the kit builds (Snow Globe's kinds are layered,
+	-- no Size), and a stand-in when neither is there, so the throw below never does arithmetic on nil
+	local fsize = frag and (frag.Size or (frag.Layers and frag.Layers[1] and frag.Layers[1].Size)) or Vector3.new(0.6, 1, 0.6)
 	local nTrap = 0
 	for _, kn in ipairs(enc.Kunai) do
 		if kn.Kind == "Trap" then nTrap += 1 end
@@ -1694,10 +1721,11 @@ function FBX.Shatter(enc)
 			throw(piece, CFrame.new(mid.X, y, mid.Z) * CFrame.Angles(rng:NextNumber(0, 6.28), rng:NextNumber(0, 6.28), 0),
 				out * rng:NextNumber(3, 6) * (petal and 0.6 or 1) + Vector3.new(0, rng:NextNumber(1, 3) * (petal and 0.6 or 1), 0),
 				Vector3.new(rng:NextNumber(-1, 1), rng:NextNumber(-1, 1), rng:NextNumber(-1, 1)) * 7, rng:NextNumber(1.2, 1.6),
-				frag.Size * (petal and rng:NextNumber(0.3, 0.45) or rng:NextNumber(1.4, 2.0)), c.Y, "Kunai")
+				fsize * (petal and rng:NextNumber(0.3, 0.45) or rng:NextNumber(1.4, 2.0)), c.Y, "Kunai")
 		end
 	end
-	burstChunks(rng, c, CFrame.new(c + Vector3.new(0, 1.8, 0)), Vector3.new(0.5, 1.3, 0.4), kit.ShatterChunks[tier], 7, 4,
+	burstChunks(rng, c, CFrame.new(c + Vector3.new(0, 1.8, 0)), Vector3.new(0.5, 1.3, 0.4),
+		(kit.ShatterChunks or { 8, 5, 3 })[tier] or 3, 7, 4,         -- (2026-10-19, audit P5A-07) a kit without counts: Frostblade's
 		0.55, 1.05, c.Y, "Chunk")
 	for k = 0, 5 do
 		local dir = dirAt(k * math.pi / 3 + rng:NextNumber(0, 0.5)) + Vector3.new(0, 0.25, 0)
@@ -1715,13 +1743,17 @@ local function encaseBreak(enc, age, heavy)
 	table.clear(enc.Cracks)
 	if enc.Kunai then
 		local kit = enc.Kit or FBX.Kit()
+		-- (2026-10-19, audit P5A-07) a skin shatter that fails (or no kit) falls through to the Default's heavy shatter
+		-- below (bursts, ripple, cold flash) instead of ending the freeze with nothing drawn
+		local shattered = false
 		if heavy and kit then
 			local ok, err = pcall(FBX.Shatter, enc)
 			if not ok then warnOnce("fbshatter", "frostblade shatter: " .. tostring(err)) end
+			shattered = ok
 		end
-		for _, kn in ipairs(enc.Kunai) do kit.Drop(kn.O) end
+		if kit then for _, kn in ipairs(enc.Kunai) do kit.Drop(kn.O) end end
 		table.clear(enc.Kunai)
-		if heavy then return end
+		if heavy and shattered then return end
 	end
 	if heavy then
 		local rng = Random.new()
@@ -1750,12 +1782,12 @@ local function flashFreezeEncase(character, root, caster)
 	local _, feet = feetOf(character)
 	local at = Vector3.new(root.Position.X, feet or (root.Position.Y - 3), root.Position.Z)
 	local isMe = character == player.Character
-	local thin = (Settings.EffectDensity or 1) < 0.75
+	local thin = thinFor(caster)                -- (2026-10-19, audit P5A-12) thinned by its CASTER, as Deep Freeze's is
 	local folder = Instance.new("Folder")
 	folder.Name = "FlashFreezeIce"
 	folder.Parent = fxFolder()
 	local enc = encaseNew(character, at, Random.new(), P, {
-		Parent = folder, IsMe = isMe, Thin = thin, Caster = nil, LineTop = P.LineTop, ClimbAt = 0, ClimbTime = P.ClimbTime,
+		Parent = folder, IsMe = isMe, Thin = thin, Caster = caster, LineTop = P.LineTop, ClimbAt = 0, ClimbTime = P.ClimbTime,
 		Seal = P.Seal, GrowAt = P.GrowAt, FB = (FBX.LotusOn(caster) and "LotusFF") or (FBX.On(caster) and "Pierce")
 			or (FBX.Globe(caster) and "GlobeFF") or nil,
 	})
@@ -1790,7 +1822,7 @@ function CryoFX.Shatter(character, heavy, caster)
 	local root = character and (character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart)
 	if not root then return end
 	local enc = encases[character]
-	local dens = density(nil)
+	local dens = density(caster)                    -- (2026-10-19, audit P5A-12) thinned by the caster, not the victim
 	local _, feet = feetOf(character)
 	local base = Vector3.new(root.Position.X, feet or (root.Position.Y - 3), root.Position.Z)
 	if heavy then
@@ -1802,7 +1834,7 @@ function CryoFX.Shatter(character, heavy, caster)
 			return
 		end
 		local rng = Random.new()
-		local thin = thinFor(character)
+		local thin = thinFor(caster)
 		local gy = groundY(root.Position, { character, fxFolder() })
 		burstChunks(rng, root.Position, root.CFrame, Vector3.new(0.8, 1.6, 0.5), thin and 6 or 12, 18, 14, 0.3, 0.7, gy, "Chunk")
 		for k = 0, 2 do
@@ -1895,18 +1927,18 @@ end
 
 --- FROSTBLADE's zone edge (kit/fb.py edge_blades): a few short kunai planted point-down on the zone's rim, flats facing
 --- out, leaning out, ring pommels up -- rising out of the floor as the front reaches the rim (`growAt`, seconds after the
---- cast), breaking on the Default's wave (`breakAt`): a piece and a few crumbs each. None under Reduce Enemy VFX.
+--- cast), breaking on the Default's wave (`breakAt`): a piece and a few crumbs each. The low tier's count under Reduce
+--- Enemy VFX (2026-10-19, audit P5A-12: it used to vanish, while the Default keeps its rim clusters).
 function CryoFX.FrostbladeEdge(ground, R, growAt, breakAt, caster)
 	local kit = FBX.Kit()
 	if not (kit and kit.Kind("Edge")) then return end
-	if Settings.ThinEnemyVFX and caster ~= nil and caster ~= VFXLibrary.LocalCharacter then return end
 	local folder = Instance.new("Folder")
 	folder.Name = "FrostbladeEdge"
 	folder.Parent = fxFolder()
 	local c = ground.Position
 	local fs = kit.FieldScale or 1                       -- (2026-10-15) denser and bigger: FieldBlades by tier, FieldScale
 	local L, bury = kit.Kinds.Edge.L * fs, 0.5 * fs
-	local n = kit.FieldBlades and kit.FieldBlades[kit.Tier(Settings.EffectDensity, false)] or kit.EdgeBlades
+	local n = kit.FieldBlades and kit.FieldBlades[kit.Tier(Settings.EffectDensity, Settings.ThinEnemyVFX and FBX.Enemy(caster))] or kit.EdgeBlades
 	local blades = {}
 	for k = 0, n - 1 do
 		local a = 2 * math.pi * k / n + 0.35
@@ -1963,7 +1995,11 @@ end
 function CryoFX.ShardImpact(hit, dir, thin, caster)
 	-- Frost Lotus: a tiny bloom opens on the hit; Snow Globe: the globe cracks (slabs, a snow pile)
 	local lfx = caster and ((FBX.DragonOn(caster) and FBX.Dragon()) or (FBX.LotusOn(caster) and FBX.Lotus()) or FBX.Globe(caster))
-	if lfx then pcall(lfx.HitBloom, hit, dir, thin, caster) end
+	if lfx then
+		-- (2026-10-19, audit P5A-06) a failing skin hook now says so once instead of vanishing (warnOnce: no new local)
+		local ok, err = pcall(lfx.HitBloom, hit, dir, thin, caster)
+		if not ok then warnOnce("hitbloom", "skin hit bloom: " .. tostring(err)) end
+	end
 	local S = VFXLibrary.Tuning.IcicleShard
 	local out = hit.Normal * 0.75 - dir * 0.25
 	out = out.Magnitude > 1e-3 and out.Unit or -dir
@@ -2089,9 +2125,10 @@ function CryoFX.ColdMomentumMark(character, foot, rng)
 	local nick = fbk and kit.New("Nick", fxFolder()) or nil
 	-- FROST LOTUS: a small flat bloom on the print, petals drifting up; SNOW GLOBE: a snowflake print
 	local lfx = (not fbk) and ((FBX.DragonOn(character) and FBX.Dragon()) or (FBX.LotusOn(character) and FBX.Lotus()) or FBX.Globe(character)) or nil
-	if lfx then pcall(lfx.Print, cf, PR) end
+	-- (2026-10-19, audit P5A-12) the skin print hears whether it is thinned (its petals, chips or star pop go)
+	if lfx then pcall(lfx.Print, cf, PR, thinFor(character)) end
 	local rim
-	if not (Settings.ThinEnemyVFX and character ~= VFXLibrary.LocalCharacter) then
+	if not (Settings.ThinEnemyVFX and FBX.Enemy(character)) then
 		rim = take("CK_Ring", "Line")
 		if rim then
 			local rs = templateSize.CK_Ring
@@ -2319,7 +2356,8 @@ function CryoFX.Blizzard(d)
 		end
 	end
 	-- FROSTBLADE: the fence (kit/fb_bz.py) -- big kunai planted point-down just OUTSIDE the Frost Line ring (inside it the
-	-- wall and the haze would swallow them), leaning out, ring pommels up, rising out of the floor round the ring as it
+	-- wall and the haze would swallow them; 2026-10-19, audit P5A-22: 0.3 studs out, was 1.4, so the solid fence marks
+	-- the edge), leaning out, ring pommels up, rising out of the floor round the ring as it
 	-- draws and melting as the storm thins; and every 8th fleck of the wall a kunai (the count unchanged), when the
 	-- sprite is in the place (FrostbladeKit.Look.KunaiSprite)
 	local fbk, fbKit = FBX.On(caster)
@@ -2337,7 +2375,7 @@ function CryoFX.Blizzard(d)
 			local o = fbKit.New("Ring", folder)
 			if o then
 				fbKit.Fade(o, 1)
-				s.Fence[#s.Fence + 1] = { O = o, K = fbKit.Frame(c + dv * (R + 1.4) + up * (Lk - bury), -up, tg),
+				s.Fence[#s.Fence + 1] = { O = o, K = fbKit.Frame(c + dv * (R + 0.3) + up * (Lk - bury), -up, tg),
 					At = FORM + BL.DrawTime * k / n, Up = Lk - bury }
 			end
 		end
@@ -3919,6 +3957,10 @@ function CryoFX.MirrorCage(d)
 	local thin = thinFor(d.Character)
 	local dens = density(d.Character)
 	local fbk = FBX.On(d.Character)                     -- Frostblade: ice clones of the caster throwing kunai, no panels
+	-- (2026-10-19, audit P5A-15) the clones are copies of the caster's body (buildTemplate): with no body on this client
+	-- (streamed out, dead, not loaded) there is nothing to copy, so the cage draws the Default's panels, not no dome
+	if fbk and not (d.Character.Parent and d.Character:FindFirstChild("HumanoidRootPart")
+		and d.Character:FindFirstChildOfClass("Humanoid")) then fbk = false end
 	-- Frost Lotus: a full bloom in every place; Snow Globe: one giant globe (lfk: the skin's FX module)
 	local lfk = (not fbk) and ((FBX.DragonOn(d.Character) and FBX.Dragon()) or (FBX.LotusOn(d.Character) and FBX.Lotus())
 		or FBX.Globe(d.Character)) or nil
@@ -4102,7 +4144,30 @@ function CryoFX.MirrorCage(d)
 	local burstDone, killed, broke = false, false, false
 	local ripple1 = false
 
-	run(function(now, dt, parts, cframes)
+	-- (2026-10-19, audit P5A-13) the cage's end, every piece guarded: run on its last frame, and also when a frame errors
+	-- (a skin's hook), so the folder, the panels and blooms and the victims' frozen tint never stay behind on screen
+	local function finish()
+		for _, v in ipairs(cage.Victims) do
+			pcall(skinDrop, v.Skin)
+			pcall(give, v.Line)
+			pcall(setTint, v.Model, v.Key, nil)
+		end
+		for _, fly in ipairs(cage.Flying) do
+			pcall(function() if fly.O then (fly.Kit or FBX.Kit()).Drop(fly.O) else give(fly.P) end end)
+		end
+		for _, cl in ipairs(cage.Clones or {}) do pcall(FBX.CloneDrop, cl) end
+		if cage.Blooms and lfk then pcall(lfk.CageDrop, cage) end
+		pcall(dropSet, cage.Set)
+		pcall(floorDrop, fl)
+		pcall(give, lock)
+		task.delay(2, function() folder:Destroy() end)
+		for _, pn in ipairs(cage.Panels) do pcall(panelDrop, pn) end
+		if cage.Template then pcall(function() cage.Template.Model:Destroy() end) end
+		cage.Template = nil
+		if cages[key] == cage then cages[key] = nil end
+	end
+
+	local function frame(now, dt, parts, cframes)
 		local age = serverNow() - cage.T0
 		if cage.Break and not broke and age < cage.ImpAt then
 			cage.ImpAt = age
@@ -4249,7 +4314,8 @@ function CryoFX.MirrorCage(d)
 						end
 					end
 					glareStep(pn, (age < pn.Form) and 0 or cond * (1 - impU), flash * (calm and GLARE.CalmFlash or 1))
-					local flick = 0.75 + 0.25 * math.sin(age * 61 + pn.Index * 1.7)
+					-- (2026-10-19, audit P5A-09) no ~10 Hz flicker on the kill outline under Reduce Flashing
+					local flick = calm and 0.85 or 0.75 + 0.25 * math.sin(age * 61 + pn.Index * 1.7)
 					local kp = (age >= kA) and (math.exp(-(age - kA) / CG.KillPulse) * 0.9 + 0.35) * flick or 0
 					panelPulse(pn, (age < iA) and math.max(math.min(1, pulse) * 0.95, kp * kill) or 0)
 					panelCracks(pn, smooth((age - kA) / (iA - kA)))
@@ -4384,27 +4450,18 @@ function CryoFX.MirrorCage(d)
 			sinkSet(cage.Set, smooth((age - iA - CG.ImpactDur - 0.5) / 0.6), parts, cframes)
 		end
 		if broke and age > iA + 0.3 + CG.MeltTime + 0.2 then
-			for _, fly in ipairs(cage.Flying) do
-				if fly.O then (fly.Kit or FBX.Kit()).Drop(fly.O) else give(fly.P) end
-			end
-			for _, cl in ipairs(cage.Clones or {}) do FBX.CloneDrop(cl) end
-			if cage.Blooms and lfk then lfk.CageDrop(cage) end
-			dropSet(cage.Set)
-			floorDrop(fl)
-			give(lock)
-			for _, v in ipairs(cage.Victims) do
-				skinDrop(v.Skin)
-				give(v.Line)
-				setTint(v.Model, v.Key, nil)
-			end
-			task.delay(2, function() folder:Destroy() end)
-			for _, pn in ipairs(cage.Panels) do panelDrop(pn) end
-			if cage.Template then pcall(function() cage.Template.Model:Destroy() end) end
-			cage.Template = nil
-			if cages[key] == cage then cages[key] = nil end
+			finish()
 			return false
 		end
 		return true
+	end
+
+	run(function(now, dt, parts, cframes)
+		local ok, keep = pcall(frame, now, dt, parts, cframes)
+		if ok then return keep end
+		warnOnce("cagestep", "Mirror Cage stopped: " .. tostring(keep))
+		finish()
+		return false
 	end)
 end
 
@@ -4566,7 +4623,7 @@ local function addTier(c, model, tier, thin)
 	end
 end
 
-local function setCrust(model, stacks)
+local function setCrust(model, stacks, caster)
 	if model == player.Character then return end        -- your own is on your health bar (StatusReactions)
 	local c = crusts[model]
 	if stacks <= 0 then
@@ -4610,7 +4667,8 @@ local function setCrust(model, stacks)
 		end
 	end
 	-- add the tiers this stack count has and the crust does not yet
-	local thin = (Settings.EffectDensity or 1) < 0.75 or Settings.ThinEnemyVFX
+	-- (2026-10-19, audit P5A-12) Reduce Enemy VFX thins an ENEMY shooter's chill only, not every chill (yours included)
+	local thin = thinFor(caster)
 	for tier = c.Stacks + 1, s do addTier(c, model, tier, thin) end
 	c.Stacks = s
 end
@@ -4618,7 +4676,7 @@ end
 function CryoFX.ChillStacks(d)
 	if not d.Character then return end
 	local stacks = tonumber(d.Stacks) or 0
-	setCrust(d.Character, stacks)
+	setCrust(d.Character, stacks, d.Caster)
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -4676,7 +4734,7 @@ local function stepColdMomentum(parts, cframes)
 		local c = plr.Character
 		local on = c and c:GetAttribute("PassiveActive") == true and (plr:GetAttribute("Element") or "Cryo") == "Cryo"
 		local mine = c == player.Character
-		local thin = Settings.ThinEnemyVFX and not mine
+		local thin = Settings.ThinEnemyVFX and not mine and FBX.Enemy(c)   -- (2026-10-19, audit P5A-12) not a teammate's
 		if on then
 			local st = cm[c]
 			if not st then
@@ -4746,7 +4804,8 @@ local started = false
 -- what FrostLotusFX draws with (FBX.Lotus hands it over once): this module's own helpers
 CryoFX._H = { run = run, take = take, give = give, throw = throw, burst = burst, ripple = ripple, flashAt = flashAt,
 	fxFolder = fxFolder, density = density, thinFor = thinFor, flat = flat, smooth = smooth, easeOut = easeOut, dirAt = dirAt,
-	host = host, serverNow = serverNow, Settings = Settings, VFXLibrary = VFXLibrary, STYLE = STYLE }
+	host = host, serverNow = serverNow, Settings = Settings, VFXLibrary = VFXLibrary, STYLE = STYLE,
+	isEnemy = FBX.Enemy }                -- (2026-10-19, audit P5A-12) the skins' "enemy" test: not me and not a teammate
 
 --- Flash Freeze's zone for a Frost Lotus caster (VFXLibrary.CastFlashFreeze): the field of blooms (FrostLotusFX.Field)
 function CryoFX.LotusField(ground, R, leadIn, expand, breakTime, wave, caster)
@@ -4769,7 +4828,21 @@ function CryoFX.Start()
 				for _, nm in ipairs({ "FrostLotusKit", "FrostbladeKit", "SnowGlobeKit", "FrostDragonKit" }) do
 					local m = ReplicatedStorage:WaitForChild("IceMagic"):FindFirstChild(nm)
 					local ok, k = pcall(function() return m and require(m) end)
-					if ok and k then t[#t + 1] = k end
+					if ok and k then
+						t[#t + 1] = k
+						-- (2026-10-19) a kit that lets go of its meshes (MeshBudget) takes take()'s pooled pieces of it along
+						local pre = ({ FrostLotusKit = "FL_", FrostbladeKit = "FB_", SnowGlobeKit = "SG_" })[nm]
+						if pre and k.OnRelease then
+							k.OnRelease(function()
+								for nmPool, pool in pairs(pools) do
+									if string.sub(nmPool, 1, 3) == pre then
+										for _, p in ipairs(pool) do pcall(function() p:Destroy() end) end
+										pools[nmPool] = nil
+									end
+								end
+							end)
+						end
+					end
 				end
 				return t
 			end)() })

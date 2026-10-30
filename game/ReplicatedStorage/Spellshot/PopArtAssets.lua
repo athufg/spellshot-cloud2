@@ -8,6 +8,11 @@
 
 	Rendered by blender_scripts/build_popart_{hud,status,panels}.py and build_fx_world.py.
 	Re-render -> re-upload -> regenerate this file; nothing else needs touching.
+
+	(2026-10-19, audit GA-15) NOT EVERYTHING HERE IS WIRED. Nothing in game/ reads these sections today (a grep for each):
+	Overlay.Word, Overlay.Field, Overlay.SubTab, Tile, Banner, Feed, Bar, Chip, ValueBox, Pill, PillDark, Crosshair (the
+	art; Size.Crosshair is read), Screen (Haste, Knockback, Pull, MarkedBurst, Vignette), Cleanse, FX, Mana.ConvertArc and
+	StatusChip.Shocked. Do not take one for live art without checking what uses it.
 ]]
 
 return {
@@ -295,6 +300,9 @@ return {
 				TRIPLE = "rbxassetid://87257367096196",
 				ULTIMATE = "rbxassetid://130165533156424",
 			},
+			-- (2026-10-19, audit GA-15) PLACEHOLDER: CLUTCH, DOUBLE, ELIMINATED, FIRSTBLOOD and ULTIMATE below are VOLTAIC's
+			-- ids (copied), so a Toxin word would show Voltaic's lettering; only SPOREWIPE and TRIPLE are Toxin's own. Aqua
+			-- has no set at all. Re-render and upload both before anything reads Overlay.Word.
 			Toxin = {
 				CLUTCH = "rbxassetid://71202619188206",
 				DOUBLE = "rbxassetid://135377339128325",

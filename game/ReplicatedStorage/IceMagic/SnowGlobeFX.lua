@@ -1,10 +1,11 @@
 --[[
 	SnowGlobeFX  (ModuleScript)  ->  ReplicatedStorage/IceMagic/SnowGlobeFX
 
-	Cryo's SNOW GLOBE skin (Epic, 2026-10-15), the piece logic: "shake, swirl, settle". Kept OUT of CryoFX (at Luau's
-	limit of 200 top-level locals): CryoFX hands it its helpers once (Init: CryoFX._H) and calls in through the hooks
-	Frost Lotus already uses -- FBX.Globe(caster) answers for a Snow Globe caster with this module, which takes the same
-	calls as FrostLotusFX. The meshes are SnowGlobeKit's. Deep Freeze is not called here: it stays the Default.
+	Cryo's SNOW GLOBE skin (Rare, 2026-10-15; audit P5A-23: was "Epic"), the piece logic: "shake, swirl, settle".
+	Kept OUT of CryoFX (at Luau's limit of 200 top-level locals): CryoFX hands it its helpers once (Init: CryoFX._H)
+	and calls in through the hooks Frost Lotus already uses -- FBX.Globe(caster) answers for a Snow Globe caster with
+	this module, which takes the same calls as FrostLotusFX. The meshes are SnowGlobeKit's. Deep Freeze is not called
+	here: it stays the Default.
 	  HitBloom   M1's hit (pass 3): the globe cracks -- thin inked glass slabs fly out, hard shards, a snow pile settles
 	  Print      Cold Momentum (pass 3): the icon's footprint (a sole with a snowflake stamp, a heel), a star pop as it lands
 	  Field      Flash Freeze (pass 3, from the F icon): the base rim round the zone edge with big upright flakes and a
@@ -31,7 +32,9 @@ function GFX.On(caster)
 end
 
 local function tier(caster)
-	local enemy = H.Settings.ThinEnemyVFX and caster ~= nil and caster ~= H.VFXLibrary.LocalCharacter
+	-- (2026-10-19, audit P5A-12) an enemy is not me and not a teammate (CryoFX's isEnemy)
+	local enemy = H.Settings.ThinEnemyVFX and caster ~= nil
+		and (if H.isEnemy then H.isEnemy(caster) else caster ~= H.VFXLibrary.LocalCharacter)
 	return SG.Tier(H.Settings.EffectDensity, enemy)
 end
 
@@ -78,12 +81,33 @@ local function groundBelow(p, ignore)
 	return r and r.Position.Y or nil
 end
 
+-- (2026-10-19, audit P5A-06) moved up from the PASS 3 block: HitBloom calls shards() and Luau resolves names lexically,
+-- so below it the call was the nil global and every Snow Globe M1 hit errored (leaking its taken slabs)
+local SHARD = "rbxassetid://98211061341574"         -- VFXLibrary.Config.Textures.Shard: the chunky angular chip, hard alpha
+local function shards(pos, n, up, spread, size)
+	if n <= 0 then return end
+	local h = H.host(CFrame.new(pos))
+	h.Size = Vector3.new(0.5, 0.5, 0.5)
+	local C = H.VFXLibrary.Config.Colors
+	local e = H.VFXLibrary.Emitter(h, {
+		Texture = H.VFXLibrary.Wrap and H.VFXLibrary.Wrap.Shard(SHARD) or SHARD, Color = (H.VFXLibrary.Wrap and H.VFXLibrary.Wrap.CS or ColorSequence.new)(C.IceLight, C.IceMid), LightEmission = 0.1, LightInfluence = 0.5,
+		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, size or 0.6), NumberSequenceKeypoint.new(1, (size or 0.6) * 0.7) }),
+		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.88, 0), NumberSequenceKeypoint.new(1, 1) }),
+		Lifetime = NumberRange.new(0.7, 1.2), Speed = NumberRange.new(up * 0.6, up), SpreadAngle = Vector2.new(spread, spread),
+		EmissionDirection = Enum.NormalId.Top, Rotation = NumberRange.new(0, 360), RotSpeed = NumberRange.new(-240, 240),
+		Drag = 1.2, Acceleration = Vector3.new(0, -22, 0), Rate = 0,
+	})
+	e:Emit(n)
+	task.delay(2, function() h:Destroy() end)
+end
+GFX.Shards = shards
+
 ----------------------------------------------------------------------------------------------------
 -- M1's HIT (stage 2, from the M1 icon): the globe cracks -- 2-3 thin inked glass slabs fly out and tumble down (each its
 -- glint on top), hard shards burst, and a small snow pile settles on the ground below for a moment. All pooled (three a
 -- second); opaque, so they go by shrinking. The angular chip burst is CryoFX's own, on the shooter's hit moment.
 ----------------------------------------------------------------------------------------------------
-function GFX.HitBloom(hit, dir)
+function GFX.HitBloom(hit, dir, thin)
 	local folder = H.fxFolder()
 	local p = hit.Position + hit.Normal * 0.1
 	local ignore = { folder }
@@ -95,7 +119,7 @@ function GFX.HitBloom(hit, dir)
 	local side = out:Cross(Vector3.yAxis)
 	side = side.Magnitude > 1e-3 and side.Unit or Vector3.xAxis
 	local slabs = {}
-	for i = 1, SG.Slabs[SG.Tier(H.Settings.EffectDensity, false)] do
+	for i = 1, SG.Slabs[SG.Tier(H.Settings.EffectDensity, thin == true)] do   -- (2026-10-19, audit P5A-12) honours `thin`
 		local o = SG.Get("Slab3", folder)
 		if o then
 			SG.Fade(o, 0)
@@ -161,20 +185,22 @@ end
 -- shrinks away with the print. Pooled.
 ----------------------------------------------------------------------------------------------------
 local POP = "rbxassetid://93429522929420"            -- VFXLibrary.Config.Textures.ShardBurst: the flat comic frost-burst
-function GFX.Print(cf, PR)
+function GFX.Print(cf, PR, thin)
 	local o = SG.Get("Print3", H.fxFolder())
 	if not o then return end
 	SG.Fade(o, 0)
-	local h = H.host(CFrame.new(cf.Position + cf.UpVector * 0.2))
-	h.Size = Vector3.new(0.3, 0.3, 0.3)
-	local e = H.VFXLibrary.Emitter(h, {
-		Texture = POP, Color = ColorSequence.new(Color3.new(1, 1, 1)), LightEmission = 0.1, LightInfluence = 0.4,
-		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.3), NumberSequenceKeypoint.new(1, 0.9) }),
-		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.8, 0), NumberSequenceKeypoint.new(1, 1) }),
-		Lifetime = NumberRange.new(0.22, 0.22), Speed = NumberRange.new(0, 0), Rotation = NumberRange.new(0, 360), Rate = 0,
-	})
-	e:Emit(1)
-	task.delay(1, function() h:Destroy() end)
+	if not thin then                                       -- (2026-10-19, audit P5A-12) thinned: the print, no star pop
+		local h = H.host(CFrame.new(cf.Position + cf.UpVector * 0.2))
+		h.Size = Vector3.new(0.3, 0.3, 0.3)
+		local e = H.VFXLibrary.Emitter(h, {
+			Texture = POP, Color = ColorSequence.new(Color3.new(1, 1, 1)), LightEmission = 0.1, LightInfluence = 0.4,
+			Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.3), NumberSequenceKeypoint.new(1, 0.9) }),
+			Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.8, 0), NumberSequenceKeypoint.new(1, 1) }),
+			Lifetime = NumberRange.new(0.22, 0.22), Speed = NumberRange.new(0, 0), Rotation = NumberRange.new(0, 360), Rate = 0,
+		})
+		e:Emit(1)
+		task.delay(1, function() h:Destroy() end)
+	end
 	local K0 = cf * CFrame.Angles(0, -math.pi / 2, 0) * CFrame.new(0, 0.01, 0)    -- (the print frame's long axis is its X: the toe there)
 	local t0 = os.clock()
 	H.run(function(now, dt, parts, cframes)
@@ -194,24 +220,7 @@ end
 -- PASS 3 (2026-10-15: "build the effects from the HUD icons"): the toon pieces -- opaque, banded, ink-hulled, never faded
 -- (a piece goes by sinking or shrinking); hard-edged Shard-sprite particles through VFXLibrary's emitter()
 ----------------------------------------------------------------------------------------------------
-local SHARD = "rbxassetid://98211061341574"         -- VFXLibrary.Config.Textures.Shard: the chunky angular chip, hard alpha
-local function shards(pos, n, up, spread, size)
-	if n <= 0 then return end
-	local h = H.host(CFrame.new(pos))
-	h.Size = Vector3.new(0.5, 0.5, 0.5)
-	local C = H.VFXLibrary.Config.Colors
-	local e = H.VFXLibrary.Emitter(h, {
-		Texture = H.VFXLibrary.Wrap and H.VFXLibrary.Wrap.Shard(SHARD) or SHARD, Color = (H.VFXLibrary.Wrap and H.VFXLibrary.Wrap.CS or ColorSequence.new)(C.IceLight, C.IceMid), LightEmission = 0.1, LightInfluence = 0.5,
-		Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, size or 0.6), NumberSequenceKeypoint.new(1, (size or 0.6) * 0.7) }),
-		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.88, 0), NumberSequenceKeypoint.new(1, 1) }),
-		Lifetime = NumberRange.new(0.7, 1.2), Speed = NumberRange.new(up * 0.6, up), SpreadAngle = Vector2.new(spread, spread),
-		EmissionDirection = Enum.NormalId.Top, Rotation = NumberRange.new(0, 360), RotSpeed = NumberRange.new(-240, 240),
-		Drag = 1.2, Acceleration = Vector3.new(0, -22, 0), Rate = 0,
-	})
-	e:Emit(n)
-	task.delay(2, function() h:Destroy() end)
-end
-GFX.Shards = shards
+-- (2026-10-19, audit P5A-06) SHARD and shards() now sit above HitBloom, which calls them (a local is only seen below it)
 
 local function fadeNear(o)
 	for _, p in ipairs(o.P) do H.VFXLibrary.RegisterProximityFade(p) end
@@ -232,7 +241,9 @@ function GFX.Field(ground, R, leadIn, expand, breakTime, wave, caster)
 	folder.Parent = H.fxFolder()
 	local c = ground.Position
 	local dens = H.density(caster)
-	local rr = R + 0.3                                   -- just outside the Default's Frost Line ring (the line IS the edge)
+	-- (2026-10-19, audit P5A-22: was R + 0.3) the curb's inner face on the Frost Line's outer edge (the line IS the edge,
+	-- 0.2 wide): the solid rim no longer stands a gap outside where the root ends
+	local rr = R + 0.1
 	local s, sy = rr / SG.RefR, SG.RefR / rr
 	local rise = leadIn + expand                        -- the front reaches the rim
 	local rimBreak = breakTime + wave
@@ -599,9 +610,12 @@ function GFX.Storm(s, c, R, form, caster)
 	-- short, every one turned and scaled its own way), the flurry -- wide white crescent tiers turning with the wall. The
 	-- wall's flecks run at 70% to offset the crescents (the obstruction stays at or under the Default's). The expiry tell:
 	-- from the Default's own thinning on, flecks and flurry slow, fall and clear; rim and pines sink.
+	-- (2026-10-19, audit P5A-02) the pines and the flurry are solid and stand INSIDE the storm, so they take a keyhole
+	-- (Frost Lotus's, FrostLotusFX:288-328): one between this camera and any player's body -- or round the camera itself --
+	-- ghosts to KEY.Ghost on every client, so a body behind a pine or a crescent stays in view as it would in the Default
 	local ti = tier(caster)
 	local folder = s.Folder
-	local sc = (R + 0.25) / SG.RefR
+	local sc = (R + 0.1) / SG.RefR                      -- (2026-10-19, audit P5A-22: was R + 0.25) on the line's outer edge
 	local rim, pines = {}, {}
 	for f = 1, 12 do
 		local o = layer("BzRim" .. f, folder)
@@ -617,7 +631,7 @@ function GFX.Storm(s, c, R, form, caster)
 			local a = 2 * math.pi * (i - 0.5) / n + rng:NextNumber(-0.15, 0.15)
 			local r = R * rng:NextNumber(0.55, 0.82)              -- inside the storm, big (the developer's call, 2026-10-15)
 			pines[#pines + 1] = { O = o, P = c + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r), Yaw = rng:NextNumber(0, 6.28),
-				S = rng:NextNumber(1.5, 1.9), T = form * 0.5 + 0.06 * i }
+				S = rng:NextNumber(1.5, 1.9), T = form * 0.5 + 0.06 * i, Kind = o.Name, KF = 0, KT = 0 }
 		end
 	end
 	local fl = layer("Flurry", folder)
@@ -630,6 +644,89 @@ function GFX.Storm(s, c, R, form, caster)
 		end
 	end
 	local th, last = 0, nil
+	local KEY = { Every = 3, Ghost = 0.82, Rate = 9, Rows = { 0.7, 2.0, 3.3, 4.6 }, Cols = { -0.9, 0, 0.9 } }
+	local PINE = { PineT = { 1.95, 4.75 }, PineS = { 1.65, 3.1 } }   -- a pine's reach at scale 1 (radius, top), ink included
+	local Players = game:GetService("Players")
+	local frame, flk = 0, { KF = 0, KT = 0 }
+	--- does the segment e -> e + d pass through pine `p` (an upright cylinder at its place and scale this frame)
+	local function throughPine(p, e, d)
+		local dim, b = PINE[p.Kind], p.Now
+		local r, top = dim[1] * p.NowS, dim[2] * p.NowS
+		local ax, az = e.X - b.X, e.Z - b.Z
+		local dd = d.X * d.X + d.Z * d.Z
+		local t = (dd < 1e-9) and 0 or math.clamp(-(ax * d.X + az * d.Z) / dd, 0, 1)
+		local qx, qz = ax + d.X * t, az + d.Z * t
+		local dist2 = qx * qx + qz * qz
+		if dist2 > r * r then return false end
+		local t0, t1 = t, t
+		if dd >= 1e-9 then
+			local half = math.sqrt((r * r - dist2) / dd)
+			t0, t1 = math.max(0, t - half), math.min(1, t + half)
+		end
+		local y0, y1 = e.Y + d.Y * t0 - b.Y, e.Y + d.Y * t1 - b.Y
+		return math.max(y0, y1) >= 0 and math.min(y0, y1) <= top
+	end
+	--- does the segment e -> e + d pass through one of the flurry's crescents (in its own frame `cf`, built at BzR, scale S)
+	local function throughFlurry(cf, S, e, d)
+		local le, ld = cf:PointToObjectSpace(e) / S, cf:VectorToObjectSpace(d) / S
+		local dd = ld.X * ld.X + ld.Z * ld.Z
+		if dd < 1e-9 then return false end
+		local bq = le.X * ld.X + le.Z * ld.Z
+		local function hits(band, t, w)
+			if t < 0 or t > 1 then return false end
+			local q = le + ld * t
+			if math.abs(q.Y - band[2]) > w then return false end
+			local da = (math.atan2(q.Z, q.X) - band.A0) % (2 * math.pi)
+			return da <= math.rad(band[3]) + 0.06 or da >= 2 * math.pi - 0.06
+		end
+		for _, band in ipairs(SG.FlurryBands or {}) do
+			if band.A0 then
+				local w, rm = band[4] + 0.3, SG.BzR * band[1]
+				for _, r in ipairs({ rm - w, rm, rm + w }) do               -- its inner edge, middle and outer edge
+					local disc = bq * bq - dd * (le.X * le.X + le.Z * le.Z - r * r)
+					if disc >= 0 then
+						local sq = math.sqrt(disc)
+						if hits(band, (-bq - sq) / dd, w) or hits(band, (-bq + sq) / dd, w) then return true end
+					end
+				end
+				local tc = -bq / dd                                       -- (a ray grazing the band between those circles)
+				local qc = le + ld * tc
+				local rc = math.sqrt(qc.X * qc.X + qc.Z * qc.Z)
+				if math.abs(rc - rm) <= w and hits(band, tc, w) then return true end
+			end
+		end
+		return false
+	end
+	local function keyhole()
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		local E, camRight = cam.CFrame.Position, cam.CFrame.RightVector
+		for _, p in ipairs(pines) do p.KT = (p.Now and throughPine(p, E, Vector3.zero)) and KEY.Ghost or 0 end
+		flk.KT = 0
+		for _, plr in ipairs(Players:GetPlayers()) do
+			local m = plr.Character
+			local root = m and m:FindFirstChild("HumanoidRootPart")
+			if root then
+				local hum = m:FindFirstChildOfClass("Humanoid")
+				local feet = root.Position.Y - root.Size.Y / 2 - (hum and hum.HipHeight or 2)
+				for _, y in ipairs(KEY.Rows) do
+					for _, x in ipairs(KEY.Cols) do
+						local d = Vector3.new(root.Position.X, feet + y, root.Position.Z) + camRight * x - E
+						for _, p in ipairs(pines) do
+							if p.KT == 0 and p.Now and throughPine(p, E, d) then p.KT = KEY.Ghost end
+						end
+						if flk.KT == 0 and flk.CF and throughFlurry(flk.CF, flk.S, E, d) then flk.KT = KEY.Ghost end
+					end
+				end
+			end
+		end
+	end
+	local function ghost(x, o, dt)
+		if x.KF == x.KT then return end
+		local step = KEY.Rate * dt
+		x.KF = (x.KF < x.KT) and math.min(x.KT, x.KF + step) or math.max(x.KT, x.KF - step)
+		for _, part in ipairs(o.P) do part.LocalTransparencyModifier = x.KF end
+	end
 	H.run(function(now, dt, parts, cframes)
 		if not folder.Parent then
 			for _, x in ipairs(rim) do SG.Drop(x.O) end
@@ -659,12 +756,17 @@ function GFX.Storm(s, c, R, form, caster)
 				SG.Place(x.O, CFrame.new(c + Vector3.new(0, y, 0)), parts, cframes, sc, 1 / sc)
 			end
 		end
+		frame += 1
+		if frame % KEY.Every == 1 then keyhole() end
 		for _, p in ipairs(pines) do
 			local u = (age - p.T) / 0.45
 			if u > 0 then
 				local k = backOut(math.min(u, 1)) * (1 - gone)
 				SG.Fade(p.O, (k <= 0.02) and 1 or 0)
-				SG.Place(p.O, CFrame.new(p.P - Vector3.new(0, 1.2 * gone, 0)) * CFrame.Angles(0, p.Yaw, 0), parts, cframes, p.S * math.max(0.02, k))
+				local at = p.P - Vector3.new(0, 1.2 * gone, 0)
+				SG.Place(p.O, CFrame.new(at) * CFrame.Angles(0, p.Yaw, 0), parts, cframes, p.S * math.max(0.02, k))
+				p.Now, p.NowS = (k > 0.02) and at or nil, p.S * math.max(0.02, k)     -- (what the keyhole tests)
+				ghost(p, p.O, dt)
 			end
 		end
 		if fl then
@@ -673,7 +775,10 @@ function GFX.Storm(s, c, R, form, caster)
 			th -= 0.6 * (1 - 0.85 * q) * dt2                       -- turning with the wall, slowing at the end
 			local grow = H.easeOut(math.clamp((age - form * 0.6) / 0.8, 0, 1)) * (1 - q)
 			SG.Fade(fl, (grow <= 0.02) and 1 or 0)
-			SG.Place(fl, CFrame.new(c - Vector3.new(0, 6 * q, 0)) * CFrame.Angles(0, th, 0), parts, cframes, fs * math.max(0.02, grow))
+			local fcf = CFrame.new(c - Vector3.new(0, 6 * q, 0)) * CFrame.Angles(0, th, 0)
+			SG.Place(fl, fcf, parts, cframes, fs * math.max(0.02, grow))
+			flk.CF, flk.S = (grow > 0.02) and fcf or nil, fs * math.max(0.02, grow)
+			ghost(flk, fl, dt)
 		end
 		return true
 	end)

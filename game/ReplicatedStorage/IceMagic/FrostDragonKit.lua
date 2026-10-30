@@ -34,10 +34,46 @@ local SkinCatalog = require(ReplicatedStorage:WaitForChild("Spellshot"):WaitForC
 local FD = {}
 FD.Id = "FrostDragon"
 
+-- (2026-10-26) THE SHOWCASE CONVENTION: a client-only model no player owns, with the attribute ShowcaseSkin = "<SkinId>"
+-- (the Loadout Altar's dummies, the pedestal's held M1), wears that skin -- live and in Studio. Every such model asked
+-- about (On) or seen entering the workspace (the lazy block below) is kept here wherever it sits (the showcases parent
+-- theirs in their own folders), so the lazy build, its release and the kill effect's watch count it until it leaves the
+-- workspace.
+local showcase = {}
+--- whether `m` is a showcase stand-in wearing Frost Dragon (one wearing any skin is kept)
+function FD.Showcase(m)
+	local id = typeof(m) == "Instance" and m:GetAttribute("ShowcaseSkin")
+	if type(id) ~= "string" or Players:GetPlayerFromCharacter(m) then return false end
+	if not showcase[m] then                            -- (2026-10-26) pruned on insert: destroyed stand-ins don't pile up
+		for k in pairs(showcase) do
+			if not k:IsDescendantOf(workspace) then showcase[k] = nil end
+		end
+		showcase[m] = true
+	end
+	return id == FD.Id
+end
+--- the showcase stand-ins in the workspace wearing Frost Dragon now
+function FD.Showcased()
+	local out = {}
+	for m in pairs(showcase) do
+		if not m:IsDescendantOf(workspace) then
+			showcase[m] = nil
+		elseif m:GetAttribute("ShowcaseSkin") == FD.Id then
+			out[#out + 1] = m
+		end
+	end
+	return out
+end
+
 --- Whether `character`'s player wears Frost Dragon (their Cryo skin, while Cryo is their Element).
 function FD.On(character)
 	if typeof(character) ~= "Instance" then return false end
 	local plr = Players:GetPlayerFromCharacter(character)
+	-- (2026-10-26) a showcase stand-in (ShowcaseSkin), live too; it starts the build (FD.Build: one at a time)
+	if not plr and FD.Showcase(character) then
+		if not (FD.Built or FD.Failed) then FD.Build() end
+		return true
+	end
 	-- Studio only: a dummy with StudioSkin stands in for a caster (the skins' side-by-side test); never live
 	if not plr then return RunService:IsStudio() and character:GetAttribute("StudioSkin") == FD.Id end
 	if (plr:GetAttribute("Element") or "Cryo") ~= "Cryo" then return false end
@@ -133,10 +169,15 @@ local FACETED = { [0] = true, [1] = true, [2] = true, [3] = true }
 ----------------------------------------------------------------------------------------------------
 -- building: one resizable EditableMesh at a time, copied into a fixed-size one (FrostLotusKit's pattern); hard facets
 ----------------------------------------------------------------------------------------------------
+-- (2026-10-19) the shared EditableMesh budget's order: this kit's meshes come first (MeshBudget)
+local MeshBudget = require(script.Parent:WaitForChild("MeshBudget"))
+
 local function retry(make)
-	for _ = 1, 40 do
+	for i = 1, 40 do
 		local ok, m = pcall(make)
 		if ok and m then return m end
+		if i % 8 == 1 then MeshBudget.MakeRoom() end       -- (refused: the optional holders let go of what they can;
+		                                                  -- asked again every 2 s, as one still in use may be free by then)
 		task.wait(0.25)
 	end
 	error("EditableMesh budget: gave up", 0)
@@ -853,7 +894,8 @@ function FD.GradeFF(folder)
 			local c = isPart and p.Color or p.Color3
 			local g = graded[p]
 			if not g or c ~= g.Set then
-				local h, s = c:ToHSV()
+				-- (2026-10-19) a wrap's glow can tint a decal past 1 (Sakura Frost): read the hue of it clamped, so ToHSV does not warn
+				local h, s = Color3.new(math.min(c.R, 1), math.min(c.G, 1), math.min(c.B, 1)):ToHSV()
 				local set = c
 				if s > 0.25 and h > 0.45 and h < 0.7 then          -- a saturated blue / cyan
 					set = c:Lerp((isPart and p.Material == Enum.Material.Neon) and WHITE or PALE, isDecal and 0.5 or 0.65)
@@ -868,14 +910,23 @@ function FD.GradeFF(folder)
 end
 
 local building = false
+local attempts = 0                -- builds tried: a failed one is tried again later, a few times
+local usedAt = 0                  -- the last New / Place / Get (a kit nobody wears lets go of its meshes, below)
+local releaseHooks = {}           -- the pools of this kit's pieces elsewhere (OnRelease): emptied with it
+function FD.OnRelease(fn) releaseHooks[#releaseHooks + 1] = fn end
+local wanted = function() return true end   -- whether anybody here still wears the skin (the lazy block's, below)
 function FD.Build()
-	if building then return end
+	if building or FD.Built then return end
 	building = true
+	FD.Failed = nil
+	attempts += 1
+	MeshBudget.Essential(FD.Id, true)         -- (while it builds, no optional mesh starts)
 	task.spawn(function()
 		local ok, data = pcall(function() return require(script.Parent:WaitForChild("FrostDragonData", 10)) end)
 		if not ok or type(data) ~= "table" then
 			warn("[FrostDragonKit] no FrostDragonData: " .. tostring(data))
 			FD.Failed = true
+			MeshBudget.Essential(FD.Id, false)
 			return
 		end
 		FD.Data = data
@@ -910,9 +961,19 @@ function FD.Build()
 			table.clear(keep)
 			table.clear(kinds)
 			FD.Failed = true
+			MeshBudget.Essential(FD.Id, false)
+			-- not for good (2026-10-19): the budget frees as wraps and other effects let go of theirs, so the build is tried
+			-- again while somebody still wears the skin -- after 15, 30, 60 and 120 s -- before the Default stays
+			building = false
+			if attempts < 5 then
+				task.delay(15 * 2 ^ (attempts - 1), function() if wanted() then FD.Build() end end)
+			end
 			return
 		end
 		FD.Built = true
+		building = false                          -- (2026-10-27) left true, releaseKit never let a built kit go: the Loadout's
+		                                          -- browsed skins held their meshes all session and starved every later build
+		MeshBudget.Essential(FD.Id, false)
 	end)
 end
 
@@ -921,6 +982,7 @@ function FD.Kind(name)
 end
 
 function FD.New(name, parent)
+	usedAt = os.clock()
 	local k = kinds[name]
 	if not k then return nil end
 	local o = { Kind = k, Parts = {}, F = -1, S = 1 }
@@ -984,6 +1046,7 @@ end
 
 --- place piece `o` with its pivot at `cf`, scale `s` (a Vector3 for the plate's L / T / W, or a number)
 function FD.Place(o, cf, parts, cframes, s)
+	usedAt = os.clock()
 	s = s or 1
 	local sv = typeof(s) == "Vector3" and s or Vector3.new(s, s, s)
 	if sv ~= o.S then
@@ -1010,22 +1073,65 @@ end
 -- LAZY build (2026-10-17, as FrostDragonKit): only once a player in the server wears this skin, or -- in Studio -- a test
 -- dummy stands in for it (StudioSkin). Every Cryo skin and wrap shares one EditableMesh budget per client; a kit nobody
 -- in the server wears takes none of it (eager builds of all four overran it, and the worn skin fell back to the Default).
+--- MeshBudget's Optional (2026-10-19): a built kit nobody here wears right now -- no player is Cryo in this skin, no Studio
+--- stand-in -- and that placed no piece for 10 s lets go of every mesh, so another Element's worn wrap (Terra's Obsidian
+--- Magma) can have the budget; the next player to be Cryo in the skin builds it again. Its pooled pieces elsewhere go
+--- with it (OnRelease). Built goes false first, so whatever asks from now on draws the Default.
+local function releaseKit()
+	if building or not FD.Built or os.clock() - usedAt < 10 then return end
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr.Character and FD.On(plr.Character) then return end
+	end
+	if RunService:IsStudio() then
+		for _, m in ipairs(workspace:GetChildren()) do
+			if m:IsA("Model") and m:GetAttribute("StudioSkin") == FD.Id then return end
+		end
+	end
+	if #FD.Showcased() > 0 then return end              -- (2026-10-26) a showcase stand-in wears it, live and in Studio
+	FD.Built = false
+	for _, fn in ipairs(releaseHooks) do pcall(fn) end
+	for _, mp in ipairs(templates) do pcall(function() mp:Destroy() end) end
+	for _, m in ipairs(keep) do pcall(function() m:Destroy() end) end
+	table.clear(templates)
+	table.clear(keep)
+	table.clear(kinds)
+	attempts = 0
+end
+MeshBudget.Optional(releaseKit)
+--- (2026-10-26) the same let-go without the 10 s idle wait: the Altar showcase calls it on a swap, once the piece that
+--- showed this skin is gone (still nothing if a player wears it, a stand-in still shows it, or it is building)
+function FD.ReleaseNow()
+	usedAt = 0
+	releaseKit()
+end
+
 do
-	local lazyStarted = false
+	-- (2026-10-19) one build at a time; after a failed one, the next player to put the skin on starts another
 	local function go()
-		if lazyStarted then return end
-		lazyStarted = true
 		FD.Build()
 	end
 	local attr = SkinCatalog.ElementSkinAttr("Cryo")
 	local function check(plr)
-		if lazyStarted then return end
+		if FD.Built then return end
 		local ok, id = pcall(SkinCatalog.ElementSkin, plr, "Cryo")
-		if ok and id == FD.Id then go() end
+		if ok and id == FD.Id and (plr:GetAttribute("Element") or "Cryo") == "Cryo" then go() end
+	end
+	wanted = function()
+		for _, plr in ipairs(Players:GetPlayers()) do
+			local ok, id = pcall(SkinCatalog.ElementSkin, plr, "Cryo")
+			if ok and id == FD.Id and (plr:GetAttribute("Element") or "Cryo") == "Cryo" then return true end
+		end
+		if RunService:IsStudio() then
+			for _, m in ipairs(workspace:GetChildren()) do
+				if m:IsA("Model") and m:GetAttribute("StudioSkin") == FD.Id then return true end
+			end
+		end
+		return #FD.Showcased() > 0                         -- (2026-10-26) a showcase stand-in, live and in Studio
 	end
 	local function watch(plr)
 		check(plr)
 		plr:GetAttributeChangedSignal(attr):Connect(function() check(plr) end)
+		plr:GetAttributeChangedSignal("Element"):Connect(function() check(plr) end)   -- (back to Cryo: a released kit again)
 	end
 	for _, plr in ipairs(Players:GetPlayers()) do watch(plr) end
 	Players.PlayerAdded:Connect(watch)
@@ -1033,6 +1139,11 @@ do
 		local function dummy(m) if m:IsA("Model") and m:GetAttribute("StudioSkin") == FD.Id then go() end end
 		for _, m in ipairs(workspace:GetChildren()) do dummy(m) end
 		workspace.ChildAdded:Connect(function(m) task.defer(dummy, m) end)
+	end
+	-- (2026-10-26) a showcase stand-in (ShowcaseSkin, live and in Studio) builds it too, wherever in the workspace it is put
+	if RunService:IsClient() then
+		local function stand(m) if m.Parent and FD.Showcase(m) then go() end end
+		workspace.DescendantAdded:Connect(function(m) if m:IsA("Model") then task.defer(stand, m) end end)
 	end
 end
 return FD

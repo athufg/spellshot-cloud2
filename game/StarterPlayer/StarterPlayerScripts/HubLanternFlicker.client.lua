@@ -2,48 +2,53 @@
 	HubLanternFlicker (LocalScript, StarterPlayerScripts) -- 2026-10-15, on request: the Arcane Observatory hub's lanterns
 	flicker like flames.
 
-	Every lantern is two things in the hub: its glowing panes (triangles in the merged Neon mesh
-	Visual.OBS_Lantern_Glow_01, 772 of them for the whole hub) and a PointLight on a part in Lights (Light_Lantern*).
-	On this client:
-	  * the glow mesh is split once at runtime into one MeshPart per lantern (each triangle goes to the nearest lantern
-	    light; a triangle with none near goes to its own 3-stud cell) and the merged original is hidden locally. The
-	    mesh is small, so this stays far inside the EditableMesh limits (build resizable, copy fixed; one resizable at
-	    a time);
-	  * every lantern then flickers slowly on its own clock and tempo -- a slow waver, a gentle drift and now and then a
-	    soft gutter -- its
-	    panes' Neon brightness and its PointLight's Brightness moving together.
-	If the split fails the lights still flicker and the panes stay as they were. Nothing changes on the server.
+	(2026-10-27) The lanterns are NEW: real parts in hub.Lanterns, a Persistent model built in Edit by
+	hub/lanterns_2026_10_27/build_lanterns.lua -- 62 models Lantern_<Name> (Kind Wall / Post / Standing). Each one has a
+	Neon flame of three SpecialMesh spheres (Flame, FlameTip, FlamePoint; attribute FlameY = the part centre's height
+	above the flame's base), half see-through amber Neon panes ("Glass"), a Neon "Ceiling" plate catching the glow
+	inside the housing, and its own PointLight "LanternLight" in the Flame (attribute RestBrightness). On this client
+	every lantern, on its own clock and tempo:
+	  * its light's Brightness and the Neon colour of its flame, panes and ceiling move together -- a slow waver, a
+	    gentle drift and now and then a soft gutter (the 2026-10-15 curve, unchanged);
+	  * its flame flutters: taller and slimmer, shorter and rounder, leaning a little side to side, scaled about the
+	    flame's base (SpecialMesh Scale + Offset, so no part ever moves). A gutter also shrinks the flame.
+	The merged glow mesh (Visual.OBS_Lantern_Glow_01) is no longer split or hidden here -- no EditableMesh at all. The old
+	hub.Lights.Light_Lantern* PointLights are disabled in Edit (kept, never deleted) and left alone. Nothing changes on
+	the server.
+	(2026-10-19, audit P6A-11) Reduce Flashing holds every lantern steady at its own brightness (no waver, no gutter);
+	(2026-10-27) its flame keeps its size and only sways slowly.
 ]]
 
-local AssetService = game:GetService("AssetService")
 local RunService = game:GetService("RunService")
+local Settings = require(game:GetService("ReplicatedStorage"):WaitForChild("Spellshot"):WaitForChild("SpellshotSettings"))
 
 -- EVERY NUMBER HERE IS A PROPOSAL
 local Tuning = {
 	Hub = "ArcaneObservatoryHub",
-	Glow = "OBS_Lantern_Glow_01",
+	Lanterns = "Lanterns",
 	Centre = Vector3.new(8000, 0, 8000),
 	FarAway = 500,                       -- no updates while the camera is further than this
-	Near = 3.5,                          -- studs: a pane triangle belongs to a lantern light this close
-	Cell = 3,                            -- studs: panes with no light near are grouped in cells this size
+	Near = 140,                          -- (2026-10-27) studs: only lanterns this close to the camera are animated
+	Rate = 1 / 30,                       -- (2026-10-27) seconds between updates
 	-- 2026-10-15, owner: "too fast -- every lantern should flick slowly and randomly". All noise now (no regular sine),
 	-- slow, and each lantern on its own tempo (Tempo: a per-lantern multiplier picked from this range)
 	Waver = { Hz = 0.45, Amount = 0.14 },
 	Drift = { Hz = 1.1, Amount = 0.05 },                -- a gentler, quicker layer on top, still smooth
 	Sputter = { Hz = 0.08, From = 0.34, Dip = 0.3 },    -- now and then (when the slowest noise passes From) it gutters
 	Tempo = { 0.6, 1.4 },
-	PaneMax = 1.35,                      -- the panes' brightest, as a multiple of their colour
+	GlowMax = 1.35,                      -- the flame's, panes' and ceiling's brightest, as a multiple of their colour
+	-- (2026-10-27) the flame's shape
+	Flutter = { Hz = 1.6, Amount = 0.09 },   -- height wobble (x rest height)
+	Slim = 0.5,                              -- width moves against height by this much (taller = slimmer)
+	Gutter = 0.6,                            -- how much a dip in brightness shortens the flame
+	Lean = { Hz = 0.7, Amount = 0.1 },       -- sideways shear, studs per stud of height
+	ReduceLean = 0.5,                        -- Reduce Flashing keeps this much of the lean, nothing else
 }
 
 local hub = workspace:WaitForChild(Tuning.Hub, 60)
 if not hub then return end
-local visual = hub:WaitForChild("Visual", 60)
-local lightsFolder = hub:WaitForChild("Lights", 60)
-if not (visual and lightsFolder) then return end
-
-local folder = Instance.new("Folder")
-folder.Name = "HubLanternFlicker"
-folder.Parent = workspace
+local root = hub:WaitForChild(Tuning.Lanterns, 60)
+if not root then return end
 
 local function seed(s)
 	local h = 0
@@ -51,131 +56,39 @@ local function seed(s)
 	return h / 1000003 * 100
 end
 
--- the lantern lights: [part] = { Light, Brightness, Phase }
+-- the lanterns: [model] = { Phase, At, Light, Brightness, Flames = { { Part, Mesh, Y, Colour } }, Glows = { { Part, Colour } } }
 local lanterns = {}
-local function addLight(part)
-	if lanterns[part] or not part:IsA("BasePart") or not part.Name:find("Lantern") then return end
-	local light = part:FindFirstChildWhichIsA("Light")
-	if not light then return end
-	lanterns[part] = { Light = light, Brightness = light.Brightness, Phase = seed(part.Name), Panes = {} }
-end
-for _, p in ipairs(lightsFolder:GetChildren()) do addLight(p) end
-lightsFolder.ChildAdded:Connect(function(p) task.defer(addLight, p) end)
-
--- the panes: one MeshPart per lantern (or per cell), built from the merged glow mesh
-local panes = {}   -- { Part, Colour, Owner (a lantern entry or a phase holder) }
-local keep = {}
-local hiddenGlow = false
-
-local function hideGlow(part)
-	if hiddenGlow and part.Name == Tuning.Glow then part.Transparency = 1 end
-end
-
-local function split(source)
-	local src = AssetService:CreateEditableMeshAsync(source.MeshContent)
-	local cf, scale = source.CFrame, source.Size / source.MeshSize
-	local groups, order = {}, {}
-	for _, f in ipairs(src:GetFaces()) do
-		local vs = src:GetFaceVertices(f)
-		local c = Vector3.zero
-		for _, v in ipairs(vs) do c += src:GetPosition(v) end
-		c = cf:PointToWorldSpace(c / #vs * scale)
-		local owner, best = nil, Tuning.Near
-		for part in pairs(lanterns) do
-			local d = (part.Position - c).Magnitude
-			if d < best then owner, best = part, d end
-		end
-		local key = owner or ("cell" .. math.floor(c.X / Tuning.Cell) .. "," .. math.floor(c.Y / Tuning.Cell) .. ","
-			.. math.floor(c.Z / Tuning.Cell))
-		local g = groups[key]
-		if not g then
-			g = { Faces = {} }
-			groups[key] = g
-			order[#order + 1] = key
-		end
-		table.insert(g.Faces, f)
-	end
-	local built = {}
-	for _, key in ipairs(order) do
-		local g = groups[key]
-		-- the group's box centre: the mesh is written around it, so the part sits there whichever way a MeshPart
-		-- centres an EditableMesh
-		local lo, hi = Vector3.one * math.huge, -Vector3.one * math.huge
-		for _, f in ipairs(g.Faces) do
-			for _, v in ipairs(src:GetFaceVertices(f)) do
-				local p = cf:PointToWorldSpace(src:GetPosition(v) * scale)
-				lo, hi = lo:Min(p), hi:Max(p)
+local function add(m)
+	if lanterns[m] or not m:IsA("Model") then return end
+	local l = { Phase = seed(m.Name), At = m:GetPivot().Position, Flames = {}, Glows = {} }
+	for _, p in ipairs(m:GetChildren()) do
+		if p:IsA("BasePart") then
+			local y = p:GetAttribute("FlameY")
+			local mesh = p:FindFirstChildWhichIsA("SpecialMesh")
+			if y and mesh then
+				table.insert(l.Flames, { Part = p, Mesh = mesh, Y = y, Colour = p.Color })
+				table.insert(l.Glows, { Part = p, Colour = p.Color })
+				local light = p:FindFirstChild("LanternLight")
+				if light and light:IsA("Light") then
+					l.Light = light
+					l.Brightness = light:GetAttribute("RestBrightness") or light.Brightness
+				end
+			elseif p.Name == "Ceiling" or p.Name == "Glass" then   -- the amber Neon panes breathe with the flame
+				table.insert(l.Glows, { Part = p, Colour = p.Color })
 			end
 		end
-		local centre = (lo + hi) / 2
-		local em = AssetService:CreateEditableMesh()
-		local vmap, nmap = {}, {}
-		for _, f in ipairs(g.Faces) do
-			local vs, ns = src:GetFaceVertices(f), src:GetFaceNormals(f)
-			if #vs == 3 then
-				local ids = table.create(3)
-				for i, v in ipairs(vs) do
-					local id = vmap[v]
-					if not id then
-						id = em:AddVertex(cf:PointToWorldSpace(src:GetPosition(v) * scale) - centre)
-						vmap[v] = id
-					end
-					ids[i] = id
-				end
-				local nf = em:AddTriangle(ids[1], ids[2], ids[3])
-				if #ns == 3 then
-					local nids = table.create(3)
-					for i, n in ipairs(ns) do
-						local id = nmap[n]
-						if not id then
-							id = em:AddNormal(cf:VectorToWorldSpace(src:GetNormal(n)))
-							nmap[n] = id
-						end
-						nids[i] = id
-					end
-					em:SetFaceNormals(nf, nids)
-				end
-			end
-		end
-		local fixed = AssetService:CreateEditableMeshAsync(Content.fromObject(em), { FixedSize = true })
-		em:Destroy()
-		local part = AssetService:CreateMeshPartAsync(Content.fromObject(fixed))
-		keep[#keep + 1] = fixed
-		part.Name = "Panes"
-		part.Anchored = true
-		part.CanCollide, part.CanQuery, part.CanTouch, part.CastShadow = false, false, false, false
-		part.Material, part.Color, part.Transparency = source.Material, source.Color, source.Transparency
-		part.CFrame = CFrame.new(centre)
-		built[#built + 1] = { Part = part, Key = key }
 	end
-	src:Destroy()
-	return built
+	if #l.Flames == 0 then return end
+	lanterns[m] = l
 end
-
-task.spawn(function()
-	local source = visual:WaitForChild(Tuning.Glow, 120)
-	if not (source and source:IsA("MeshPart")) then return end
-	task.wait(1)   -- let the lantern lights stream in first
-	local ok, built = pcall(split, source)
-	if not ok then
-		warn("[HubLanternFlicker] could not split the lantern panes (the lights still flicker): " .. tostring(built))
-		for _, em in ipairs(keep) do em:Destroy() end
-		return
-	end
-	for _, b in ipairs(built) do
-		local owner = typeof(b.Key) == "Instance" and lanterns[b.Key] or { Phase = seed(tostring(b.Key)) }
-		b.Part.Parent = folder
-		table.insert(panes, { Part = b.Part, Colour = b.Part.Color, Owner = owner })
-	end
-	hiddenGlow = true
-	hideGlow(source)
-	visual.ChildAdded:Connect(hideGlow)   -- streaming may bring the merged original back
-end)
+for _, m in ipairs(root:GetChildren()) do add(m) end
+root.ChildAdded:Connect(function(m) task.delay(0.5, add, m) end)
 
 local noise = math.noise
 local function level(phase, t)
+	if Settings.Get("ReduceFlashing") then return 1 end   -- (P6A-11) steady
 	local W, D, P = Tuning.Waver, Tuning.Drift, Tuning.Sputter
-	-- this lantern's own tempo, fixed by its phase (so a lantern and its panes always agree)
+	-- this lantern's own tempo, fixed by its phase (so its light and its flame always agree)
 	local lo, hi = Tuning.Tempo[1], Tuning.Tempo[2]
 	t *= lo + (hi - lo) * ((phase * 7.31) % 1)
 	local b = 1 + W.Amount * 2 * noise(t * W.Hz, phase) + D.Amount * 2 * noise(t * D.Hz, phase + 25)
@@ -184,22 +97,46 @@ local function level(phase, t)
 	return math.max(b, 0.35)
 end
 
+local function shade(c, b)
+	return Color3.new(math.min(c.R * b, 1), math.min(c.G * b, 1), math.min(c.B * b, 1))
+end
+
 local t0 = os.clock()
-RunService.Heartbeat:Connect(function()
+local acc = 0
+RunService.Heartbeat:Connect(function(dt)
+	acc += dt
+	if acc < Tuning.Rate then return end
+	acc = 0
 	local camera = workspace.CurrentCamera
-	if camera and (camera.CFrame.Position - Tuning.Centre).Magnitude > Tuning.FarAway then return end
+	if not camera then return end
+	local eye = camera.CFrame.Position
+	if (eye - Tuning.Centre).Magnitude > Tuning.FarAway then return end
 	local t = os.clock() - t0
-	for part, l in pairs(lanterns) do
-		if part.Parent then
-			l.Level = level(l.Phase, t)
-			l.Light.Brightness = l.Brightness * l.Level
-		else
-			lanterns[part] = nil
+	local reduce = Settings.Get("ReduceFlashing")
+	local F, Ln = Tuning.Flutter, Tuning.Lean
+	for m, l in pairs(lanterns) do
+		if not m.Parent then
+			lanterns[m] = nil
+		elseif (l.At - eye).Magnitude <= Tuning.Near then
+			local phase = l.Phase
+			local b = level(phase, t)
+			local lean = Ln.Amount * 2 * noise(t * Ln.Hz, phase + 100)
+			local h, w = 1, 1
+			if reduce then
+				lean *= Tuning.ReduceLean
+			else
+				h = 1 + F.Amount * 2 * noise(t * F.Hz, phase + 75) + (math.min(b, 1) - 1) * Tuning.Gutter
+				w = 1 - (h - 1) * Tuning.Slim
+			end
+			if l.Light then l.Light.Brightness = l.Brightness * b end
+			local g = math.min(b, Tuning.GlowMax)
+			for _, f in ipairs(l.Glows) do f.Part.Color = shade(f.Colour, g) end
+			-- each sphere scaled about the flame's base: its centre (FlameY above the base) rides up or down with the
+			-- height and over with the lean
+			for _, f in ipairs(l.Flames) do
+				f.Mesh.Scale = Vector3.new(w, h, w)
+				f.Mesh.Offset = Vector3.new(lean * f.Y * h, f.Y * (h - 1), 0)
+			end
 		end
-	end
-	for _, p in ipairs(panes) do
-		local b = math.min(p.Owner.Level or level(p.Owner.Phase, t), Tuning.PaneMax)
-		local c = p.Colour
-		p.Part.Color = Color3.new(math.min(c.R * b, 1), math.min(c.G * b, 1), math.min(c.B * b, 1))
 	end
 end)

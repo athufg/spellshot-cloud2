@@ -26,11 +26,14 @@ local rng = Random.new()
 
 function LFX.Init(helpers, kit)
 	H, FL = helpers, kit
+	if kit and kit.OnRelease then kit.OnRelease(function() LFX._release() end) end   -- (2026-10-19, MeshBudget)
 	LFX.Kit = kit                                 -- what CryoFX drops a finished bolt through (Mirror Cage's lfk.Kit)
 end
 
 local function tier(caster)
-	local enemy = H.Settings.ThinEnemyVFX and caster ~= nil and caster ~= H.VFXLibrary.LocalCharacter
+	-- (2026-10-19, audit P5A-12) an enemy is not me and not a teammate (CryoFX's isEnemy)
+	local enemy = H.Settings.ThinEnemyVFX and caster ~= nil
+		and (if H.isEnemy then H.isEnemy(caster) else caster ~= H.VFXLibrary.LocalCharacter)
 	return FL.Tier(H.Settings.EffectDensity, enemy)
 end
 
@@ -517,17 +520,17 @@ end
 -- the body runs on (so they lie behind it). Low count; the bloom and the petals are pooled.
 ----------------------------------------------------------------------------------------------------
 local printPool = {}
-function LFX.Print(cf, PR)
+function LFX.Print(cf, PR, thin)
 	local o = table.remove(printPool) or FL.New("PrintBloom")
 	if not o then return end
 	FL.Fade(o, 1)
 	FL.Parent(o, H.fxFolder())
-	for _ = 1, 2 do
+	for _ = 1, (thin and 0 or 2) do                       -- (2026-10-19, audit P5A-12) thinned: the bloom only
 		local d = Vector3.new(rng:NextNumber(-1, 1), 0, rng:NextNumber(-1, 1))
 		flutter("FlutterS", cf.Position + Vector3.new(0, rng:NextNumber(1.0, 1.6), 0) + d * 0.3, d * 0.5 + Vector3.new(0, 0.3, 0),
 			0.55, 0.95, cf.Position.Y, 1, 3.5, Vector3.yAxis)
 	end
-	sparkle(cf.Position + Vector3.new(0, 0.2, 0), 1, 0)
+	if not thin then sparkle(cf.Position + Vector3.new(0, 0.2, 0), 1, 0) end
 	local t0 = os.clock()
 	H.run(function(now, dt, parts, cframes)
 		local age = now - t0
@@ -734,6 +737,16 @@ function LFX.HitBloom(hit, dir, thin, caster)
 		end
 		return o ~= nil or ring ~= nil
 	end)
+end
+
+--- the kit let go of its meshes (2026-10-19, MeshBudget): every pooled piece here goes with it
+function LFX._release()
+	for _, list in pairs(flutterPool) do
+		for _, o in ipairs(list) do FL.Drop(o) end
+		table.clear(list)
+	end
+	for _, o in ipairs(printPool) do FL.Drop(o) end
+	table.clear(printPool)
 end
 
 return LFX

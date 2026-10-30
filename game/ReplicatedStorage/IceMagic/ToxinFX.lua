@@ -150,9 +150,11 @@ local function part(props)
 end
 
 --- An ellipsoid: a block part carrying a sphere mesh, sized by the PART (so emitters on it emit from its true shape).
+local flowTag, flowAdd, FLOW_MODE   -- (pH Indicator: assigned with the flow, below)
 local function ball(color, transparency, parent, props)
 	local p = part(props)
 	p.Color = safe(color)
+	if T.Bands and T.Bands.Flow and flowTag then flowTag(p, color) end   -- (pH Indicator: the flow)
 	p.Transparency = transparency or 0
 	local m = Instance.new("SpecialMesh")
 	m.MeshType = Enum.MeshType.Sphere
@@ -164,6 +166,7 @@ end
 local function light(parent, range, brightness)
 	local l = Instance.new("PointLight")
 	l.Color = GLOW.Virulence
+	if FLOW_MODE and flowAdd then flowAdd(l, T.Bands.Flow, "Glow", "Virulence") end
 	l.Range = range
 	l.Brightness = brightness
 	l.Shadows = false
@@ -217,6 +220,11 @@ RunService.RenderStepped:Connect(function(rdt)
 		if not ok then
 			warn("[ToxinFX] an updater failed: " .. tostring(keep))
 			updaters[key] = nil
+			-- (2026-10-19, audit P5B-18) its parts go with it: the key is the piece (a part, a folder) or its record
+			pcall(function()
+				local inst = (typeof(key) == "Instance" and key) or (type(key) == "table" and (key.Model or key.Folder)) or nil
+				if typeof(inst) == "Instance" then inst:Destroy() end
+			end)
 		elseif keep == false then
 			updaters[key] = nil
 		end
@@ -277,6 +285,7 @@ local function glowEmitter(holder, size, alpha, zoff, rate)
 	local e = Instance.new("ParticleEmitter")
 	e.Texture = SMOKE
 	e.Color = seq(GLOW.Virulence, GLOW.Virulence)
+	if FLOW_MODE and flowAdd then flowAdd(e, T.Bands.Flow, "Glow", "Virulence") end
 	e.LightEmission = 1
 	e.LightInfluence = 0
 	e.Size = nseq({ { 0, size * 0.8 }, { 1, size } })
@@ -313,6 +322,21 @@ local function extraScale()
 	local k = math.clamp(d, 0.4, 1)
 	if Settings.ThinEnemyVFX and not T.Mine then k *= 0.5 end
 	if T.Bands and T.Bands.Pulse and Settings.Get and Settings.Get("ReduceFlashing") then k *= 0.5 end
+	return k
+end
+--- (2026-10-19, audit P5B-04) the DEFAULT pieces' scale -- smoke and glow rates, drops, Acid Rain's globs, thread
+--- strands: Graphics Quality (0.4 .. 1), halved for an enemy's effect under Reduce Enemy VFX (T.Mine false: ToxinWrap.Run
+--- sets it while each broadcast is drawn; nil in a piece drawn later counts as not an enemy's). Read when an effect is
+--- made. The hazards' shapes and edges (the lobes, the pooling skirt, the wave's ring) keep their full count.
+--- (2026-10-19, audit P5B-05) Reduce Flashing: read when an effect is made (Patient Zero's pulse, the bursts' lights,
+--- the Corroded rim, the Vent's grille, Acid Rain's glow)
+local function calm()
+	return Settings ~= nil and Settings.Get ~= nil and Settings.Get("ReduceFlashing") == true
+end
+local function density()
+	if not Settings then return 1 end
+	local k = math.clamp(Settings.EffectDensity or 1, 0.4, 1.15)   -- (2026-10-23: ULTRA's 115%, the graphics table)
+	if Settings.ThinEnemyVFX and T.Mine == false then k *= 0.5 end
 	return k
 end
 --- (an Epic wrap, T.Bands.Pulse) its glow pieces breathe together: a part's Color or an emitter's LightEmission,
@@ -369,7 +393,7 @@ local function eyeOn(part, E, spread, front, size)
 	l.ImageColor3, l.ImageTransparency = Color3.new(0.87, 0.87, 0.87), 1
 	l.Parent = g
 	g.Parent = part
-	if T.Bands.Pulse then glowPulse(l, T.Bands.Pulse) end
+	if T.Bands and T.Bands.Pulse then glowPulse(l, T.Bands.Pulse) end   -- (2026-10-19, audit P5B-12) guarded
 	return l
 end
 --- (an Epic wrap, T.Bands.RingTex) `n` of its glowing rings at `pos`, drifting up and fading: the palette is read now
@@ -420,7 +444,218 @@ function glowPulse(obj, P)
 	end
 end
 
-local function splat(pos, size, linger, onY)
+-- (2026-10-20, pH Indicator -- the Mythic wrap's FLOW) ONE shared, slow world field: every gas / liquid / membrane piece
+-- a wrapped broadcast builds (T.Bands.Flow) is registered here and recoloured each frame from where it is now, so
+-- neighbours share a colour and the scale (acid red -> amber -> green -> basic teal) travels through the whole body as
+-- one front. A piece keeps its Default lightness role (core darker, edge lighter). FLOW_MODE (set by a handler while it
+-- builds) swaps the world field for a time sweep (the Patient Zero mark). Gated: Default never registers anything.
+local flowItems = setmetatable({}, { __mode = "k" })
+local flowOn = false
+local FLOW_ROLE = { GasCore = 0.62, GasShadow = 0.78, Gas = 0.92, GasLit = 1, GasEdge = 1.06, Liquid = 0.92, LiquidDeep = 0.6,
+	Membrane = 0.96, Mottle = 0.45, LiquidSpec = -0.55, MembraneHi = -0.45, Virulence = 1 }
+local flowLut = setmetatable({}, { __mode = "k" })
+local function flowBuild(F)
+	local L = flowLut[F]
+	if L then return L end
+	L = {}
+	for ctx, st in pairs(F.Stops) do
+		local lut = {}
+		for i = 0, 48 do
+			local u, j = i / 48, 1
+			while j < #F.Pos - 1 and u > F.Pos[j + 1] do j += 1 end
+			local c = st[j]:Lerp(st[j + 1], math.clamp((u - F.Pos[j]) / (F.Pos[j + 1] - F.Pos[j]), 0, 1))
+			if nearShipped(c) then c = c:Lerp(Color3.new(0.5, 0.5, 0.5), 0.15) end
+			lut[i] = c
+		end
+		L[ctx] = lut
+	end
+	flowLut[F] = L
+	return L
+end
+local function flowClock(F)
+	return calm() and (F.Hold or 0) * (F.Period or 14) or os.clock()
+end
+local function flowU(F, p, t)
+	local w, P = F.Wave or 16, F.Period or 14
+	local a = 0.5 + 0.4 * math.sin(TAU * ((p.X * 0.6 + p.Z * 0.8) / w + p.Y / (F.WaveY or 10) - t / P))
+	return math.clamp(a + 0.1 * math.sin(TAU * ((p.Z * 0.86 - p.X * 0.5) / (w * 1.7) - t / (P * 1.6))), 0, 1)
+end
+-- (each piece's lightness role sets its place on the scale -- core acidic, edge basic -- and the shared wave drifts it)
+local KEY_U = { GasCore = 0.02, GasShadow = 0.16, Gas = 0.36, GasLit = 0.62, GasEdge = 0.94, Mottle = 0.1, Liquid = 0.3, LiquidDeep = 0.15,
+	LiquidSpec = 0.3, Membrane = 0.58, MembraneHi = 0.58, Virulence = 0.6 }
+local function flowU2(F, key, p, t)
+	local amp = (key == "Membrane" or key == "MembraneHi" or key:sub(1, 6) == "Liquid") and 0.4 or 0.3
+	return math.clamp((KEY_U[key] or 0.5) + amp * (2 * flowU(F, p, t) - 1), 0, 1)
+end
+local function flowSeam(u)                                       -- (1 at the middle of a colour transition)
+	local m = 0
+	for _, q in ipairs({ 1 / 6, 0.5, 5 / 6 }) do m = math.max(m, math.exp(-((u - q) / 0.07) ^ 2)) end
+	return m
+end
+local function flowCol(F, ctx, key, u)
+	local lut = flowBuild(F)[ctx] or flowBuild(F).Lobe
+	local c = lut[math.clamp(math.floor(u * 48 + 0.5), 0, 48)]
+	local r = FLOW_ROLE[key] or 1
+	if r >= 0 then c = Color3.new(math.min(1, c.R * r), math.min(1, c.G * r), math.min(1, c.B * r)) else c = c:Lerp(Color3.new(1, 1, 1), -r) end
+	return c
+end
+local flowProf = { n = 0, sum = 0, max = 0, t = 0 }
+local function flowStep(dt, now)
+	local c0 = os.clock()
+	local any, tick = false, (math.floor(c0 * 10) ~= flowProf.t)
+	flowProf.t = math.floor(c0 * 10)
+	for o, it in pairs(flowItems) do
+		any = true
+		local host = o:IsA("BasePart") and o or (o.Parent and o.Parent:IsA("BasePart") and o.Parent)
+		if not o.Parent or not host then
+			flowItems[o] = nil
+		elseif o:IsA("ParticleEmitter") and not tick then
+			-- (emitters at 10 Hz: one ColorSequence recolours every live particle)
+		else
+			local F, u = it.F
+			if it.Mode then
+				local M = it.Mode
+				local k = math.clamp((now - M.T0) / math.max(0.1, M.Dur * 0.9), 0, 1)
+				u = math.clamp(F.Sweep.U0 + (F.Sweep.U1 - F.Sweep.U0) * k * k * (3 - 2 * k) + (it.Off or 0), 0, 1)
+			else
+				u = flowU2(F, it.Key, host.Position, flowClock(F))
+			end
+			local col = flowCol(F, it.Ctx, it.Key, u)
+			if not nearShipped(col) then
+				if o:IsA("ParticleEmitter") then
+					if it.Fizz then
+						o.Color = ColorSequence.new(col:Lerp(Color3.new(1, 1, 1), 0.45))
+						local src = it.Src
+						local base = (src and src.Parent and src.Rate) or it.Rate or 0
+						it.W, it.BaseNow, it.G = 0.15 + flowSeam(u), base, it.G or host.Parent
+					else
+						o.Color = ColorSequence.new(col)
+					end
+				elseif o:IsA("PointLight") then
+					o.Color = col
+				elseif glowSet[o] then
+					glowSet[o].Base = col                              -- (a pulsing piece: the pulse breathes the flow colour)
+				else
+					o.Color = col
+				end
+			end
+		end
+	end
+	if tick then                                                -- (the fizz: per effect, its total pinned at Share x the effect's own rate,
+		local grp = {}                                             -- each emitter's part of it weighted toward the colour seams)
+		for o, it in pairs(flowItems) do if it.W and it.G then local g = grp[it.G] or { 0, 0 } g[1] += it.W g[2] += 1 grp[it.G] = g end end
+		for o, it in pairs(flowItems) do if it.W and it.G and o.Parent then local g = grp[it.G] o.Rate = it.BaseNow * it.Fizz * it.W / math.max(1e-3, g[1] / g[2]) end end
+	end
+	local d = os.clock() - c0
+	flowProf.n += 1 flowProf.sum += d flowProf.max = math.max(flowProf.max, d)
+	if RunService:IsStudio() and flowProf.n % 30 == 0 then
+		workspace:SetAttribute("PHProf", string.format("%.3f avg / %.3f max ms over %d frames", flowProf.sum / flowProf.n * 1000, flowProf.max * 1000, flowProf.n))
+	end
+	if not any then flowOn = false return false end
+	return true
+end
+function flowAdd(o, F, ctx, key, extra)
+	local it = { F = F, Ctx = ctx, Key = key, Mode = FLOW_MODE }
+	if FLOW_MODE then FLOW_MODE.N += 1 it.Off = (((FLOW_MODE.N - 1) % 9) / 8 - 0.5) * 0.22 end
+	if extra then for k, v in pairs(extra) do it[k] = v end end
+	flowItems[o] = it
+	if not flowOn then flowOn = true updaters[flowItems] = flowStep end
+	return it
+end
+local FLOW_CTX = { "Lobe", "Solid", "Neon" }
+--- the palette name and context `color` was drawn with, when the wrap flows (a reverse lookup, at creation only)
+function flowTag(o, color)
+	local F = T.Bands and T.Bands.Flow
+	if not F then return nil end
+	for _, cx in ipairs(FLOW_CTX) do
+		local tbl = (cx == "Lobe" and LOBE) or (cx == "Solid" and SOLID) or NEON
+		for key in pairs(FLOW_ROLE) do
+			local ok, v = pcall(function() return tbl[key] end)
+			if ok and v == color then return flowAdd(o, F, cx, key) end
+		end
+	end
+	return nil
+end
+--- a fizz emitter on `host` (pH Indicator's twinkle: bright, crisp motes where the scale crosses from one band into the next)
+local function flowFizz(host, F, ctx, key, src, rate, share)
+	local Fz = F.Fizz
+	if not Fz or extraScale() <= 0 then return end
+	local e = Instance.new("ParticleEmitter")
+	e.Name = "PHFizz"
+	e.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	e.LightEmission, e.LightInfluence = 0.35, 0
+	e.Size = nseq({ { 0, Fz.Size or 0.3 }, { 0.5, (Fz.Size or 0.3) * 0.7 }, { 1, 0 } })
+	e.Transparency = nseq({ { 0, 0.1 }, { 0.7, 0.3 }, { 1, 1 } })
+	e.Lifetime = NumberRange.new(0.25, 0.45)
+	e.Speed = NumberRange.new(0.2, 0.6)
+	e.Shape = Enum.ParticleEmitterShape.Sphere
+	e.ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface
+	e.ZOffset = 0.4
+	e.Rate = 0
+	e.Parent = host
+	flowAdd(e, F, ctx, key, { Fizz = share * extraScale(), Src = src, Rate = rate })
+	return e
+end
+--- (pH Indicator) the printed reference chart baked into the Patient Zero mark's shell: a band of seven printed swatches
+--- (the scale, acid to basic), ink rules between them and small printed numbers above -- static print, no live value
+local GLYPH = { ["0"] = "111101101101111", ["1"] = "010110010010111", ["2"] = "111001111100111", ["3"] = "111001111001111",
+	["4"] = "101101111001001", ["5"] = "111100111001111", ["6"] = "111100111101111", ["7"] = "111001010010010",
+	["8"] = "111101111101111", ["9"] = "111101111001111" }
+local function chartPaint(S, d)
+	local u = (math.atan2(d.Z, d.X) / TAU) % 1
+	local v = math.acos(math.clamp(d.Y, -1, 1)) / math.pi
+	local ink = S.Ink or Color3.fromRGB(70, 60, 50)
+	if v > 0.455 and v < 0.565 then
+		local cell = u * 7
+		local i, fr = math.floor(cell), cell % 1
+		if fr < 0.035 or fr > 0.965 or v < 0.462 or v > 0.558 then return ink, 1 end
+		return S.Swatch[i + 1], 1
+	end
+	if v > 0.385 and v < 0.44 then                               -- (the printed numbers: 1 3 5 7 9 11 13)
+		local cell = u * 7
+		local i, fr = math.floor(cell), cell % 1
+		local txt = tostring(1 + 2 * i)
+		local gx = (fr - 0.5) * 7 + #txt * 2                      -- (glyph cells, 4 per digit with a gap)
+		local gy = (v - 0.385) / 0.055 * 5
+		local di, cx = math.floor(gx / 4), math.floor(gx % 4)
+		local ch = txt:sub(di + 1, di + 1)
+		local g = GLYPH[ch]
+		if g and cx < 3 and gy >= 0 and gy < 5 and g:sub(math.floor(gy) * 3 + cx + 1, math.floor(gy) * 3 + cx + 1) == "1" then return ink, 1 end
+	end
+	return ink, 0
+end
+
+-- PIXEL POTION (2026-10-20; Toxin's Uncommon Element skin, PixelPotionKit): a caster who wears it has every Toxin piece
+-- drawn as a voxel potion bottle, on the Default's own beats. Each hook hides the Default shape on this client
+-- (LocalTransparencyModifier) and leaves its particle emitters and lights running: the particle count stays the Default's.
+local potionKit = nil
+local potionLook                                                 -- (Toxin's own colours: a skin has no palette; the liquid's shades,
+do                                                               --  read once at load, outside any caster's wrap scope: the mesh bakes them)
+	local look = { Liquid = SOLID.Liquid, LiquidDeep = SOLID.LiquidDeep, LiquidHi = SOLID.Membrane, Glint = SOLID.LiquidSpec }
+	potionLook = function() return look end
+end
+local function potion()
+	if potionKit == nil then
+		local m = script.Parent:FindFirstChild("PixelPotionKit")
+		local ok, k = pcall(function() return m and require(m) end)
+		potionKit = (ok and type(k) == "table") and k or false
+		if potionKit then potionKit.Look = potionLook() end    -- (before On() starts the bottle's mesh build)
+	end
+	return potionKit or nil
+end
+local function potionOn(character)
+	local k = potion()
+	return k ~= nil and typeof(character) == "Instance" and k.On(character) == true
+end
+local function bottle(kind, parent)
+	return potion().New(kind, parent or fxFolder(), potionLook())
+end
+local function hide(a, b, c)
+	for _, p in ipairs({ a, b, c }) do if typeof(p) == "Instance" and p:IsA("BasePart") then p.LocalTransparencyModifier = 1 end end
+end
+local NECK_FIRST = CFrame.Angles(-math.pi / 2, 0, 0)             -- (a bottle's up turned to a piece's -Z: neck first along its travel)
+
+local function splat(pos, size, linger, onY, pp)
 	if splatCount >= SPLAT_CAP then return end
 	local y = onY or floorY(pos, 12)
 	if not y then return end
@@ -429,6 +664,8 @@ local function splat(pos, size, linger, onY)
 	local p = ball(SOLID.LiquidDeep, 0.05, nil, { Reflectance = wet(0.18, "Liquid") })   -- (a flat splat catches the full sun: the deep entry displays as the liquid)
 	local cf = CFrame.new(pos.X, y + 0.02, pos.Z) * CFrame.Angles(0, math.random() * TAU, 0)
 	local sheen = (math.random() < 0.4) and ball(SOLID.LiquidSpec, 0.35, p) or nil
+	local pb = pp and bottle("Compact") or nil                     -- (Pixel Potion: a bottle on its side)
+	if pb then hide(p, sheen) end
 	local t0 = fxNow()
 	local life = linger or 2.5
 	local aspect = 0.75 + math.random() * 0.25
@@ -436,6 +673,7 @@ local function splat(pos, size, linger, onY)
 		local t = now - t0
 		if t > life + 0.8 or not p.Parent then
 			p:Destroy()
+			if pb then potion().Drop(pb) end
 			splatCount -= 1
 			return false
 		end
@@ -447,6 +685,10 @@ local function splat(pos, size, linger, onY)
 		p.Size = Vector3.new(spread, math.max(0.02, h), spread * aspect)
 		p.CFrame = cf * CFrame.new(0, h * 0.35, 0)
 		p.Transparency = 0.05 + 0.95 * soak
+		if pb then
+			potion().Place(pb, cf * CFrame.new(0, s * 0.42 * 4 / 15, 0) * CFrame.Angles(0, 0, math.pi / 2), s * 0.42)
+			potion().Fade(pb, soak)
+		end
 		if sheen then
 			sheen.Size = Vector3.new(spread * 0.3, math.max(0.01, h * 0.4), spread * aspect * 0.22)
 			sheen.CFrame = cf * CFrame.new(spread * 0.12, h * 0.75, -spread * 0.1)
@@ -475,23 +717,107 @@ local function drawTeardrop(body, tip, pos, dir, size, stretch)
 	tip.CFrame = cf * CFrame.new(0, 0, size * (0.45 + stretch * 0.35))
 end
 
+--- (2026-10-19, audit P5B-11) `f`, for a piece drawn LATER (from an updater): it re-enters the wrap (and Mine) of the
+--- broadcast being drawn now (ToxinWrap.Capture / With), so a deferred burst, splat or drip keeps its cast's colours
+--- instead of the Default olive the moment the handler returned. Outside a broadcast: `f` itself.
+local wrapMod
+local function scoped(f)
+	if wrapMod == nil then
+		local m = script.Parent:FindFirstChild("ToxinWrap")
+		local ok, w = pcall(function() return m and require(m) end)
+		wrapMod = (ok and type(w) == "table" and type(w.Capture) == "function" and type(w.With) == "function") and w or false
+	end
+	local sc = wrapMod and wrapMod.Capture()
+	if not sc then return f end
+	return function(...) return wrapMod.With(sc, f, ...) end
+end
+--- (2026-10-20) a handler's own view of `updaters`: every piece it registers runs in the wrap of the broadcast drawing it
+local function scopedUpdaters()
+	return setmetatable({}, { __index = updaters, __newindex = function(_, k, fn) updaters[k] = type(fn) == "function" and scoped(fn) or fn end })
+end
+
+-- TOXIN'S OWN-MODULE SKINS (2026-10-20): WITCH'S BREW (Epic: WitchsBrewKit + WitchsBrewFX), SCORPION (Rare:
+-- ScorpionKit + ScorpionFX) and HYDRA (Mythic, 2026-10-21: HydraKit + HydraFX). One table, for the 200-local limit. BREW.on(character) is the FX module of the skin that
+-- body wears (its kit built), else nil; every call into it goes through BREW.call (pcall, one warning per hook), so a
+-- fault there leaves the Default drawing. Both share these hook sites (the "second skin shares the first's hooks"
+-- pattern); a hook a skin does not define is simply skipped. BREW.Kit / BREW.FX stay Witch's Brew's (its palette).
+local BREW = { Warned = {}, Skins = { { Kit = "WitchsBrewKit", FX = "WitchsBrewFX" }, { Kit = "ScorpionKit", FX = "ScorpionFX" },
+	{ Kit = "HydraKit", FX = "HydraFX" } } }
+function BREW.load(i)
+	local sk = BREW.Skins[i]
+	if sk.K == nil then
+		local m = script.Parent:FindFirstChild(sk.Kit)
+		local ok, k = pcall(function() return m and require(m) end)
+		sk.K = (ok and type(k) == "table") and k or false
+	end
+	if sk.F == nil and sk.K then
+		local m = script.Parent:FindFirstChild(sk.FX)
+		local ok, f = pcall(function() return m and require(m) end)
+		sk.F = (ok and type(f) == "table") and f or false
+		if sk.F then
+			local okI, err = pcall(sk.F.Init, { fxFolder = fxFolder, density = density, calm = calm, fxNow = fxNow,
+				updaters = updaters, SMOKE = SMOKE,
+				Look = { Brew = NEON.Virulence, Herb = NEON.Virulence, BrewSkin = SOLID.Liquid, Steam = LOBE.GasLit } }, sk.K)
+			if not okI then
+				warn("[ToxinFX] " .. sk.FX .. " did not start: " .. tostring(err))
+				sk.F = false
+			end
+		end
+	end
+	if i == 1 then BREW.Kit, BREW.FX = sk.K, sk.F end
+	return sk
+end
+function BREW.kit() return BREW.load(1).K or nil end
+function BREW.fx() return BREW.load(1).F or nil end
+function BREW.on(character)
+	if typeof(character) ~= "Instance" then return nil end
+	for i = 1, #BREW.Skins do
+		local sk = BREW.load(i)
+		if sk.K and sk.K.On(character) and sk.K.Built then return sk.F or nil end
+	end
+	return nil
+end
+function BREW.call(fx, name, ...)
+	local fn = fx and fx[name]
+	if not fn then return nil end
+	local r = table.pack(pcall(fn, ...))
+	if not r[1] then
+		if not BREW.Warned[name] then
+			BREW.Warned[name] = true
+			warn("[ToxinFX] skin hook " .. name .. ": " .. tostring(r[2]))
+		end
+		return nil
+	end
+	return table.unpack(r, 2, r.n)
+end
+if RunService:IsClient() then                                    -- (each skin's worn-piece manager starts with the client)
+	task.defer(function() for i = 1, #BREW.Skins do BREW.load(i) end end)
+end
+
 --- Liquid drops flung from `pos` (velocity spread `speed`) that land as splats.
-local function drops(pos, n, speed, size)
+local function drops(pos, n, speed, size, pp)
+	if n > 1 then n = math.max(1, math.floor(n * density() + 0.5)) end   -- (2026-10-19, audit P5B-04)
+	local land = scoped(splat)                                       -- (2026-10-19, audit P5B-11) in the cast's wrap
 	for _ = 1, n do
-		local body, tip = teardrop()
+		local pb = pp and bottle("Compact") or nil                 -- (Pixel Potion: the bottle alone -- a teardrop hosts nothing)
+		local body, tip
+		if not pb then body, tip = teardrop() end
 		local v = Vector3.new(math.random() * 2 - 1, 0.5 + math.random() * 0.9, math.random() * 2 - 1).Unit * (speed or 9)
 		local t0 = fxNow()
 		local sz = (size or 0.28) * (0.8 + math.random() * 0.4)
 		local fy = floorY(pos, 14)
-		updaters[body] = function(_, now)
+		updaters[body or pb] = function(_, now)
 			local t = now - t0
 			local p = pos + v * t + Vector3.new(0, -0.5 * 35 * t * t, 0)
 			local vel = v + Vector3.new(0, -35 * t, 0)
-			drawTeardrop(body, tip, p, vel, sz, math.min(1.2, vel.Magnitude * 0.04))
+			if pb then
+				potion().Place(pb, CFrame.lookAt(p, p + vel) * NECK_FIRST, sz * 1.6)
+			else
+				drawTeardrop(body, tip, p, vel, sz, math.min(1.2, vel.Magnitude * 0.04))
+			end
 			if (fy and p.Y <= fy + 0.05) or t > 1.6 then
-				body:Destroy()
-				tip:Destroy()
-				splat(p, sz * 3.2, 2.2 + math.random(), fy)
+				if pb then potion().Drop(pb) else body:Destroy() tip:Destroy() end
+				land(p, sz * 3.2, 2.2 + math.random(), fy, pp)
 				return false
 			end
 			return true
@@ -501,8 +827,21 @@ end
 
 --- Residue stuck to a body (a raised liquid splat on `hostPart` at world `at`, facing out along `normal`) with viscous runs
 --- crawling down it, each ending in a bead; it rides the body and soaks away after `life`.
-local function residue(hostPart, at, normal, size, runs, life)
+local function residue(hostPart, at, normal, size, runs, life, pp)
 	if not (hostPart and hostPart.Parent) then return end
+	if pp then                                                    -- (Pixel Potion: a little bottle stuck where it burst)
+		local pb = bottle("Compact")
+		local rel = hostPart.CFrame:ToObjectSpace(CFrame.lookAt(at, at + normal))
+		local t0, key = fxNow(), {}
+		updaters[key] = function(_, now)
+			local t = now - t0
+			if t > (life or 2.6) or not hostPart.Parent then potion().Drop(pb) return false end
+			potion().Place(pb, hostPart.CFrame * rel * NECK_FIRST, (size or 0.55) * 1.3)
+			potion().Fade(pb, math.clamp((t - (life or 2.6) + 0.4) / 0.4, 0, 1))
+			return true
+		end
+		return
+	end
 	local rel = hostPart.CFrame:ToObjectSpace(CFrame.lookAt(at, at + normal))
 	local blob = ball(SOLID.LiquidDeep, 0.05, nil, { Reflectance = wet(0.2, "Liquid") })
 	local list = {}
@@ -566,7 +905,7 @@ local GAS_MATERIAL = Enum.Material.Plaster
 local HALO_SCALE, HALO_ALPHA = 1.1, 0.86
 
 local skinOf                                                     -- (the painted-sphere copies: defined with the bubble)
-local function newLobe(parent, tier, emitRate, radius, band)
+local function newLobe(parent, tier, emitRate, radius, band, pp)
 	local t = TIER[tier] or TIER.mid
 	local c1, c2 = t[1], t[2]
 	if band then c1, c2 = band[1], band[2] end                 -- (a hard-banded wrap: this lobe's band, core + halo)
@@ -576,7 +915,16 @@ local function newLobe(parent, tier, emitRate, radius, band)
 		Phase = math.random() * TAU, Tier = tier,
 	}
 	local ls = T.Bands and T.Bands.LobeSkin                       -- (an Epic wrap: the puff wears the bubble's painted rings)
-	if ls then
+	local lsLit = ls and ls.Texture and T.Bands.SelfLit and T.Bands.SelfLit[c1]
+	if lsLit then                                                -- (a glowing puff: a plain Neon ball under a textured pattern shell)
+		local ot = skinOf(ls, c1 .. "~over", LOBE[c1])
+		if ot then
+			local o = ot:Clone()
+			o.Material, o.CastShadow, o.Transparency = Enum.Material.SmoothPlastic, false, 1
+			o.Parent = L.Core.Parent
+			L.Over, L.Rot, L.OverAlpha = o, CFrame.Angles(0, math.random() * TAU, 0), math.min(0.85, (L.Alpha or 0.4) * 1.8)
+		end
+	elseif ls then
 		local tpl = skinOf(ls, c1, LOBE[c1])
 		if tpl then
 			local m = tpl:Clone()
@@ -619,6 +967,29 @@ local function newLobe(parent, tier, emitRate, radius, band)
 		e.Parent = L.Core
 		L.Emit, L.EmitRate = e, emitRate
 	end
+	local FL = T.Bands and T.Bands.Flow                           -- (pH Indicator: the flow, the fizz, the chart)
+	if FL then
+		local it = flowItems[L.Core]
+		if it and L.Core.Material == Enum.Material.Neon then it.Ctx = "Neon" end
+		local key = it and it.Key or c1
+		if flowItems[L.Halo] then flowItems[L.Halo].Key = key end   -- (the halo follows its own puff's band, not one lit colour over all)
+		if L.Emit then flowAdd(L.Emit, FL, "Particle", key) flowFizz(L.Core, FL, "Lobe", key, L.Emit, emitRate, FLOW_MODE and FL.Fizz.MarkShare or (FL.Fizz.Shares and L.Core.Parent and FL.Fizz.Shares[L.Core.Parent.Name]) or FL.Fizz.Share) end
+		local ch = T.Bands.Chart
+		if FLOW_MODE and ch then
+			local ot = skinOf(ch, "chart~over", LOBE.Gas)
+			if ot then
+				local o = ot:Clone()
+				o.Material, o.CastShadow, o.Transparency = Enum.Material.SmoothPlastic, false, 1
+				o.Parent = L.Core.Parent
+				L.Over, L.Rot, L.OverAlpha = o, CFrame.Angles(0, math.random() * TAU, 0), math.min(0.9, (L.Alpha or 0.5) * 1.8)
+			end
+		end
+	end
+	if pp then                                                    -- (Pixel Potion: a cloud's lobe is a blocky voxel gas chunk;
+		L.Vox = potion().Gas(L.Core)                             --  "Big": Patient Zero's, larger than the lobe it replaces)
+		L.VoxScale = (pp == "Big") and 1.35 or nil
+		hide(L.Core, L.Halo, L.Over)
+	end
 	return L
 end
 
@@ -635,7 +1006,13 @@ local function drawLobe(L, cf, rx, ry, vis)
 	L.Halo.Size = Vector3.new(2 * rx * HALO_SCALE, 2 * ry * HALO_SCALE, 2 * rx * HALO_SCALE)
 	L.Core.Transparency = 1 - (1 - L.Alpha) * vis
 	L.Halo.Transparency = 1 - (1 - HALO_ALPHA) * vis
+	if L.Vox then                                                 -- (axis-aligned, the lobe's own size, colour and see-through)
+		local v = L.Vox
+		v.CFrame, v.Size = CFrame.new(cf.Position), L.Core.Size * (L.VoxScale or 1)
+		v.Color, v.Material, v.Transparency = L.Core.Color, L.Core.Material, L.Core.Transparency
+	end
 	if L.Eye then L.Eye.ImageTransparency = 1 - vis end
+	if L.Over then L.Over.CFrame = L.Rot and cf * L.Rot or cf L.Over.Size = Vector3.new(2 * rx, 2 * ry, 2 * rx) * 1.01 L.Over.Transparency = 1 - L.OverAlpha * vis end
 end
 
 -- Layouts, in units of the cloud's radius (x, y up from the ground, z), each lobe: offset, radius, squash, tier, grow time.
@@ -746,6 +1123,7 @@ local function newCumulus(o)
 	local cf = CFrame.new(o.Center) * CFrame.Angles(0, o.Yaw or math.random() * TAU, 0)
 	local self = { Folder = folder, CF = cf, R = R, Lobes = {}, T0 = fxNow(), Fade = o.Fade or 1.4,
 		Breathe = o.Breathe or 0.05, FromLocal = o.From and cf:PointToObjectSpace(o.From) or nil }
+	local dn = o.Dens or density()                                 -- (2026-10-19, audit P5B-04) the smoke and glow rates
 	local B, rim = T.Bands, 1e-3                                  -- (a hard-banded wrap: concentric bands, rim = 1)
 	local layout = B and B.Lanes and BANDED[o.Layout] or o.Layout
 	local mot, blot, eyes = 0, 0, 0
@@ -753,7 +1131,7 @@ local function newCumulus(o)
 	for _, s in ipairs(layout) do
 		local r = s.R * R
 		local band = B and ((s.B and B[s.B]) or (s.Tier == "skirt" and B.Edge) or bandOf(Vector2.new(s.V.X, s.V.Z).Magnitude / rim)) or nil
-		local L = newLobe(folder, s.Tier, s.E and (s.E * (o.EmitMul or 1)) or nil, (s.R0 or s.R) * R, band)   -- (smoke at its own size)
+		local L = newLobe(folder, s.Tier, s.E and (s.E * (o.EmitMul or 1) * dn) or nil, (s.R0 or s.R) * R, band, o.PP)   -- (smoke at its own size)
 		local E = B and B.Eyes                                      -- (an Epic wrap: eye-spots scattered on its puffs)
 		if E and eyes < (E.Max or 8) and (s.Tier == "mid" or s.Tier == "base" or s.Tier == "crown") then
 			eyes += 1
@@ -786,7 +1164,7 @@ local function newCumulus(o)
 		sk.CFrame = CFrame.new(o.Center + Vector3.new(0, 0.2, 0))
 		sk.Parent = folder
 		self.Skirt = flatEmitter(sk, { Color = PART.GasShadow, Size = R * 0.9, Alpha = 0.5, Rate = 0, Life = 3.2 })
-		self.PatchRate, self.SkirtRate = math.max(2, R * 0.25), math.max(3, R * 0.6)
+		self.PatchRate, self.SkirtRate = math.max(2, R * 0.25) * dn, math.max(3, R * 0.6)   -- (the skirt is the edge: full)
 	end
 	if (o.Glow or 0) > 0 then
 		local gp = part({ Transparency = 1, Size = Vector3.new(R * 0.4, R * 0.3, R * 0.4) })
@@ -799,10 +1177,10 @@ local function newCumulus(o)
 			self.Light.Color = GLOW[B.Light]
 			self.GlowFx.Color = seq(GLOW[B.Glow], GLOW[B.Glow])
 		end
-		self.GlowRate = o.GlowRate or 2.5
+		self.GlowRate = (o.GlowRate or 2.5) * dn
 	end
 	if B and B.Speckle then                                       -- (a speckled wrap: motes through the body, B.Share (Rare 8%) over Default's rate)
-		local base = (self.PatchRate or 0) + (self.SkirtRate or 0) + (self.GlowRate or 0)
+		local base = ((self.PatchRate or 0) + (self.GlowRate or 0)) / dn + (self.SkirtRate or 0)   -- (Default's rate, before dn)
 		for _, s in ipairs(layout) do base += (s.E or 0) * (o.EmitMul or 1) end
 		local sp = part({ Transparency = 1, Size = Vector3.new(R * 1.8, R * 0.8, R * 1.8) })
 		sp.CFrame = cf * CFrame.new(0, R * 0.42, 0)
@@ -940,7 +1318,10 @@ end
 local function thread(o)
 	local N = 12
 	local strands = {}
-	for si, width in ipairs(o.Strands or { 0.3, 0.22, 0.17 }) do
+	local widths = o.Strands or { 0.3, 0.22, 0.17 }
+	-- (2026-10-19, audit P5B-04) thinned (Graphics Quality / an enemy's under Reduce Enemy VFX): two strands at most
+	if #widths > 2 and density() < 0.75 then widths = { widths[1], widths[2] } end
+	for si, width in ipairs(widths) do
 		local atts = {}
 		for i = 1, N do atts[i] = terrainAttachment() end
 		local beams = {}
@@ -958,12 +1339,14 @@ local function thread(o)
 			b.Width0 = width
 			b.Width1 = width
 			b.Transparency = NumberSequence.new(1)
+			if o.Hide then b.Enabled = false end
 			b.Parent = atts[i]
 			beams[i] = b
 		end
 		strands[si] = { Atts = atts, Beams = beams, Width = width, Phase = si * 2.1 + math.random(), Split = 0.12 + si * 0.05 }
 	end
 	local t0 = fxNow()
+	local hb = o.PP and bottle("Compact") or nil                  -- (Pixel Potion: a bottle rides the head)
 	local dur = o.Duration or 0.75
 	local arrived = false
 	local key = {}
@@ -974,6 +1357,7 @@ local function thread(o)
 			for _, s in ipairs(strands) do
 				for _, at in ipairs(s.Atts) do at:Destroy() end
 			end
+			if hb then potion().Drop(hb) end
 			return false
 		end
 		local head = math.clamp(t / (o.HeadTime or 0.55), 0, 1)
@@ -990,6 +1374,11 @@ local function thread(o)
 		if side.Magnitude < 1e-3 then side = Vector3.xAxis end
 		side = side.Unit
 		local up = side:Cross(fwd).Unit
+		if hb then
+			local hp = a + d * head + up * ((o.Arc or 1.2) * math.sin(math.pi * head))
+			potion().Place(hb, CFrame.lookAt(hp, hp + fwd) * NECK_FIRST, 0.55)
+			potion().Fade(hb, (head >= 1 and tail > 0.5) and 1 or 0)
+		end
 		local tt = now - t0
 		for _, s in ipairs(strands) do
 			for i = 1, N do
@@ -1027,6 +1416,7 @@ local bubbles = {}           -- [id] = sac
 --- irregular black blotches, small yellow-green dots and a white-blue wet glint (face colours, so the edges are crisp);
 --- nil until it is built (the plain ball stands in)
 local skins = {}
+local skinKeep = {}          -- the fixed-size copies the built skins' MeshParts show
 function skinOf(S, key, baseColor)
 	local bucket = skins[S]
 	if not bucket then bucket = {} skins[S] = bucket end
@@ -1034,77 +1424,197 @@ function skinOf(S, key, baseColor)
 	local c = bucket[key]
 	if c ~= nil then return c or nil end
 	bucket[key] = false
-	local AS = game:GetService("AssetService")
-	local ok, em = pcall(function() return AS:CreateEditableMesh() end)
-	if not (ok and em) then return nil end
-	local rnd, blot, dots = Random.new(S.Seed), {}, {}
-	for i = 1, S.Blotches do blot[i] = { rnd:NextUnitVector(), 0.3 + rnd:NextNumber() * 0.2, rnd:NextNumber() * 9 } end
-	for i = 1, S.Dots do dots[i] = { rnd:NextUnitVector(), 0.07 + rnd:NextNumber() * 0.05 } end
-	local Lg, cols = S.Light.Unit, {}
-	local function col(name) cols[name] = cols[name] or em:AddColor(SOLID[name], 1) return cols[name] end
-	local rings = {}
-	for i = 1, S.Rings or 0 do rings[i] = { rnd:NextUnitVector(), (S.RingSize or 0.16) + rnd:NextNumber() * 0.08 } end
-	local function paint(d)
-		if d:Dot(Lg) > S.Glint then return col(S.GlintColor) end
-		for _, q in ipairs(rings) do                           -- (a ring: its dark rosette, the ring, its deep edge)
-			local a = math.acos(math.clamp(d:Dot(q[1]), -1, 1))
-			if a < q[2] * 0.3 then return col(S.RingCentre)
-			elseif a < q[2] * 0.62 then return col(S.RingInner or S.RingColor)
-			elseif a < q[2] * 0.86 then return col(S.RingColor)
-			elseif a < q[2] then return col(S.RingEdge) end
-		end
-		for _, q in ipairs(dots) do if d:Dot(q[1]) > math.cos(q[2]) then return col(S.DotColor) end end
-		for _, b in ipairs(blot) do
-			local wob = 1 + 0.3 * math.sin(5 * math.atan2(d.Z, d.X) + b[3]) * math.sin(4 * d.Y + b[3])   -- (an irregular edge)
-			if math.acos(math.clamp(d:Dot(b[1]), -1, 1)) < b[2] * wob then return col(S.BlotchColor) end
-		end
-		return col(S.BaseColor)
-	end
-	local function sm(e0, e1, x) local t = math.clamp((x - e0) / (e1 - e0), 0, 1) return t * t * (3 - 2 * t) end
-	--- (S.Smooth) a vertex's colour: a soft centre spot -> the bright inner ring -> the saturated ring -> the deep edge -> base
-	local function paintC(d)
-		local base = baseColor or SOLID[S.BaseColor]
-		for _, q in ipairs(rings) do
-			local x = math.acos(math.clamp(d:Dot(q[1]), -1, 1)) / q[2]
-			if x < 1.15 then
-				local c = SOLID[S.RingCentre]:Lerp(SOLID[S.RingInner or S.RingColor], sm(0.2, 0.38, x))
-				c = c:Lerp(SOLID[S.RingColor], sm(0.52, 0.68, x))
-				c = c:Lerp(SOLID[S.RingEdge], sm(0.8, 0.92, x))
-				return c:Lerp(base, sm(0.94, 1.12, x))
-			end
-		end
-		return base
-	end
-	local RINGS, SEGS, V = S.Res and S.Res[1] or 30, S.Res and S.Res[2] or 60, {}
-	for r = 0, RINGS do
-		V[r] = {}
-		local th = r / RINGS * math.pi
-		for k = 0, SEGS - 1 do
-			local ph = k / SEGS * TAU
-			local d = Vector3.new(math.sin(th) * math.cos(ph), math.cos(th), math.sin(th) * math.sin(ph))
-			V[r][k] = { em:AddVertex(d * 0.5), em:AddNormal(d), d, S.Smooth and em:AddColor(paintC(d), 1) or nil }
+	local over = key:sub(-5) == "~over"                          -- (an overlay: only the pattern, clear elsewhere, worn over a glowing ball)
+	local tex = S.Texture and (over or not (T.Bands and T.Bands.SelfLit and T.Bands.SelfLit[key]))
+	-- (2026-10-19, audits P5B-09 / P5B-10) the whole build runs in its own thread, under one pcall, a few rows a frame
+	-- (it was ~100k EditableMesh calls inside the broadcast's handler, and an error there lost the cast); the colours are
+	-- read NOW, while this broadcast's wrap stands in the palette. The finished mesh is copied into a FIXED-SIZE one and
+	-- the resizable original let go (TerraWrap.makePart's rule: only ~8 resizable meshes may live on a client, and these
+	-- used to hold theirs for the session). Until it is built -- or if it fails -- the plain ball stands in; a failed
+	-- build may be tried again after a pause.
+	local snap = {}
+	for _, n in ipairs({ "GlintColor", "RingCentre", "RingInner", "RingColor", "RingEdge", "DotColor", "BlotchColor", "BaseColor" }) do
+		if S[n] ~= nil then
+			local okc, cc = pcall(function() return SOLID[S[n]] end)
+			if okc then snap[S[n]] = cc end
 		end
 	end
-	local faces = 0
-	for r = 0, RINGS - 1 do
-		for k = 0, SEGS - 1 do
-			local a, b, c2, e = V[r][k], V[r][(k + 1) % SEGS], V[r + 1][k], V[r + 1][(k + 1) % SEGS]
-			for _, t in ipairs({ r > 0 and { a, c2, b } or false, r < RINGS - 1 and { b, c2, e } or false }) do
-				if t then
-					local p1, p2, p3 = t[1][3], t[2][3], t[3][3]
-					if (p2 - p1):Cross(p3 - p1):Dot(p1 + p2 + p3) < 0 then t[2], t[3] = t[3], t[2] end
-					local f = em:AddTriangle(t[1][1], t[2][1], t[3][1])
-					em:SetFaceNormals(f, { t[1][2], t[2][2], t[3][2] })
-					if S.Smooth then em:SetFaceColors(f, { t[1][4], t[2][4], t[3][4] })
-					else local cid = paint((p1 + p2 + p3).Unit) em:SetFaceColors(f, { cid, cid, cid }) end
-					faces += 1
+	local base0 = baseColor or snap[S.BaseColor]
+	task.spawn(function()
+		local AS = game:GetService("AssetService")
+		local em, texImg
+		local okB, faces = pcall(function()
+			em = AS:CreateEditableMesh()
+			if not em then error("no EditableMesh", 0) end
+			local kh = 0 if S.SeedPerKey then for i = 1, #key do kh += key:byte(i) * i end end   -- (each puff colour its own pattern)
+			local rnd, blot, dots = Random.new(S.Seed + kh), {}, {}
+			local function fib(i, n) local y = 1 - 2 * (i - 0.5) / n local r = math.sqrt(math.max(0, 1 - y * y)) local ph = i * 2.39996 + rnd:NextNumber() * 0.6
+				return Vector3.new(math.cos(ph) * r, y, math.sin(ph) * r) end   -- (S.Spread: evenly over the sphere, jittered)
+			for i = 1, S.Blotches do blot[i] = { rnd:NextUnitVector(), 0.3 + rnd:NextNumber() * 0.2, rnd:NextNumber() * 9 } end
+			if S.Spread then for i = 1, #blot do blot[i][1] = fib(i, #blot) end end
+			for i = 1, S.Dots do dots[i] = { rnd:NextUnitVector(), 0.07 + rnd:NextNumber() * 0.05 } end
+			if S.DotRows then                                   -- (sucker rows: staggered pairs of dots tapering along arcs)
+				dots = {}
+				for a = 1, S.DotRows do
+					local c = S.Spread and fib(a, S.DotRows) or rnd:NextUnitVector()
+					local ax = c:Cross(rnd:NextUnitVector()).Unit local p0, p1 = c, ax:Cross(c)   -- (a row starts at c and walks a great circle)
+					local n, th = math.floor(S.Dots / S.DotRows), S.Spread and -0.4 or rnd:NextNumber() * TAU
+					for j = 0, n - 1 do
+						local r = S.DotSize * (1 - 0.5 * j / math.max(1, n - 1))
+						dots[#dots + 1] = { (p0 * math.cos(th) + p1 * math.sin(th) + ax * ((j % 2 == 0) and 1 or -1) * r * 1.05).Unit, r }
+						th += r * 1.15
+					end
 				end
 			end
+			local Lg, cols = S.Light.Unit, {}
+			local function col(name) cols[name] = cols[name] or em:AddColor(snap[name], 1) return cols[name] end
+			local rings = {}
+			for i = 1, S.Rings or 0 do rings[i] = { rnd:NextUnitVector(), (S.RingSize or 0.16) + rnd:NextNumber() * 0.08 } end
+			local function paint(d)
+				if d:Dot(Lg) > S.Glint then return col(S.GlintColor) end
+				for _, q in ipairs(rings) do                           -- (a ring: its dark rosette, the ring, its deep edge)
+					local a = math.acos(math.clamp(d:Dot(q[1]), -1, 1))
+					if a < q[2] * 0.3 then return col(S.RingCentre)
+					elseif a < q[2] * 0.62 then return col(S.RingInner or S.RingColor)
+					elseif a < q[2] * 0.86 then return col(S.RingColor)
+					elseif a < q[2] then return col(S.RingEdge) end
+				end
+				for _, q in ipairs(dots) do if d:Dot(q[1]) > math.cos(q[2]) then return col(S.DotColor) end end
+				for _, b in ipairs(blot) do
+					local wob = 1 + 0.3 * math.sin(5 * math.atan2(d.Z, d.X) + b[3]) * math.sin(4 * d.Y + b[3])   -- (an irregular edge)
+					if math.acos(math.clamp(d:Dot(b[1]), -1, 1)) < b[2] * wob then return col(S.BlotchColor) end
+				end
+				return col(S.BaseColor)
+			end
+			local function sm(e0, e1, x) local t = math.clamp((x - e0) / (e1 - e0), 0, 1) return t * t * (3 - 2 * t) end
+			--- (S.Smooth) a vertex's colour: a soft centre spot -> the bright inner ring -> the saturated ring -> the deep edge -> base
+			-- (S.BlotchTint: a blotch is the puff's own colour darkened toward rust, so a self-lit puff gets no hot spot;
+			-- S.DotMix: a sucker dot is blended from the puff's colour toward its DotColor)
+			local bt = S.BlotchTint
+			local blotC = (bt and base0) and Color3.new(base0.R * bt[1], base0.G * bt[2], base0.B * bt[3]) or snap[S.BlotchColor]
+			local dotC = (S.DotMix and base0) and base0:Lerp(snap[S.DotColor], S.DotMix) or snap[S.DotColor]
+			local function paintC(d)
+				local base = base0
+				for _, q in ipairs(rings) do
+					local x = math.acos(math.clamp(d:Dot(q[1]), -1, 1)) / q[2]
+					if x < 1.15 then
+						local c = snap[S.RingCentre]:Lerp(snap[S.RingInner or S.RingColor], sm(0.2, 0.38, x))
+						c = c:Lerp(snap[S.RingColor], sm(0.52, 0.68, x))
+						c = c:Lerp(snap[S.RingEdge], sm(0.8, 0.92, x))
+						return c:Lerp(base, sm(0.94, 1.12, x))
+					end
+				end
+				for _, b in ipairs(blot) do                             -- (S.Smooth blotches: a soft, wobbly edge)
+					local wob = 1 + 0.3 * math.sin(5 * math.atan2(d.Z, d.X) + b[3]) * math.sin(4 * d.Y + b[3])
+					local x = math.acos(math.clamp(d:Dot(b[1]), -1, 1)) / (b[2] * wob)
+					local e = S.EdgeSoft or 0.15 if x < 1 + e then base = blotC:Lerp(base, sm(1 - e, 1 + e, x)) break end   -- (S.EdgeSoft: a crisper edge)
+				end
+				for _, q in ipairs(dots) do                             -- (S.Smooth dots, over the blotches: soft round spots)
+					local x = math.acos(math.clamp(d:Dot(q[1]), -1, 1)) / q[2]
+					local e = S.EdgeSoft or 0.2 if x < 1 + e then local dc = S.DotCup and dotC:Lerp(base, S.DotCup * (1 - sm(0.4 - e, 0.4 + e, x))) or dotC return dc:Lerp(base, sm(1 - e, 1 + e, x)) end   -- (DotCup: a sucker's pinker cup inside its pale rim)
+				end
+				return base
+			end
+			if tex then                                       -- (S.Texture on a key that is not self-lit: the pattern painted into an image on a light UV sphere -- crisp spots at a fraction of the mesh budget; Neon ignores textures, so the glowing key stays vertex-painted)
+				local TW, TH = S.TexSize and S.TexSize[1] or 512, S.TexSize and S.TexSize[2] or 256
+				local buf = buffer.create(TW * TH * 4)
+				for y = 0, TH - 1 do
+					if y % 12 == 11 then task.wait() end
+					local th = (y + 0.5) / TH * math.pi
+					local st, ct = math.sin(th), math.cos(th)
+					for x = 0, TW - 1 do
+						local ph = (x + 0.5) / TW * TAU
+						local dv = Vector3.new(st * math.cos(ph), ct, st * math.sin(ph))
+						local c, ca = paintC(dv), nil
+						if S.Chart then c, ca = chartPaint(S, dv) end
+						local o = (y * TW + x) * 4
+						buffer.writeu8(buf, o, math.clamp(math.floor(c.R * 255 + 0.5), 0, 255))
+						buffer.writeu8(buf, o + 1, math.clamp(math.floor(c.G * 255 + 0.5), 0, 255))
+						buffer.writeu8(buf, o + 2, math.clamp(math.floor(c.B * 255 + 0.5), 0, 255))
+						buffer.writeu8(buf, o + 3, ca and math.floor(ca * 255) or over and math.clamp(math.floor(math.sqrt((c.R - base0.R) ^ 2 + (c.G - base0.G) ^ 2 + (c.B - base0.B) ^ 2) / 0.12 * 255), 0, 255) or 255)
+					end
+				end
+				texImg = AS:CreateEditableImage({ Size = Vector2.new(TW, TH) })
+				if not texImg then error("no EditableImage", 0) end
+				texImg:WritePixelsBuffer(Vector2.zero, Vector2.new(TW, TH), buf)
+				local R2, SG, U, nf = S.TexRes and S.TexRes[1] or 20, S.TexRes and S.TexRes[2] or 40, {}, 0
+				for r = 0, R2 do
+					U[r] = {}
+					local th = r / R2 * math.pi
+					for k = 0, SG do                              -- (the seam column doubled so the image wraps cleanly)
+						local ph = k / SG * TAU
+						local d = Vector3.new(math.sin(th) * math.cos(ph), math.cos(th), math.sin(th) * math.sin(ph))
+						U[r][k] = { em:AddVertex(d * 0.5), em:AddNormal(d), d, em:AddUV(Vector2.new(k / SG, r / R2)) }
+					end
+				end
+				for r = 0, R2 - 1 do
+					for k = 0, SG - 1 do
+						local a, b, c2, e = U[r][k], U[r][k + 1], U[r + 1][k], U[r + 1][k + 1]
+						for _, t in ipairs({ r > 0 and { a, c2, b } or false, r < R2 - 1 and { b, c2, e } or false }) do
+							if t then
+								local p1, p2, p3 = t[1][3], t[2][3], t[3][3]
+								if (p2 - p1):Cross(p3 - p1):Dot(p1 + p2 + p3) < 0 then t[2], t[3] = t[3], t[2] end
+								local f = em:AddTriangle(t[1][1], t[2][1], t[3][1])
+								em:SetFaceNormals(f, { t[1][2], t[2][2], t[3][2] })
+								em:SetFaceUVs(f, { t[1][4], t[2][4], t[3][4] })
+								nf += 1
+							end
+						end
+					end
+				end
+				return nf
+			end
+			local RINGS, SEGS, V = S.Res and S.Res[1] or 30, S.Res and S.Res[2] or 60, {}
+			for r = 0, RINGS do
+				if r % 8 == 7 then task.wait() end                       -- (a few rows a frame: no hitch on the first bubble)
+				V[r] = {}
+				local th = r / RINGS * math.pi
+				for k = 0, SEGS - 1 do
+					local ph = k / SEGS * TAU
+					local d = Vector3.new(math.sin(th) * math.cos(ph), math.cos(th), math.sin(th) * math.sin(ph))
+					V[r][k] = { em:AddVertex(d * 0.5), em:AddNormal(d), d, S.Smooth and em:AddColor(paintC(d), 1) or nil }
+				end
+			end
+			local faces = 0
+			for r = 0, RINGS - 1 do
+				if r % 8 == 7 then task.wait() end
+				for k = 0, SEGS - 1 do
+					local a, b, c2, e = V[r][k], V[r][(k + 1) % SEGS], V[r + 1][k], V[r + 1][(k + 1) % SEGS]
+					for _, t in ipairs({ r > 0 and { a, c2, b } or false, r < RINGS - 1 and { b, c2, e } or false }) do
+						if t then
+							local p1, p2, p3 = t[1][3], t[2][3], t[3][3]
+							if (p2 - p1):Cross(p3 - p1):Dot(p1 + p2 + p3) < 0 then t[2], t[3] = t[3], t[2] end
+							local f = em:AddTriangle(t[1][1], t[2][1], t[3][1])
+							em:SetFaceNormals(f, { t[1][2], t[2][2], t[3][2] })
+							if S.Smooth then em:SetFaceColors(f, { t[1][4], t[2][4], t[3][4] })
+							else local cid = paint((p1 + p2 + p3).Unit) em:SetFaceColors(f, { cid, cid, cid }) end
+							faces += 1
+						end
+					end
+				end
+			end
+			return faces
+		end)
+		local fixed
+		if okB then
+			local okF, f = pcall(function() return AS:CreateEditableMeshAsync(Content.fromObject(em), { FixedSize = true }) end)
+			if okF then fixed = f end
 		end
-	end
-	task.spawn(function()
-		local ok2, mp = pcall(function() return AS:CreateMeshPartAsync(Content.fromObject(em)) end)
-		if not (ok2 and mp) then return end
+		if em then pcall(function() em:Destroy() end) end
+		local mp
+		if fixed then
+			local ok2, m = pcall(function() return AS:CreateMeshPartAsync(Content.fromObject(fixed)) end)
+			if ok2 then mp = m end
+		end
+		if not mp then
+			if fixed then pcall(function() fixed:Destroy() end) end
+			if texImg then pcall(function() texImg:Destroy() end) end
+			if not okB then warn("[ToxinFX] wrap skin build failed: " .. tostring(faces)) end
+			task.delay(10, function() if bucket[key] == false then bucket[key] = nil end end)
+			return
+		end
+		if texImg then mp.TextureContent = Content.fromObject(texImg) skinKeep[#skinKeep + 1] = texImg end
+		skinKeep[#skinKeep + 1] = fixed                         -- (the MeshPart's content: kept for the session)
 		mp.Anchored, mp.CanCollide, mp.CanQuery, mp.CanTouch, mp.CastShadow = true, false, false, false, false
 		mp.Material, mp.Color, mp.Size = Enum.Material[S.Material or "SmoothPlastic"], Color3.new(1, 1, 1), Vector3.one
 		mp:SetAttribute("SkinFaces", faces)
@@ -1121,7 +1631,9 @@ local function makeBubble(pos)
 	local murk = ball(LOBE.GasCore, 0.12, model, { Material = GAS_MATERIAL })
 	local body = ball(SOLID.Membrane, 0.32, model, { Reflectance = wet(0.03, "Membrane") })
 	local skin = T.Bands and T.Bands.Skin and skinOf(T.Bands.Skin)
-	if T.Bands and T.Bands.LobeSkin then for _, n in ipairs({ "GasCore", "GasShadow", "Gas", "GasLit", "GasEdge" }) do skinOf(T.Bands.LobeSkin, n, LOBE[n]) end end
+	if T.Bands and T.Bands.Chart then skinOf(T.Bands.Chart, "chart~over", LOBE.Gas) end   -- (pH Indicator: warm the mark's chart)
+	if T.Bands and T.Bands.Flow and T.Bands.Flow.Fizz then flowFizz(body, T.Bands.Flow, "Solid", "Membrane", nil, T.Bands.Flow.Fizz.BubbleRate or 2.2, 1) end   -- (and its fizz)
+	if T.Bands and T.Bands.LobeSkin then for _, n in ipairs({ "GasCore", "GasShadow", "Gas", "GasLit", "GasEdge" }) do skinOf(T.Bands.LobeSkin, (T.Bands.LobeSkin.Texture and T.Bands.SelfLit and T.Bands.SelfLit[n]) and n .. "~over" or n, LOBE[n]) end end
 	if skin then                                                  -- (a patterned wrap: the painted membrane in the ball's place)
 		local mb = skin:Clone()
 		mb.Transparency, mb.Reflectance = body.Transparency, body.Reflectance
@@ -1142,13 +1654,13 @@ local function makeBubble(pos)
 	smoke.Speed = NumberRange.new(0)
 	smoke.Rotation = NumberRange.new(0, 360)
 	smoke.RotSpeed = NumberRange.new(-40, 40)
-	smoke.Rate = 5
+	smoke.Rate = 5 * density()                                    -- (2026-10-19, audit P5B-04)
 	smoke.Parent = murk
 	-- the heart: a small, dim, steady glow low in the murk
 	local heart = part({ Transparency = 1, Size = Vector3.new(0.2, 0.2, 0.2) })
 	heart.Parent = model
 	local glow = light(heart, R * 2.5, 0.12)
-	local gfx = glowEmitter(heart, R * 0.4, 0.82, R * 1.05, 3)
+	local gfx = glowEmitter(heart, R * 0.4, 0.82, R * 1.05, 3 * density())
 	model.Parent = fxFolder()
 	return {
 		Model = model, Murk = murk, Body = body, Rim = rim, Heart = heart, Light = glow, GlowFx = gfx, Smoke = smoke,
@@ -1169,6 +1681,19 @@ local function drawBubble(b, pos, look, sx, sy, sz, drain)
 	b.Murk.CFrame = CFrame.new(pos - Vector3.new(0, R * sy * 0.2, 0)) * rot
 	b.Murk.Size = Vector3.new(sx * 0.74, sy * 0.62, sz * 0.74) * (2 * R) * math.max(0.05, m)
 	b.Heart.CFrame = CFrame.new(pos - Vector3.new(0, R * sy * 0.32, 0))
+	if b.Pot then                                                  -- (Pixel Potion: the bottle in the sac's place)
+		local box = Vector3.new(sx, sy, sz) * (2 * R)
+		if look and look.Magnitude > 1e-3 then
+			potion().Place(b.Pot, cf * NECK_FIRST, Vector3.new(box.X, box.Z, box.Y))
+		else
+			potion().Place(b.Pot, cf, box)
+		end
+		potion().Fade(b.Pot, math.clamp((b.Body.Transparency - 0.32) / 0.68, 0, 1))
+	end
+	if b.Brew then                                                 -- (Witch's Brew: the glob in the sac's place)
+		BREW.call(b.Brew, "BubbleDraw", b, cf, Vector3.new(sx, sy, sz) * (2 * R),
+			math.clamp((b.Body.Transparency - 0.32) / 0.68, 0, 1), look)
+	end
 end
 
 local function killBubble(id)
@@ -1190,6 +1715,22 @@ end
 H.ToxinBubble = function(d)
 	if type(d.Id) ~= "number" or typeof(d.Origin) ~= "Vector3" or typeof(d.Vel) ~= "Vector3" then return end
 	local b = makeBubble(d.Origin)
+	if potionOn(d.Character) then                                  -- (Pixel Potion: the Id's later events reuse b.PP)
+		b.PP, b.Pot = true, bottle("Full", b.Model)
+		hide(b.Body, b.Rim, b.Murk)
+	end
+	b.Brew = not b.PP and BREW.on(d.Character) or nil              -- (Witch's Brew: a glob of brew spouted from the cauldron)
+	if b.Brew then
+		BREW.call(b.Brew, "BubbleStart", b, d.Character, d.Origin)
+		if b.WB then
+			hide(b.Body, b.Rim, b.Murk)
+			if b.GlowFx then b.GlowFx.Enabled = false end
+			if b.Smoke then b.Smoke.Enabled = false end
+			if b.Light then b.Light.Enabled = false end
+		else
+			b.Brew = nil
+		end
+	end
 	b.Mode = "Fly"
 	bubbles[d.Id] = b
 	local g = type(d.G) == "number" and d.G or T.Bubble.Gravity
@@ -1251,6 +1792,15 @@ H.ToxinBubble = function(d)
 			drawBubble(b, Vector3.new(b.Pos.X, b.Floor + b.R * sy, b.Pos.Z), nil, sx, sy, sx * 1.04)
 			local breathe = 0.5 + 0.5 * math.sin(now * TAU * 0.5)
 			b.Light.Brightness = 0.1 + 0.08 * breathe
+			-- (2026-10-19, audit P5B-18) a rest the server never ended (a dropped Expire): gone 2 s past its life, as
+			-- Fly and Hold have their own timeouts
+			if tr > T.Bubble.RestLife + 2 then
+				b.Model:Destroy()
+				for id, o in pairs(bubbles) do
+					if o == b then bubbles[id] = nil end
+				end
+				return false
+			end
 			return true
 		end
 		return false
@@ -1265,15 +1815,18 @@ H.ToxinBubbleRest = function(d)
 	b.RestAt = fxNow()
 	b.Floor = floorY(d.Position, 6) or (d.Position.Y - b.R * 0.8)
 	contactShadow(b, Vector3.new(d.Position.X, b.Floor, d.Position.Z))
+	if b.Brew then BREW.call(b.Brew, "BubbleRest", b) end          -- (Witch's Brew: it lands and bubbles)
 end
 
 --- The wet burst: the torn skin peels into floppy petals, the murk squirts out as a small gas puff, and the Virulence
 --- swells once.
-local function burst(pos, normal, withDrops)
+local function burst(pos, normal, withDrops, pp)
 	local R = T.Bubble.Radius
 	local n = (normal and normal.Magnitude > 1e-3) and normal.Unit or Vector3.yAxis
 	for i = 1, 5 do
 		local petal = ball(SOLID.Membrane, 0.35)
+		local pb = pp and bottle("Compact") or nil                 -- (Pixel Potion: the petals are small bottles)
+		if pb then hide(petal) end
 		local ang = (i / 5) * TAU + math.random() * 0.6
 		local side = n:Cross(Vector3.yAxis)
 		if side.Magnitude < 1e-3 then side = Vector3.xAxis end
@@ -1285,7 +1838,7 @@ local function burst(pos, normal, withDrops)
 		local spin = (math.random() - 0.5) * 3
 		updaters[petal] = function(_, now)
 			local t = now - t0
-			if t > 0.55 or not petal.Parent then petal:Destroy() return false end
+			if t > 0.55 or not petal.Parent then petal:Destroy() if pb then potion().Drop(pb) end return false end
 			-- the peel (tip first, recoiling), a damped 5 Hz flop, a droop under its own weight
 			local peel = math.min(1.9, t * 9)
 			local flop = 0.35 * math.sin(t * TAU * 5) * math.exp(-t / 0.2)
@@ -1294,19 +1847,23 @@ local function burst(pos, normal, withDrops)
 			local sh = 1 - t * 1.0
 			petal.Size = Vector3.new(R * 1.05 * sh, R * 0.1, R * 0.8 * sh)
 			petal.Transparency = 0.35 + math.max(0, t - 0.2) * 1.9
+			if pb then
+				potion().Place(pb, petal.CFrame, R * 0.6 * sh)
+				potion().Fade(pb, math.max(0, t - 0.2) * 1.9)
+			end
 			return true
 		end
 	end
-	local puff = runCumulus({ Name = "ToxinPuff", Center = pos, R = R * 1.3, Layout = LAYOUT.Puff, GrowScale = 1,
+	local puff = runCumulus({ Name = "ToxinPuff", PP = pp, Center = pos, R = R * 1.3, Layout = LAYOUT.Puff, GrowScale = 1,
 		GrowTime = 0.12, Duration = 0.2, Fade = 0.26, Breathe = 0 })
 	if T.Bands and T.Bands.BurstRings then ringBurst(pos, T.Bands.BurstRings, 1.4) end   -- (an Epic wrap: a few of its rings)
 	local fl = part({ Transparency = 1 })
 	fl.CFrame = CFrame.new(pos)
 	fl.Parent = fxFolder()
-	local l = light(fl, 7, 1.3)
+	local l = light(fl, 7, calm() and 0.5 or 1.3)                -- (2026-10-19, audit P5B-05) softer under Reduce Flashing
 	TweenService:Create(l, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Brightness = 0 }):Play()
 	Debris:AddItem(fl, 0.6)
-	if withDrops then drops(pos, 4, 8, 0.24) end
+	if withDrops then drops(pos, 4, 8, 0.24, pp) end
 	return puff
 end
 
@@ -1317,12 +1874,13 @@ H.ToxinBubblePop = function(d)
 	local target = typeof(d.Target) == "Instance" and d.Target or nil
 	local torso = target and torsoOf(target)
 	local normal = torso and (d.Position - torso.Position) or nil
-	burst(d.Position, normal, true)
+	if not (b and b.WB and b.WB.OwnBurst) then burst(d.Position, normal, true, b and b.PP) end   -- (Scorpion: it cracks open instead)
+	if b and b.Brew then BREW.call(b.Brew, "Splash", d.Position, normal, false, b) end
 	-- the residue stuck where it burst, with three viscous runs down the body
 	if torso and normal then
 		local n = Vector3.new(normal.X, 0, normal.Z)
 		n = n.Magnitude > 1e-3 and n.Unit or torso.CFrame.LookVector
-		residue(torso, d.Position, n, 0.55, 3, 2.6)
+		residue(torso, d.Position, n, 0.55, 3, 2.6, b and b.PP)
 	end
 end
 
@@ -1334,12 +1892,17 @@ H.ToxinBubbleConvert = function(d)
 		-- the strain: the sac swells 12%, rounds up off its sag and quivers at 13 Hz for 0.1 s -- then the wet tear
 		local t0 = fxNow()
 		local from = b.Pos
+		-- (2026-10-19, audit P5B-11) the tear is drawn 0.1 s on, in the converting cast's wrap
+		local tear = scoped(function()
+			if not (b.WB and b.WB.OwnBurst) then burst(pos, Vector3.yAxis, false, b.PP) end
+			drops(pos, 3, 4, 0.22, b.PP)
+			if b.Brew then BREW.call(b.Brew, "Splash", pos, Vector3.yAxis, true, b) end
+		end)
 		updaters[b] = function(_, now)
 			local t = now - t0
 			if t >= 0.1 then
 				b.Model:Destroy()
-				burst(pos, Vector3.yAxis, false)
-				drops(pos, 3, 4, 0.22)
+				tear()
 				return false
 			end
 			local s = 1 + 0.12 * (t / 0.1)
@@ -1356,6 +1919,7 @@ end
 H.ToxinBubbleExpire = function(d)
 	local b = killBubble(d.Id)
 	if not b then return end
+	if b.Brew then BREW.call(b.Brew, "BubbleExpire", b) end       -- (Scorpion: the gland cracks open as its rest runs out)
 	-- the deflate: the sac settles into a flat disc as the murk drains out of it, holds a moment, then soaks away
 	local pos = b.Pos
 	local fy = b.Floor or floorY(pos, 6) or (pos.Y - b.R)
@@ -1394,12 +1958,14 @@ H.ToxinCloud = function(d)
 	local R = d.Radius or T.Cloud.Radius
 	local form = d.FormTime or T.Cloud.FormTime
 	clouds[d.Id] = runCumulus({
-		Name = "ToxinCorrosiveCloud", Center = d.Center, R = R, Layout = LAYOUT.Corrosive,
+		Name = "ToxinCorrosiveCloud", PP = potionOn(d.Character), Center = d.Center, R = R, Layout = LAYOUT.Corrosive,
 		-- the v4 engorgement: lobes swell one by one out of the conversion point (the last at 0.26 of 0.6 s)
 		GrowScale = form / 0.6 * 1.6, GrowTime = 0.34, From = typeof(d.Point) == "Vector3" and d.Point or d.Center,
 		Glow = 1.5, GlowAt = 0.14, GlowRange = 0.6, GlowSize = 0.46, GlowAlpha = 0.52,
 		Grounded = true, Duration = form + (d.Duration or T.Cloud.Duration), Fade = 1.3,
 	})
+	local brew = BREW.on(d.Character)                              -- (Witch's Brew: the steam tether back to the cauldron)
+	if brew and clouds[d.Id] then BREW.call(brew, "Cloud", clouds[d.Id], d.Character, d.Center, form, nil) end
 end
 
 H.ToxinCloudEnd = function(d)
@@ -1419,12 +1985,14 @@ H.ToxinLifesteal = function(d)
 	if not (from and to) then return end
 	if T.Bands and T.Bands.RibbonRings then ringBurst(from.Position:Lerp(to.Position, 0.5) + Vector3.new(0, 1, 0), T.Bands.RibbonRings, 1.2) end
 	-- three thin, translucent, fraying strands peel off the target and dissolve into the caster's chest
+	local brew = BREW.on(toM)                                      -- (Witch's Brew: the siphon ribbon, target to cauldron)
 	thread({
 		From = function() return from.Parent and (from.Position + Vector3.new(0, 0.3, 0)) or nil end,
 		To = function() return to.Parent and to.Position or nil end,
 		Strands = { 0.26, 0.19, 0.14 }, Duration = 0.9, HeadTime = 0.5, TailStart = 0.45, Arc = 1.4, Wave = 0.55,
-		Colors = { PART.GasCore, PART.GasCore }, Alpha = 0.0,
+		Colors = { PART.GasCore, PART.GasCore }, Alpha = 0.0, PP = potionOn(toM), Hide = brew ~= nil,
 	})
+	if brew then BREW.call(brew, "Siphon", toM, from) end
 end
 
 local tellGui, tellCC, tellFrames = nil, nil, {}
@@ -1493,6 +2061,7 @@ local function endMark(target, burstIt)
 	m.Ended = true
 	m.EndAt = fxNow()
 	m.Burst = burstIt
+	if m.WB and m.WB.End then pcall(m.WB.End, burstIt) end         -- (Witch's Brew: erupt, or come home)
 	for _, L in ipairs(m.Lobes) do
 		if L.Emit then L.Emit.Rate = 0 end
 	end
@@ -1524,8 +2093,16 @@ H.ToxinPZMark = function(d)
 	local caster = d.Character
 	local hand = caster and (caster:FindFirstChild("RightHand") or caster:FindFirstChild("Right Arm") or torsoOf(caster))
 	local blob = ball(SOLID.LiquidDeep, 0.05, folder, { Reflectance = 0.2 })
+	local pp = potionOn(caster)
+	local blobPot = pp and potion().Gas(folder) or nil             -- (Pixel Potion: the thrown, stuck mark is a blocky voxel glob)
+	if blobPot then hide(blob) end
+	local brew = (not pp) and BREW.on(caster) or nil               -- (Witch's Brew: the cauldron flies over and locks on)
+	m.WB = brew and BREW.call(brew, "Mark", caster, target, telegraph, fuse) or nil
+	if m.WB then hide(blob) end
 	local blobLight = light(blob, 5, 0.3)
+	-- (2026-10-19, audit P5B-18) never nil: a rig with no hand and no torso yet throws from beside the target's pivot
 	local throwFrom = hand and hand.Position or (torso and torso.Position + Vector3.new(0, 0, 4))
+		or (target:GetPivot().Position + Vector3.new(0, 0, 4))
 	local stuckRel = nil
 	-- the wreath: murky lobes on a ring round the torso, growing through the telegraph
 	local count = 9
@@ -1533,20 +2110,23 @@ H.ToxinPZMark = function(d)
 		local q = T.Bands and T.Bands.Lanes and MARK_LANES[(i - 1) % 3 + 1]          -- (a hard-banded wrap: three concentric lanes)
 		local mk = not q and T.Bands and T.Bands.Mark
 		local L = newLobe(folder, (i % 3 == 0) and "base" or "mid", 2.5, 1.5,
-			q and T.Bands[q[1]] or (mk and ((i % 4 == 2) and mk.Blotch or ((i % 3 == 0) and mk.Outer or mk.Body))) or nil)
+			q and T.Bands[q[1]] or (mk and ((i % 4 == 2) and mk.Blotch or ((i % 3 == 0) and mk.Outer or mk.Body))) or nil, pp and "Big")
 		L.A = i / count * TAU
 		L.Y = (math.random() - 0.5) * 0.8
 		L.Rs = 0.85 + math.random() * 0.3
 		L.Alpha = 0.5
 		if q then L.Rm, L.Sz, L.Y = q[2], q[3], q[4] end
 		if mk and T.Bands.Eyes and i % 3 == 1 then L.Eye = eyeOn(L.Core, T.Bands.Eyes, Vector3.zero, 1.1, (T.Bands.Eyes.Size or 1.4) * 0.9) end
+		if m.WB then hide(L.Core, L.Halo, L.Over) end              -- (Witch's Brew: the cauldron is the mark)
 		table.insert(m.Lobes, L)
 	end
 	-- the heart of it: one soft core glow (the pulse) and its light
 	local core = part({ Transparency = 1, Size = Vector3.new(0.4, 0.4, 0.4) })
 	core.Parent = folder
 	local glow = light(core, 4, 0.2)
-	m.GlowFx = glowEmitter(core, 2.2, 0.7, 1.8, 6)
+	m.Dn = density()                                              -- (2026-10-19, audit P5B-04) the wreath's smoke and glow
+	m.Calm = calm()                                               -- (2026-10-19, audit P5B-05) the pulse, below
+	m.GlowFx = glowEmitter(core, 2.2, 0.7, 1.8, 6 * m.Dn)
 	if T.Bands and T.Bands.Speckle then                           -- (a speckled wrap: motes round the target, 8% over the wreath's rate)
 		local e = Instance.new("ParticleEmitter")
 		local Bm = T.Bands
@@ -1565,8 +2145,12 @@ H.ToxinPZMark = function(d)
 		if Bm.Pulse then glowPulse(e, Bm.Pulse) end
 	end
 	m.GlowFx.Lifetime = NumberRange.new(0.35, 0.5)
+	if m.WB and m.WB.HideCore then                                -- (Scorpion: the sigil under the target is the mark)
+		m.GlowFx.Enabled, glow.Enabled, blobLight.Enabled = false, false, false
+	end
 	local phase, spin = 0, 0
 	local nextDrip = fxNow() + 0.6
+	local drip = scoped(drops)                                      -- (2026-10-19, audit P5B-11) in the mark's wrap
 	marks[target] = m
 	updaters[m] = function(dt, now)
 		local r = torsoOf(target)
@@ -1583,6 +2167,7 @@ H.ToxinPZMark = function(d)
 			local p = throwFrom:Lerp(to, k) + Vector3.new(0, math.sin(k * math.pi) * 1.2, 0)
 			blob.Size = Vector3.new(0.5, 0.5, 0.7)
 			blob.CFrame = CFrame.lookAt(p, to + (to - throwFrom).Unit)
+			if blobPot then blobPot.CFrame, blobPot.Size = CFrame.new(blob.Position), Vector3.new(0.7, 0.7, 0.7) end
 			if k >= 1 then
 				local face = throwFrom - r.Position
 				face = Vector3.new(face.X, 0, face.Z)
@@ -1593,9 +2178,18 @@ H.ToxinPZMark = function(d)
 		else
 			blob.CFrame = r.CFrame * stuckRel
 			blob.Size = Vector3.new(0.85, 1.0, 0.22)
+			if blobPot then blobPot.CFrame, blobPot.Size = CFrame.new(blob.Position), Vector3.new(0.95, 0.95, 0.95) end
 			if now >= nextDrip and not m.Ended then
 				nextDrip = now + 0.55 + math.random() * 0.4
-				drops(blob.Position - Vector3.new(0, 0.4, 0), 1, 1.5, 0.2)
+				local at = m.WB and m.WB.DripAt                      -- (Scorpion: from the sting's wound, once it has landed)
+				local dp
+				if at then
+					local okD, p = pcall(at)
+					dp = okD and typeof(p) == "Vector3" and p or nil
+				else
+					dp = blob.Position - Vector3.new(0, 0.4, 0)
+				end
+				if dp then drip(dp, 1, 1.5, 0.2) end
 			end
 		end
 		local pulseEnd = telegraph - fuse
@@ -1604,8 +2198,15 @@ H.ToxinPZMark = function(d)
 			level = m.Burst and math.max(0, 1 - (now - m.EndAt) / 0.2) or 0
 		elseif t < pulseEnd then
 			local k = math.clamp(t / pulseEnd, 0, 1)
-			phase += TAU * gearHz(k) * dt
-			level = (0.5 - 0.5 * math.cos(phase)) * (0.4 + 0.6 * k)
+			if m.Calm then
+				-- (2026-10-19, audit P5B-05) Reduce Flashing: never past 1 Hz and a shallow breathe (the 4.6 Hz gear sat in
+				-- the photosensitive band); the countdown still reads in the wreath's growth and the solid fuse
+				phase += TAU * math.min(gearHz(k), 1) * dt
+				level = (0.7 + 0.15 * (0.5 - 0.5 * math.cos(phase))) * (0.4 + 0.6 * k)
+			else
+				phase += TAU * gearHz(k) * dt
+				level = (0.5 - 0.5 * math.cos(phase)) * (0.4 + 0.6 * k)
+			end
 		else
 			level = 1                                             -- the solid fuse
 		end
@@ -1622,7 +2223,7 @@ H.ToxinPZMark = function(d)
 			local rm = radius * (L.Rm or 1)
 			local pos = c + Vector3.new(math.cos(a) * rm, L.Y + 0.25 * math.sin(a * 2 + spin), math.sin(a) * rm) * swell
 			drawLobe(L, CFrame.new(pos), lr, lr * 0.9, math.min(1, grow * 2) * (1 - fade))
-			if L.Emit and not L.EmitOn and grow > 0.3 and not m.Ended then L.Emit.Rate, L.EmitOn = 2.5, true end
+			if L.Emit and not L.EmitOn and grow > 0.3 and not m.Ended then L.Emit.Rate, L.EmitOn = 2.5 * (m.Dn or 1), true end
 		end
 		core.CFrame = CFrame.new(stuckRel and blob.Position or c)
 		glow.Brightness = (0.15 + 1.6 * level) * (1 - fade * (m.Burst and 0 or 1))
@@ -1630,6 +2231,7 @@ H.ToxinPZMark = function(d)
 		blobLight.Brightness = 0.2 + 1.2 * level
 		m.GlowFx.Transparency = nseq({ { 0, 1 }, { 0.3, 1 - 0.6 * level }, { 0.7, 1 - 0.6 * level }, { 1, 1 } })
 		blob.Transparency = 0.05 + 0.95 * fade
+		if blobPot then blobPot.Color, blobPot.Material, blobPot.Transparency = blob.Color, blob.Material, blob.Transparency end
 		if m.Ended and fade >= 1 then
 			folder:Destroy()
 			return false
@@ -1643,25 +2245,44 @@ H.ToxinPZCancel = function(d)
 	if typeof(d.Target) == "Instance" then endMark(d.Target, false) end
 end
 
+do                                                              -- (pH Indicator: the mark sweeps the scale with its countdown)
+	local baseMark = H.ToxinPZMark
+	H.ToxinPZMark = function(d)
+		local F = T.Bands and T.Bands.Flow
+		if not (F and F.Sweep) then return baseMark(d) end
+		local P = T.PatientZero
+		FLOW_MODE = { T0 = fxNow() - math.max(0, serverNow() - (type(d.T0) == "number" and d.T0 or serverNow())), Dur = d.Telegraph or P.Telegraph, N = 0 }
+		local ok, err = pcall(baseMark, d)
+		FLOW_MODE = nil
+		if not ok then error(err, 0) end
+	end
+end
+
 H.ToxinPZBurst = function(d)
 	if typeof(d.Target) == "Instance" then endMark(d.Target, true) end
+	local pp = potionOn(d.Character)                              -- (Pixel Potion)
 	local pos = typeof(d.Position) == "Vector3" and d.Position
 	if not pos then return end
 	local P = T.PatientZero
 	local R = d.Radius or P.Radius
 	local center = typeof(d.Center) == "Vector3" and d.Center or pos
-	-- the light-crack: 0.05 s held at the heart, then falling fast (a flash halo, no core)
+	local skin = (not pp) and BREW.on(d.Character) or nil
+	local own = skin and BREW.call(skin, "PZBurst", d.Character, d.Target, pos, center, R) == true
+	if not own then                                               -- (a skin's PZBurst returning true keeps this flash out --
+	-- the light-crack: 0.05 s held at the heart, then falling fast (a flash halo, no core)   Scorpion's; the wave stays)
 	local flashP = part({ Transparency = 1, Size = Vector3.new(1, 1, 1) })
 	flashP.CFrame = CFrame.new(pos)
 	flashP.Parent = fxFolder()
-	local fl = light(flashP, R * 1.5, 4)
+	local soft = calm()                                           -- (2026-10-19, audit P5B-05) Reduce Flashing: a soft crack
+	local fl = light(flashP, R * 1.5, soft and 1.4 or 4)
 	local flare = glowEmitter(flashP, 7, 0.35, 3, 0)
 	flare.Lifetime = NumberRange.new(0.25, 0.35)
-	flare:Emit(4)
+	flare:Emit(soft and 2 or 4)
 	task.delay(0.05, function()
 		TweenService:Create(fl, TweenInfo.new(0.4, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), { Brightness = 0 }):Play()
 	end)
 	Debris:AddItem(flashP, 1)
+	end
 	-- the pressure wave: a low ring of gas rolling out along the floor, radius 3 -> R as 1 - e^(-t/0.28)
 	local folder = Instance.new("Folder")
 	folder.Name = "ToxinPZWave"
@@ -1676,13 +2297,14 @@ H.ToxinPZBurst = function(d)
 		local q = lanes and lanes[i]
 		local wv = not q and T.Bands and T.Bands.Wave             -- (a patterned wrap's wave: deep body, lit rim, blotches)
 		local L = newLobe(folder, lead and "mid" or ((i % 2 == 0) and "base" or "mid"), (i % 2 == 0) and 6 or nil, 2.4,
-			q and T.Bands[q[1][1]] or (wv and (lead and wv.Lead or (i % 5 == 1 and wv.Blotch or wv.Body))) or nil)
+			q and T.Bands[q[1][1]] or (wv and (lead and wv.Lead or (i % 5 == 1 and wv.Blotch or wv.Body))) or nil, pp and "Big")
 		L.A = i / n * TAU + (math.random() - 0.5) * 0.08
 		L.Lead = lead
 		L.Alpha = lead and 0.7 or 0.32
 		if q then L.A, L.Lane, L.Lead, L.Alpha = q[2], q[1], false, 0.32 end
 		ring[i] = L
 	end
+	local wdn = density()                                         -- (2026-10-19, audit P5B-04) the wave's smoke
 	local t0 = fxNow()
 	updaters[folder] = function(_, now)
 		local t = now - t0
@@ -1700,7 +2322,7 @@ H.ToxinPZBurst = function(d)
 			end
 			drawLobe(L, CFrame.new(p) * CFrame.Angles(0, -L.A, 0), w and lr * w[4] or lr * 1.3 * sz, w and lr * 0.38 * w[4] or lr * 0.5 * sz,
 				math.min(1, t / 0.06) * (1 - fade))
-			if L.Emit and not L.EmitOn then L.Emit.Rate, L.EmitOn = 6, true end
+			if L.Emit and not L.EmitOn then L.Emit.Rate, L.EmitOn = 6 * wdn, true end
 			if L.Emit and t > 0.7 then L.Emit.Rate = 0 end
 		end
 		if fade >= 1 then
@@ -1714,10 +2336,12 @@ H.ToxinPZBurst = function(d)
 	-- the billow: the big lingering mass, swelling lobe by lobe outward from the centre, then settling and breathing
 	if type(d.CloudId) == "number" then
 		clouds[d.CloudId] = runCumulus({
-			Name = "ToxinPZMass", Center = center, R = R, Layout = LAYOUT.Mass, GrowScale = 1.4, GrowTime = 0.4,
+			Name = "ToxinPZMass", PP = pp and "Big", Center = center, R = R, Layout = LAYOUT.Mass, GrowScale = 1.4, GrowTime = 0.4,
 			Glow = 1.3, GlowAt = 0.12, GlowRange = 0.55, GlowSize = 0.38, GlowAlpha = 0.58, Grounded = true,
 			Duration = 0.25 + (d.Duration or P.CloudDuration), Fade = 1.5,
 		})
+		local brew = (not pp) and BREW.on(d.Character) or nil      -- (Witch's Brew: a simmering pot of bubbles)
+		if brew then BREW.call(brew, "Bubblify", clouds[d.CloudId], { Big = true }) end
 	end
 end
 
@@ -1805,9 +2429,16 @@ local function siteOf(character, i)
 end
 
 local function dropMask(character, fast)
+	local updaters = scopedUpdaters()                           -- (2026-10-20: the Techniques' later pieces keep the caster's wrap)
 	local m = masks[character]
 	if not m then return end
 	masks[character] = nil
+	if m.Brew then                                                -- (Witch's Brew round 6: no mask -- the vapor fades, the flap shuts)
+		m.Ended = true
+		BREW.call(m.FX or BREW.FX, "VentEnd", character, fast)
+		return
+	end
+	if m.WB and BREW.FX then BREW.call(BREW.FX, "VentOff", character, fast and 0.6 or 2.2) end   -- (Witch's Brew: back on the rim once it has fallen)
 	m.Ended = true
 	-- the lenses go dark, and the dead mask drops off, lands and rocks, then goes
 	for _, rim in ipairs(m.G.Rims) do
@@ -1863,13 +2494,52 @@ local function dropMask(character, fast)
 end
 
 H.ToxinVent = function(d)
+	local updaters = scopedUpdaters()                           -- (2026-10-20: the Techniques' later pieces keep the caster's wrap)
 	local character = d.Character
 	local head = character and character:FindFirstChild("Head")
 	if not head then return end
 	dropMask(character, true)
 	local V = T.Vent
 	local duration = d.Duration or V.Duration
-	local model, body, seat, G = buildMask(head)
+	local pp = potionOn(character)
+	local model, body, seat, G, brewFrom, brewVia
+	local brew = (not pp) and BREW.on(character) or nil            -- (Witch's Brew: the herb satchel, from the cauldron's rim)
+	if brew then                                                  -- (Witch's Brew, round 6: NOTHING worn -- the pouch on the cauldron
+		local v = BREW.call(brew, "Vent", character, duration)       --  pops open, a herb goes into the brew, ward-vapor wisps round
+		if v then                                                 --  the head; the cleanse threads draw into the brew. On a failure
+			local m = { WB = true, Brew = true, FX = brew }           --  the Default mask below draws instead)
+			masks[character] = m
+			local n = (d.Cleansed or 0) > 0 and 8 or 3
+			for i = 1, n do
+				local site, off = siteOf(character, i)
+				if site then
+					local rel = CFrame.new(off)
+					task.delay(0.42 + (i - 1) * 0.09, function()
+						if m.Ended then return end
+						thread({
+							From = function() return site.Parent and (site.CFrame * rel).Position or nil end,
+							To = v.Mouth,
+							Strands = { 0.14, 0.1 }, Duration = 0.75, HeadTime = 0.62, TailStart = 0.55, Arc = 0.6, Wave = 0.3,
+							Colors = v.Colors or { BREW.Kit.Look.BrewSkin, BREW.Kit.Look.Brew }, Alpha = 0.5,
+							OnArrive = v.Arrive,
+						})
+					end)
+				end
+			end
+			local t0 = fxNow()
+			updaters[m] = function(_, now)
+				if m.Ended then return false end
+				if not (head.Parent and character.Parent) then dropMask(character, true) return false end
+				if now - t0 >= duration then dropMask(character) return false end
+				return true
+			end
+			return
+		end
+	end
+	if brew then model, body, seat, G, brewFrom, brewVia = BREW.call(brew, "Mask", head, character) end
+	local brewMask = model ~= nil
+	if not model then model, body, seat, G = buildMask(head) end
+	if pp then body, G = potion().Voxelize(model, body, G) end   -- (Pixel Potion: the Default's mask, voxelized)
 	for _, p in ipairs(model:GetChildren()) do
 		if p:IsA("BasePart") and p ~= body then
 			local off = p:GetAttribute("Offset")
@@ -1884,15 +2554,26 @@ H.ToxinVent = function(d)
 	local weld = Instance.new("Weld")
 	weld.Part0 = head
 	weld.Part1 = body
-	weld.C0 = seat * CFrame.new(0, 1.4 * head.Size.Y, -0.4) * CFrame.Angles(math.rad(-50), 0, math.rad(12))
+	weld.C0 = brewFrom or (seat * CFrame.new(0, 1.4 * head.Size.Y, -0.4) * CFrame.Angles(math.rad(-50), 0, math.rad(12)))
 	weld.Parent = body
 	model.Parent = fxFolder()
 	local glow = light(body, 1.2, 0)
 	local canLight = light(G.Canister, 3, 0)
-	local m = { Model = model, Weld = weld, G = G, Light = glow, CanLight = canLight }
+	if brewMask and BREW.Kit then glow.Color, canLight.Color = BREW.Kit.Look.Brew, BREW.Kit.Look.Brew end
+	local m = { Model = model, Weld = weld, G = G, Light = glow, CanLight = canLight, WB = brewMask }
 	masks[character] = m
 	-- beat 1: it drops onto the face
-	TweenService:Create(weld, TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { C0 = seat }):Play()
+	if brewFrom and brewVia then                                  -- (Witch's Brew: off the rim, up over the shoulder, tied on)
+		local up = TweenService:Create(weld, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { C0 = brewVia })
+		up.Completed:Connect(function()
+			if weld.Parent then
+				TweenService:Create(weld, TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { C0 = seat }):Play()
+			end
+		end)
+		up:Play()
+	else
+		TweenService:Create(weld, TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { C0 = seat }):Play()
+	end
 	-- the cleanse: eight thin murk tendrils peel off the skin and draw into the canister, each arrival a hot pulse
 	local arrivals, pulse = 0, 0
 	local n = (d.Cleansed or 0) > 0 and 8 or 3
@@ -1904,9 +2585,10 @@ H.ToxinVent = function(d)
 				if m.Ended then return end
 				thread({
 					From = function() return site.Parent and (site.CFrame * rel).Position or nil end,
-					To = function() return G.Grille.Parent and G.Grille.Position or nil end,
+					To = function() return G.Grille.Parent and G.Grille.Position or nil end,   -- (Pixel Potion: no bottles on the mask's threads)
 					Strands = { 0.14, 0.1 }, Duration = 0.75, HeadTime = 0.62, TailStart = 0.55, Arc = 0.6, Wave = 0.3,
-					Colors = { PART.GasCore, PART.GasShadow }, Alpha = 0.5,
+					Colors = (brewMask and BREW.Kit) and { BREW.Kit.Look.BrewSkin, BREW.Kit.Look.Brew } or { PART.GasCore, PART.GasShadow },
+					Alpha = 0.5,
 					OnArrive = function()
 						arrivals += 1
 						pulse = 1
@@ -1916,6 +2598,7 @@ H.ToxinVent = function(d)
 		end
 	end
 	local t0 = fxNow()
+	local soft = calm()
 	updaters[m] = function(dt, now)
 		if m.Ended then return false end
 		if not (head.Parent and character.Parent) then dropMask(character, true) return false end
@@ -1930,6 +2613,7 @@ H.ToxinVent = function(d)
 			end
 		end
 		pulse = math.max(0, pulse - dt / 0.14)
+		if soft then pulse = math.min(pulse, 0.5) end               -- (2026-10-19, audit P5B-05) the grille flash, halved
 		local k = math.clamp(level / 0.45, 0, 1)
 		local vir = NEON.Virulence
 		for _, rim in ipairs(G.Rims) do
@@ -1966,6 +2650,7 @@ end
 -- TECHNIQUE: ACID RAIN
 ----------------------------------------------------------------------------------------------------
 H.ToxinAcidRain = function(d)
+	local updaters = scopedUpdaters()                           -- (2026-10-20: the Techniques' later pieces keep the caster's wrap)
 	local center = typeof(d.Center) == "Vector3" and d.Center
 	if not center then return end
 	local A = T.AcidRain
@@ -1976,13 +2661,18 @@ H.ToxinAcidRain = function(d)
 	local t0 = fxNow() - math.max(0, serverNow() - (d.T0 or serverNow()))
 	-- the hold: a wisp of gas curls up off the caster's raised hand
 	local caster = d.Character
+	local pp = potionOn(caster)                                   -- (Pixel Potion)
+	local brew = (not pp) and BREW.on(caster) or nil              -- (Witch's Brew: the cauldron boils over and flings bubbles)
+	local rainHook = brew and BREW.call(brew, "AcidRain", caster, center, height, R, gather, rainTime, t0) or nil
+	local brewRain = rainHook == true                             -- (true: the whole rain is the skin's -- no cloud overhead)
+	local ownDrops = brewRain or rainHook == "drops"              -- ("drops", Scorpion: its spines fall from the cloud)
 	local hand = caster and (caster:FindFirstChild("RightHand") or caster:FindFirstChild("Right Arm"))
-	if hand then
-		runCumulus({ Name = "ToxinRainHold", Center = hand.Position + Vector3.new(0, 1.2, 0), R = 0.9, Layout = LAYOUT.Puff,
+	if hand and not ownDrops then
+		runCumulus({ Name = "ToxinRainHold", PP = pp, Center = hand.Position + Vector3.new(0, 1.2, 0), R = 0.9, Layout = LAYOUT.Puff,
 			GrowScale = 2, GrowTime = 0.25, Duration = 0.5, Fade = 0.4 })
 	end
 	-- the overhead mass: flat-bottomed, dark below, gathering lobe by lobe
-	local cloud = newCumulus({ Name = "ToxinAcidRainCloud", Center = center + Vector3.new(0, height, 0), R = R * 1.05,
+	local cloud = newCumulus({ Name = "ToxinAcidRainCloud", PP = pp, Center = center + Vector3.new(0, height, 0), R = R * 1.05,
 		Layout = LAYOUT.Rain, GrowScale = gather / 0.6, GrowTime = 0.4, FlatBottom = true, Fade = 1.6, EmitMul = 1.2 })
 	-- its Virulence rolls in patches on the underside: two roaming soft glows and one diffuse light
 	local patches = {}
@@ -1997,6 +2687,8 @@ H.ToxinAcidRain = function(d)
 	local glow = light(lp, R * 1.2, 0)
 	local globs = {}
 	local spawnAcc = 0
+	local dn = density()                                          -- (2026-10-19, audit P5B-04) the globs and patch glows
+	local rainCalm = calm()                                       -- (2026-10-19, audit P5B-05)
 	local key = {}
 	updaters[key] = function(dt, now)
 		local t = now - t0
@@ -2005,25 +2697,39 @@ H.ToxinAcidRain = function(d)
 		local over = t >= gather + rainTime or not cloud.Folder.Parent
 		if over and not cloud.EndAt then cumulusEnd(cloud) end        -- the rain stops; the cloud gutters
 		local alive = cumulusStep(cloud, now)
-		local lvl = over and 0 or k * (0.55 + 0.2 * math.sin(now * TAU * 1.2))
-		glow.Brightness = lvl * (cloud.EndAt and 0 or 1)
+		local lvl = over and 0 or k * (0.55 + (rainCalm and 0 or 0.2 * math.sin(now * TAU * 1.2)))   -- (P5B-05: steady when calm)
+		glow.Brightness = brewRain and 0 or (lvl * (cloud.EndAt and 0 or 1))
+		if brewRain then                                         -- (Witch's Brew: no cloud overhead -- it times the rain unseen)
+			for _, x in ipairs(cloud.Folder:GetDescendants()) do
+				if x:IsA("BasePart") then x.LocalTransparencyModifier = 1
+				elseif x:IsA("ParticleEmitter") then x.Enabled = false end
+			end
+		end
 		local base = cloud.CF.Position
 		for i, pa in ipairs(patches) do
 			pa.A += dt * (0.35 + 0.15 * i)
 			pa.P.CFrame = CFrame.new(base + Vector3.new(math.cos(pa.A) * pa.Rr, -0.3, math.sin(pa.A) * pa.Rr))
-			pa.Fx.Rate = (not over and k > 0.3) and 2.2 or 0
+			pa.Fx.Rate = (not brewRain and not over and k > 0.3) and 2.2 * dn or 0
 		end
 		lp.CFrame = CFrame.new(base + Vector3.new(0, -1, 0))
-		if raining then
-			spawnAcc += dt * 38
+		if raining and not ownDrops then
+			spawnAcc += dt * 38 * dn
 			while spawnAcc >= 1 do
 				spawnAcc -= 1
 				local a, rr = math.random() * TAU, math.sqrt(math.random()) * R
 				local x, z = center.X + math.cos(a) * rr, center.Z + math.sin(a) * rr
 				local top = Vector3.new(x, base.Y - 0.2, z)
 				local body, tip = teardrop()
+				local px = pp and potion().RainDrop(body) or nil  -- (Pixel Potion: a cubical pixel drop in the teardrop's own colour)
+				if px then
+					px.Color, px.Transparency = body.Color, body.Transparency
+				elseif brew then                                 -- (Witch's Brew: a glowing drop of brew)
+					px = BREW.call(brew, "RainDrop", body)
+				end
+				if px then hide(body, tip) end
 				local sz = 0.34 + math.random() * 0.2
-				globs[#globs + 1] = { Body = body, Tip = tip, X = x, Z = z, Y = top.Y, Floor = floorY(top, height + 6) or center.Y,
+				globs[#globs + 1] = { Px = px, PxSize = (px and not pp) and Vector3.new(sz * 0.55, sz * 0.95, sz * 0.55) or nil,
+					Body = body, Tip = tip, X = x, Z = z, Y = top.Y, Floor = floorY(top, height + 6) or center.Y,
 					V = 6 + math.random() * 4, S = sz }
 			end
 		end
@@ -2035,10 +2741,14 @@ H.ToxinAcidRain = function(d)
 				g.Body:Destroy()
 				g.Tip:Destroy()
 				table.remove(globs, i)
-				if math.random() < 0.45 then splat(Vector3.new(g.X, g.Floor, g.Z), g.S * 3.2, 1.8 + math.random() * 1.2, g.Floor) end
+				if math.random() < 0.45 then splat(Vector3.new(g.X, g.Floor, g.Z), g.S * 3.2, 1.8 + math.random() * 1.2, g.Floor, pp) end
 			else
 				-- a teardrop falls tip-up, stretching with its speed
-				drawTeardrop(g.Body, g.Tip, Vector3.new(g.X, g.Y, g.Z), Vector3.new(0, -1, 0), g.S, math.min(0.8, g.V * 0.02))
+				if g.Px then                                    -- (a cube: a pixel of rain)
+					g.Px.CFrame, g.Px.Size = CFrame.new(g.X, g.Y, g.Z), g.PxSize or (Vector3.new(g.S, g.S, g.S) * 0.8)
+				else
+					drawTeardrop(g.Body, g.Tip, Vector3.new(g.X, g.Y, g.Z), Vector3.new(0, -1, 0), g.S, math.min(0.8, g.V * 0.02))
+				end
 			end
 		end
 		if over and #globs == 0 and (not alive or not cloud.Folder.Parent) then
@@ -2062,11 +2772,12 @@ local function glazeTargets(model)
 end
 
 local function watchGlaze(model)
+	local updaters = scopedUpdaters()                           -- (2026-10-20: the Techniques' later pieces keep the caster's wrap)
 	if glazes[model] or not model.Parent then return end
 	local folder = Instance.new("Folder")
 	folder.Name = "ToxinCorroded"
 	folder.Parent = fxFolder()
-	local g = { Folder = folder, Parts = {}, Cover = 0, Phase = 0, NextDrip = fxNow() + 0.5 }
+	local g = { Folder = folder, Parts = {}, Cover = 0, Phase = 0, NextDrip = fxNow() + 0.5, Calm = calm() }
 	for _, p in ipairs(glazeTargets(model)) do
 		g.Parts[#g.Parts + 1] = {
 			Host = p,
@@ -2099,6 +2810,7 @@ local function watchGlaze(model)
 		end
 		local threshold = top - g.Cover * (top - bottom)
 		local f = 0.8 * (1.55 ^ math.max(0, stacks - 1))
+		if g.Calm then f = math.min(f, 0.8) end                     -- (2026-10-19, audit P5B-05) never faster than 0.8 Hz
 		g.Phase += TAU * f * dt
 		local rim = (live and stacks >= 2) and (0.5 - 0.5 * math.cos(g.Phase)) * (0.35 + 0.65 * target) or 0
 		local lipParts = {}
@@ -2140,8 +2852,11 @@ end
 
 H.ToxinAcidTick = function(d)
 	if type(d.Hit) ~= "table" then return end
+	local skin = (not potionOn(d.Character)) and BREW.on(d.Character) or nil
 	for _, model in ipairs(d.Hit) do
-		if typeof(model) == "Instance" and model:IsA("Model") then watchGlaze(model) end
+		if typeof(model) == "Instance" and model:IsA("Model") then
+			if not (skin and BREW.call(skin, "Corrode", model) == true) then watchGlaze(model) end   -- (Scorpion: chitin cracks)
+		end
 	end
 end
 

@@ -14,8 +14,10 @@
 
 local CryoTuning = {}
 
--- BLIZZARD: a storm dropped where the caster stands. Everyone else inside it who may be hurt is slowed and can barely
--- see; the caster and anyone they may not hurt are untouched. No damage: it is control, and the slow is its payoff.
+-- BLIZZARD: a storm dropped where the crosshair points, at most CastRange (20) away (2026-10-19, audit P6B-11: was
+-- "where the caster stands", the pre-P29 rule; CastRange = 0 brings it back). Everyone else inside it who may be hurt
+-- is slowed and can barely see; the caster and anyone they may not hurt are untouched. No damage: it is control, and
+-- the slow is its payoff.
 CryoTuning.Blizzard = {
 	-- CastRange (2026-10-18, P29; the owner picked 20, the range that left Terra alone in the 3v3 sim): the storm drops
 	-- where the crosshair points, at most this far from the caster (the row's Range too). 0 = where the caster stands.

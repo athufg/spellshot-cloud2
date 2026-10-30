@@ -27,7 +27,13 @@
 	WHO MAY SET ONE OFF. Anyone whose hit lands. The status may be your own (a loadout mixing Elements) or a teammate's (the 2v2
 	payoff the manual describes); the manual left that open, and this decides it: a teammate's Element reacts exactly as a
 	self-mixed Technique does. A friend's hit is refused by DealDamage already, so it sets nothing off. Burn and poison ticks,
-	a Charged discharge and a reaction's own damage never set one off.
+	a Charged discharge and a reaction's own damage never set one off, and (2026-10-19, audit P3-10) nor does a hit on the
+	caster's own body.
+	(2026-10-19, audit P3-24) Two things follow. Since P31 (Config.TechniquesOwnElementOnly, 2026-10-18) a loadout cannot
+	mix Elements, and no rule below pairs an Element with itself, so a status you applied reacts only with a teammate's hit:
+	in a 1v1 the only statuses left to react with are ones the victim put on itself (a Toxin's own poison). And a
+	teammate's hit consumes what it reacts with, your Cryo's root included -- an ally's Pyro M1 frees your Cryo's catch
+	(audit P3-05).
 
 	SPAM. A consume clears what it reacted with, so it cannot repeat on that status. An extend has a per-body cooldown
 	(Zephyr's Wind Blade fires fast), and Frozen a long one, so two players cannot chain roots on one body.
@@ -60,7 +66,7 @@ local TUNE = {
 	Overload    = { Bonus = 12, Knock = 40, KnockLift = 18, KnockTime = 0.25, Stagger = 0.6, Cooldown = 0.75 },
 	Shatter     = { Bonus = 10, Cooldown = 0.75 },
 	Frozen      = { Root = 2.0, Cooldown = 6 },
-	Wildfire    = { Cooldown = 2 },
+	Wildfire    = { Cooldown = 2, MaxFan = 4 },   -- 2026-10-23: MaxFan, s one burn can be fanned for from its first fan
 	Windchill   = { Stacks = 1, Cooldown = 2 },
 	StormSurge  = { Stacks = 1, Cooldown = 2 },
 	DustStorm   = { Stacks = 1, Cooldown = 2 },
@@ -229,6 +235,11 @@ FIRE.Overload = function(ctx)
 				Until = workspace:GetServerTimeNow() + T.KnockTime, Center = croot and croot.Position or vroot.Position,
 				Caster = ctx.Caster })
 		end)
+		-- (2026-10-19, audits P4-04 / P1-03) thrown by an enemy until it lands: KnockedUntil (server time), which Updraft's
+		-- bonus ignores and CombatCore's movement guard reads as a fast state -- the knock, its fall, and a little slack
+		ctx.Model:SetAttribute("KnockedUntil", math.max(workspace:GetServerTimeNow() + T.KnockTime
+			+ math.clamp(2 * math.max(velocity.Y, 0) / workspace.Gravity, 0.35, 1.4) + 0.3,
+			ctx.Model:GetAttribute("KnockedUntil") or 0))
 	else
 		vroot.AssemblyLinearVelocity = velocity       -- a dummy is the server's to throw
 	end
@@ -240,8 +251,12 @@ FIRE.Overload = function(ctx)
 	Core.ApplyStatusTag(ctx.Humanoid, "Staggered", T.Stagger)
 	task.delay(T.Stagger, function()
 		if ctx.Model.Parent and ctx.Model:GetAttribute("ReactionStaggerAt") == stamp then
-			ctx.Model:SetAttribute("RX_Staggered", false)
 			ctx.Model:SetAttribute("ReactionStaggerAt", nil)
+			-- (2026-10-19, audit P3-06) a Bulwark Charge stagger still running (TerraHandler's RX_StaggeredUntil, server
+			-- time) keeps the stars up; its own timer lowers them
+			if workspace:GetServerTimeNow() >= (ctx.Model:GetAttribute("RX_StaggeredUntil") or 0) - 0.05 then
+				ctx.Model:SetAttribute("RX_Staggered", false)
+			end
 		end
 	end)
 end
@@ -301,6 +316,25 @@ local function ready(humanoid, name)
 	return true
 end
 
+-- 2026-10-23: Wildfire gives a burn a fresh clock, so a Zephyr hitting every Cooldown kept one burn alight for good (12 s+,
+-- 3 stacks): it fans one burn only for TUNE.Wildfire.MaxFan s from its first fan; the body going out of Burning resets it
+local fanFrom = setmetatable({}, { __mode = "k" })   -- [humanoid] = os.clock() of the first Wildfire on its burn
+local function canFan(humanoid)
+	local first = fanFrom[humanoid]
+	return first == nil or os.clock() - first < TUNE.Wildfire.MaxFan
+end
+local function fanned(humanoid, model)
+	if fanFrom[humanoid] then return end
+	fanFrom[humanoid] = os.clock()
+	local conn
+	conn = model:GetAttributeChangedSignal("RX_Burning"):Connect(function()
+		if model:GetAttribute("RX_Burning") ~= true then
+			fanFrom[humanoid] = nil
+			conn:Disconnect()
+		end
+	end)
+end
+
 local function fire(name, ctx)
 	local before = ctx.Humanoid.Health
 	local ok, err = pcall(FIRE[name], ctx)
@@ -348,6 +382,9 @@ Core.OnHitLanded(function(caster, humanoid, amount, info)
 	local model = humanoid.Parent
 	if not model or humanoid.Health <= 0 or Core.IsWall(model) or model:GetAttribute("DecoyOwner") then return end
 	local casterChar = (typeof(caster) == "Instance" and caster:IsA("Player")) and caster.Character or nil
+	-- (2026-10-19, audit P3-10) never on the caster's own body: a Toxin in its own Patient Zero burst while Burning set off
+	-- Combustion on itself (consuming its own burn and bursting on everyone round it)
+	if casterChar ~= nil and model == casterChar then return end
 	local ctx = { Caster = caster, CasterChar = casterChar, Humanoid = humanoid, Model = model, Element = element,
 		From = info.From }
 	if element == "Zephyr" then
@@ -356,11 +393,12 @@ Core.OnHitLanded(function(caster, humanoid, amount, info)
 	end
 	for _, rule in ipairs(rules) do
 		local kind, name = rule[1], rule[2]
-		if has(humanoid, model, kind) then
-			if ready(humanoid, name) then
-				ctx.Status = kind
-				fire(name, ctx)
-			end
+		-- 2026-10-23: a status whose reaction is on cooldown (or a burn fanned for its MaxFan) passes the hit on to the next
+		-- status in the list; it stopped the check before
+		if has(humanoid, model, kind) and (name ~= "Wildfire" or canFan(humanoid)) and ready(humanoid, name) then
+			ctx.Status = kind
+			if name == "Wildfire" then fanned(humanoid, model) end
+			fire(name, ctx)
 			return
 		end
 	end

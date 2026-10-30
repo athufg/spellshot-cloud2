@@ -487,7 +487,7 @@ function Tech.DetonateFlick(character, t0)
 			cv:burst(snapAt, age / 0.2, BU)
 		end
 		return true
-	end, { Clock = os.clock, own = own })
+	end, { Clock = os.clock, own = own or PD.Spared(character) })   -- (2026-10-19, audit P5F-06) a teammate's: whole
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -533,16 +533,29 @@ local function landingPop(chest, own)
 end
 
 --- The Flame Crown on `model` for the mark that goes off at server time `expires`, `fuse` seconds after it landed.
---- `landing`: pop on the chest (not for a mark found already running). `own`: the local player's Detonate.
+--- `landing`: pop on the chest (not for a mark found already running). `own`: the local player's Detonate (since
+--- 2026-10-19, audit P5F-06: or a teammate's -- not an enemy's; it only spares the crown from Reduce Enemy VFX).
 local function startMark(model, expires, fuse, landing, own)
 	libs()
 	local old = marks[model]
+	local carry = nil
 	if old then
-		if abs(old.Expires - expires) < 0.05 then return end       -- the broadcast and the attributes: one mark
+		if abs(old.Expires - expires) < 0.05 then                  -- the broadcast and the attributes: one mark
+			-- (2026-10-19, audit GB-03) unless the watcher (attributes) won the race and this is the broadcast's call:
+			-- it upgrades that mark (PyroFX.startMark's rule) -- the caller's wrap, its `own`, the landing pop while new
+			if landing ~= true or old.Cast then return end
+			carry = old
+			landing = os.clock() - old.Born < 0.2
+		end
 		old.Kill = true
 	end
 	fuse = max(fuse, 0.05)
-	local ctl = { Expires = expires, Start = localClock(expires - fuse), Born = os.clock(), Shown = {}, PopAt = {}, Flame = true }
+	local ctl = { Expires = expires, Start = localClock(expires - fuse), Born = os.clock(), Shown = {}, PopAt = {}, Flame = true,
+		Cast = carry ~= nil or landing == true }
+	if carry then
+		ctl.Born, ctl.Seen, ctl.OffAt, ctl.FizzleAt, ctl.FizzleU, ctl.FizzleAsked =
+			carry.Born, carry.Seen, carry.OffAt, carry.FizzleAt, carry.FizzleU, carry.FizzleAsked
+	end
 	marks[model] = ctl
 	lastMark[model] = expires
 	local root = model:FindFirstChild("HumanoidRootPart")
@@ -766,7 +779,7 @@ function Tech.DetonateBlast(d)
 			end
 		end
 		return true
-	end, { Clock = os.clock, own = isLocal(d.Character) })
+	end, { Clock = os.clock, own = PD.Spared(d.Character) })   -- (2026-10-19, audit P5F-06) the caster's side, not just mine
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -923,7 +936,7 @@ local function crack(ctl, grip, aim, left, floorY)
 		cv:ember_burst(p, a, EB)
 		cv:ground_glow(glowAt, 9, exp(-a / 0.2), a, 0.4)
 		return true
-	end, { Clock = os.clock, own = ctl.Own })
+	end, { Clock = os.clock, own = ctl.Own or PD.Spared(ctl.Character) })   -- (2026-10-19, audit P5F-06)
 end
 
 local function shrAt(k, i)
@@ -1265,7 +1278,7 @@ local function whipFor(character, isOwn)
 		local grow = seqL(WHIP.PopIn, (now - ctl.Born) * ts, 1) * (own1 and WHIP.OwnScale or 1)
 		whipDraw(ctl, cv, now, dt * ts, ts, grow, outK, t, root, grip, own1)
 		return true
-	end, { Clock = os.clock, own = ctl.Own, MaxLife = math.huge, OnEnd = function()
+	end, { Clock = os.clock, own = ctl.Own or PD.Spared(ctl.Character), MaxLife = math.huge, OnEnd = function()   -- (P5F-06)
 		if whips[character] == ctl then whips[character] = nil end
 	end })
 	return ctl
@@ -1354,7 +1367,7 @@ function Tech.LashHit(d)
 			cv:ember_burst(p.at, a, p.EB)
 		end
 		return true
-	end, { Clock = os.clock, own = isLocal(d.Character) })
+	end, { Clock = os.clock, own = PD.Spared(d.Character) })   -- (2026-10-19, audit P5F-06) the caster's side, not just mine
 end
 
 ----------------------------------------------------------------------------------------------------

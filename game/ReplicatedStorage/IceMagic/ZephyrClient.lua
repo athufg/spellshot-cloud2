@@ -39,7 +39,9 @@
 	  SpellshotInput      Bind(bindings) once, at load (Init is the same function): every piece gets bindings =
 	                      { Flash, CanCast, AimPoint, BlockedByMovement } -- SpellshotInput's own gates. LocalCast, merged
 	                      into LOCAL_CAST at load. TryCast on every Technique press, ahead of the generic path.
-	  AbilityFX           Handlers, merged once at load, never over a kind it already has. Every handler here is wrapped:
+	  AbilityFX           Handlers, merged at load, and again while a piece is missing (2026-10-19, audit P5E-13: it calls
+	                      Refresh() first, so a late piece is looked for on a non-Zephyr client too), never over a kind it
+	                      already has. Every handler here is wrapped:
 	                      an error in one is one warning, never a broken listener. Interrupt(reason) when a Cyclone pull or
 	                      an Aftershock knock takes your body (it interrupted GustJumpMotor before).
 	  MovementController  IsActive(): a piece owns your body (no double jump, no wall run, no air momentum keeper).
@@ -199,6 +201,8 @@ local function refresh()
 		end
 	end
 end
+-- (2026-10-19, audit P5E-13) AbilityFX's re-merge asks for this while ZephyrClient.Loaded() reports a piece missing
+ZephyrClient.Refresh = refresh
 
 if isClient then
 	for _, piece in ipairs(PIECES) do

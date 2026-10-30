@@ -15,7 +15,8 @@
 	  fx.back   behind the whole HUD           (ScreenGui DisplayOrder 8)
 	  fx.bar    inside the bar interior, clipped to its rounded pill, above the fill and the kit's halftone
 	  fx.fill   inside the bar, clipped to the CURRENT HP width (the fill), same design coordinates
-	  fx.front  above everything, the HP numeral included (ScreenGui DisplayOrder 21)
+	  fx.front  above the HUD and StatusReactions, under the HP / mana numerals (ScreenGui DisplayOrder 19; it was 21, over
+	            the numerals, until 2026-10-19, audit GA-18: PopArtHUD's readout layer, 20, exists to keep them readable)
 	Pixel-valued things (UIStroke thickness, TextSize) are given in DESIGN px and rescaled here on every resize.
 
 	THE STATE a variant sees mirrors the bench: st = { kind, on, s, max, k, t, a, hp, pay, time }, with events
@@ -84,6 +85,23 @@ do
 	if ok and kit and kit.Art and kit.Art.Dot then DOT_IMAGE = kit.Art.Dot end
 end
 local warnedSprite = {}
+-- (2026-10-19, audit P5F-04) the player's own effect settings (SpellshotSettings), read live: Status Intensity fades
+-- every layer, Reduce Flashing calms the shakes and the looks' fast toggles (fx.calm), Camera Shake scales the shakes.
+-- Found lazily; until it is there (or if it fails to load) every look draws at full strength, as before.
+local SettingsMod = nil
+local function setting(id, default)
+	if SettingsMod == nil then
+		local m = script.Parent and script.Parent:FindFirstChild("SpellshotSettings")
+		if not m then return default end
+		local ok, mod = pcall(require, m)
+		SettingsMod = (ok and type(mod) == "table" and type(mod.Get) == "function") and mod or false
+	end
+	if not SettingsMod then return default end
+	local ok, v = pcall(SettingsMod.Get, id)
+	if ok and v ~= nil then return v end
+	return default
+end
+BarFX.Setting = setting
 
 ----------------------------------------------------------------------------------------------------
 -- the HUD surfaces (PopArtHUD builds them with BarKit; re-found whenever the HUD is rebuilt)
@@ -138,7 +156,7 @@ local function screen(name, order)
 end
 local function buildHosts()
 	Host.backGui, Host.backGroup, Host.back = screen("BarFXBack", 8)
-	Host.frontGui, Host.frontGroup, Host.front = screen("BarFXFront", 21)
+	Host.frontGui, Host.frontGroup, Host.front = screen("BarFXFront", 19)   -- (2026-10-19, audit GA-18) under the readouts (20)
 end
 -- the two in-bar hosts live inside the HUD's own HealthBar, so they move, scale and fade with it
 local unmountAll
@@ -355,6 +373,9 @@ local function makeContext(kind, id, isPreview)
 	--- Restyle a real HUD piece while this look is mounted: fx.restyle("fill", { BackgroundColor3 = ... })
 	--- targets: bar barStroke fill chip chipStroke glyph label ring
 	function fx.restyle(name, props)
+		-- (2026-10-19, audit GA-22) after 'end' the host has already put the HUD back; a look re-pushing its "reset"
+		-- colours in its 0.8 s exit stacked them over another live look's
+		if fx.ended then return end
 		local inst = targetOf(name)
 		if not inst then return end
 		Restyle.orig[name] = Restyle.orig[name] or {}
@@ -376,6 +397,8 @@ local function makeContext(kind, id, isPreview)
 	function fx.shake(amp, dur)
 		BarFX._shake(amp or 3, dur or 0.2)
 	end
+	--- (2026-10-19, audit P5F-04) true under Reduce Flashing: a look holds a fast colour / blink toggle steady.
+	function fx.calm() return setting("ReduceFlashing", false) == true end
 	--- A simple particle: fx.emit(parent, spriteNameOrNil, { x y w h vx vy gravity life spin color rotation grow z rect })
 	function fx.emit(parent, name, o)
 		if #particles >= 40 then return end
@@ -525,7 +548,7 @@ function BarFX.TimelineState(kind, time)
 	if kind == "marked" and x >= T.pay[1] then hp -= 0.2 end
 	if T.absorb and x >= T.pay[1] then hp -= 0.06 end
 	return { kind = kind, on = on, s = s, max = T.max, k = s / T.max, t = t, a = a, hp = math.max(0.05, hp), pay = pay,
-		time = x, rawS = s, rawMax = T.max, preview = true }
+		time = x, rawS = s, rawMax = T.max, preview = true, total = T.fuse }   -- (2026-10-19, audit GA-04) total: the bench fuse
 end
 local function timelineEvents(kind, p, n)
 	local T, out = TL[kind], {}
@@ -561,17 +584,33 @@ local function liveState(kind, character, humanoid, now, serverNow)
 		local t = 1
 		if expires and total and total > 0 then t = math.clamp((expires - serverNow) / total, 0, 1) end
 		local pay = false
+		-- chill's "pay" is max stacks: the deepest SLOW since 2026-10-08 (no root), which the looks now word so (audit GA-01)
 		if kind == "chill" and rawS >= rawMax then pay = true end
 		local a = 0
 		if kind == "blessed" or kind == "shield" then
-			amount = tonumber(amount) or 0
-			if not m.on or amount > (m.peak or 0) then m.peak = amount end
-			if m.on and m.amount and amount < m.amount - 0.01 then events[#events + 1] = "hit" end
-			a = (m.peak and m.peak > 0) and math.clamp(amount / m.peak, 0, 1) or 1
+			-- (2026-10-19, audit GA-02) no _Amount published (Bedrock writes none) is "unknown", not 0:
+			-- read as 0 it made every shield's end a BREAK and no hit ever registered. Unknown: full, no hits, and its
+			-- end is an 'end'.
+			amount = tonumber(amount)
+			if amount then
+				if not m.on or amount > (m.peak or 0) then m.peak = amount end
+				if m.on and m.amount and amount < m.amount - 0.01 then events[#events + 1] = "hit" end
+				a = (m.peak and m.peak > 0) and math.clamp(amount / m.peak, 0, 1) or 1
+			else
+				a = 1
+			end
 			m.amount = amount
 		end
 		local s
-		if pay then s = BENCH_MAX[kind] else s = math.clamp(math.ceil(rawS / visMax * BENCH_MAX[kind] - 1e-6), 1, BENCH_MAX[kind]) end
+		if pay then s = BENCH_MAX[kind]
+		elseif kind == "poison" then
+			-- (2026-10-19, audit GA-05) poison's bench 2 is a DOUBLE DOSE, a state, not a fill: s is the real dose count,
+			-- so one stack of a MaxStacks-1 preset no longer draws the "x2" state
+			s = math.clamp(math.floor(rawS + 0.5), 1, BENCH_MAX[kind])
+		else s = math.clamp(math.ceil(rawS / visMax * BENCH_MAX[kind] - 1e-6), 1, BENCH_MAX[kind]) end
+		-- (2026-10-19, audit GA-05) the HP lost since last frame, in HP, for a look's tick number (nil when none)
+		local drop = (m.on and m.hp and humanoid and hp < m.hp - 0.001) and math.floor((m.hp - hp) * humanoid.MaxHealth + 0.5) or nil
+		if drop and drop < 1 then drop = nil end
 		if not m.on then events[#events + 1] = "on" end
 		if m.on and s > (m.s or 0) and not pay then events[#events + 1] = "stack" end
 		if pay and not m.pay then events[#events + 1] = "pay" end
@@ -580,7 +619,8 @@ local function liveState(kind, character, humanoid, now, serverNow)
 		m.since = m.since or now
 		m.holdUntil = nil
 		return { kind = kind, on = true, s = s, max = BENCH_MAX[kind], k = s / BENCH_MAX[kind], t = t, a = a, hp = hp, pay = pay,
-			time = now - m.since, rawS = rawS, rawMax = rawMax }, events
+			time = now - m.since, rawS = rawS, rawMax = rawMax,
+			total = (total and total > 0) and total or nil, drop = drop }, events   -- (2026-10-19, audits GA-04 / GA-05)
 	end
 	-- off. Did it just drop in a way that IS its payoff (the server shows these only as the flag falling)?
 	if m.on then
@@ -589,6 +629,12 @@ local function liveState(kind, character, humanoid, now, serverNow)
 		local payoff = (kind == "charged" and early) or (kind == "marked" and early)
 			or ((kind == "blessed" or kind == "shield") and (m.amount or 1) <= 0.01)
 			or (kind == "primed" and m.expires and math.abs(m.expires - serverNow) < 0.5)
+		-- (2026-10-19, audit GA-06) a flag dropping early is also a round reset, a death or a cleanse. A server that says so
+		-- (RX_<Kind>_Paid: true on the real payoff, false otherwise) is believed over the guess; and a dead body's statuses
+		-- never paid off
+		local paid = character:GetAttribute(rx .. "_Paid")
+		if type(paid) == "boolean" then payoff = paid end
+		if humanoid and humanoid.Health <= 0 then payoff = false end
 		m.since = nil
 		if payoff then
 			m.holdUntil = now + PAY_HOLD
@@ -619,6 +665,11 @@ local Preview = {}      -- [kind] = { t0, id (nil = the pick), loops, prev }
 local shakeState = { amp = 0, untilT = 0, base = nil }
 
 function BarFX._shake(amp, dur)
+	-- (2026-10-19, audit P5F-04) the Camera Shake slider scales it, and Reduce Flashing takes the same bite StatusReactions
+	-- takes from its screen layer (x0.35)
+	amp = amp * math.clamp((tonumber(setting("CameraShake", 100)) or 100) / 100, 0, 1)
+		* (setting("ReduceFlashing", false) == true and 0.35 or 1)
+	if amp <= 0 then return end
 	shakeState.amp = math.max(shakeState.amp, amp)
 	shakeState.untilT = math.max(shakeState.untilT, os.clock() + dur)
 end
@@ -714,8 +765,12 @@ local function step()
 	Host.backGui.Enabled, Host.frontGui.Enabled = true, true
 	-- the HUD's own opacity (Settings) and the status intensity setting
 	local groupT = H.opacity and H.opacity:IsA("CanvasGroup") and H.opacity.GroupTransparency or 0
-	Host.backGroup.GroupTransparency = groupT
-	Host.frontGroup.GroupTransparency = groupT
+	-- (2026-10-19, audit P5F-04) Status Intensity was named here but never read: it fades all three hosts (the in-bar one
+	-- already fades with the HUD's opacity, being inside it)
+	local intensity = math.clamp((tonumber(setting("StatusIntensity", 100)) or 100) / 100, 0, 1)
+	Host.backGroup.GroupTransparency = 1 - (1 - groupT) * intensity
+	Host.frontGroup.GroupTransparency = 1 - (1 - groupT) * intensity
+	Host.barGroup.GroupTransparency = 1 - intensity
 	local sz = H.interior.AbsoluteSize
 	if sz.X ~= Map.lastW or sz.Y ~= Map.lastH or H.interior.AbsolutePosition ~= Map.lastP then
 		Map.lastW, Map.lastH, Map.lastP = sz.X, sz.Y, H.interior.AbsolutePosition
@@ -750,6 +805,14 @@ local function step()
 		if st then
 			local id = (pv and pv.id) or BarFX.Choice(kind)
 			if not pv and id == BarFX.DEFAULT and character then id = skinLook(kind, character) or id end
+			-- (2026-10-19, audit GA-03) the default shield look is Terra's stone (Bedrock Slab): a shield of any other Element
+			-- takes the neutral steel "f" (Ironclad Plating). The Element is remembered through the exit.
+			if not pv and kind == "shield" and id == BarFX.DEFAULT and character then
+				local el = character:GetAttribute("RX_Shielded_Element")
+				local m = Mem.shield
+				if m then if el ~= nil then m.element = el else el = m.element end end
+				if el ~= nil and el ~= "Terra" then id = "f" end
+			end
 			local a = Active[kind]
 			if a and a.id ~= id then unmount(kind); a = nil end
 			if id ~= "old" then
@@ -760,7 +823,7 @@ local function step()
 					a.fx.clock += dt
 					if st.on then a.endedAt = nil end
 					for _, e in ipairs(events) do
-						if e == "end" then a.endedAt = now; a.fx.unrestyle() end
+						if e == "end" then a.endedAt = now; a.fx.unrestyle(); a.fx.ended = true end   -- ended: audit GA-22
 						if a.look.event then
 							local ok, err = pcall(a.look.event, e, st)
 							if not ok then warn("[BarFX] " .. kind .. "_" .. a.id .. " event " .. e .. ": " .. tostring(err)) end

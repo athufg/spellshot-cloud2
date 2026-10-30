@@ -18,7 +18,8 @@ static card.
     halftone patch and the recoloured text. faceCard records the fades (Base*) and the lift (LiftX, LiftY, LiftScale,
     RestX, RestY, RestStroke, HoverStroke) as attributes for the controller; poseCard applies them at once.
   * the runtime pieces: buildGrid (the Catalog page's wall: layout 1 "Wall", 2026-10-04: group headings and
-    wallCards, 4 across), fillConfirm (the popup), paint* (highlights), setToast, shopChip.
+    wallCards, 4 across), buildBundleGrid (the Bundles wall, 2026-10-26: bundleCards, 3 across), fillConfirm (the
+    popup; a bundle gets its own sheet), paint* (highlights), setToast, shopChip.
 Pure drawing: no state, no input, no remotes, no MarketplaceService.
 ]]
 local TS = game:GetService("TextService")
@@ -309,6 +310,9 @@ local RARITY = {
 	Epic     = { word = "EPIC",     c = hex("9B4DFF"), onInk = false, order = 3 },
 	Mythic   = { word = "MYTHIC",   c = hex("FF9E1F"), onInk = true,  order = 1 },
 	Seasonal = { word = "SEASONAL", c = hex("17C3A3"), onInk = true,  order = 2 },
+	-- (2026-10-26, bundle cards) Manual v0.23's ladder starts at Uncommon. No colour is set for it yet, so it borrows the
+	-- retired Common's slate (a proposal). Only bundle contents carry it; no Catalog item does.
+	Uncommon = { word = "UNCOMMON", c = hex("8A94A6"), onInk = false, order = 5 },
 }
 local RARITY_ORDER = { "Mythic", "Seasonal", "Epic", "Rare", "Common" }
 -- the rarity colour as TEXT on an ink chip (a touch lighter, so Rare and Epic keep their contrast)
@@ -352,6 +356,9 @@ local function sorted(list, by)
 		if by == "element" and a.el ~= b.el then return table.find(ELEMENTS, a.el) < table.find(ELEMENTS, b.el) end
 		if by == "price" then return a.price[2] < b.price[2] end
 		if RARITY[a.rarity].order ~= RARITY[b.rarity].order then return RARITY[a.rarity].order < RARITY[b.rarity].order end
+		-- (2026-10-19, audit GA-21) the currency first (Robux before Sparks, as the price sort groups them): 1,500 Sparks
+		-- is not "pricier" than 950 Robux
+		if a.price[1] ~= b.price[1] then return a.price[1] == "Robux" end
 		return a.price[2] > b.price[2]
 	end)
 	return t
@@ -599,10 +606,11 @@ local GRID = { COLS = 4, CW = 426, CH = 412, GX = 20, GY = 22, PAD = 36, BAR = 1
 GRID.HEAD = GRID.COLS * GRID.CW + (GRID.COLS - 1) * GRID.GX - S
 -- a group's heading: ONE slim red banner (Bangers cream, ink dots) holding the name and the item count (a paper chip,
 -- as POPULAR on Quick Play's DUEL), then an ink rule to the wall's right edge (a short row reads as a shelf)
-local function sectionHeader(grid, y, key, title, count)
+local function sectionHeader(grid, y, key, title, count, unit)
 	local hf = frame(grid, "Section_" .. key, GRID.PAD, y, GRID.HEAD, GRID.HEADH)
 	local tw = textW(title, 34, FE.banner)
-	local cs = count == 1 and "1 ITEM" or (count .. " ITEMS")
+	unit = unit or "ITEM"   -- what the count counts ("BUNDLE" on the Bundles wall)
+	local cs = count == 1 and ("1 " .. unit) or (count .. " " .. unit .. "S")
 	local cw = chipW(cs, 20)
 	local bw = 20 + tw + 8 + 14 + cw + 12
 	local _, bf = slab(hf, "Banner", 0, 0, bw + MED.s, 42 + MED.s, C.RedInk, MED)
@@ -700,6 +708,196 @@ local function buildGrid(grid, items, by)
 	return cards, sections
 end
 
+-- ---------------------------------------------------------------- BUNDLE CARDS (2026-10-26, the owner's bundle cards)
+-- A bundle holds several things, so it is not an item card: bundleCard draws one, buildBundleGrid lays out the Bundles
+-- wall (Catalog.BUNDLES), and fillConfirm's "bundle" sheet lists what is inside. In the card language: the name in
+-- LuckiestGuy over its extrude and a mono kind line on top; LIMITED a red slab top-right (the Mythical Variety bundles
+-- only); the hero art on a halftone patch; the price row (the MYTHIC chip bottom-left on a Mythic bundle, the value
+-- signal, the price Pill bottom-right). Plain at rest. HOVER SHOWS WHAT IS INSIDE: HoverFX is a Card fill over the hero
+-- art holding the contents grid -- the headline items as Pill slabs (a colour strip, the art, the name, the word chip),
+-- the bonus items smaller and flat in a dashed "+ BONUS" box, so a Cache open never weighs what the Element it rides
+-- with weighs. EVERY ITEM CARRIES A WORD: its rarity chip, or (a thing with no rarity) an ink chip saying what it is.
+-- value: "was" = the bought-separately price struck through (the default), "mult" = a red "xN VALUE" chip.
+-- The wall is 3 across in the item wall's column (3 x 574 + 2 x 21 = 4 x 426 + 3 x 20), under the Wall's own section
+-- headings. Nothing in here is rotated (the wall is a scroller).
+local BUNDLE = { COLS = 3, CW = 574, CH = 480, GX = 21, GY = 22, PAD = 20, TOP = 98, CONTENT_H = 272, ROW = 384 }
+BUNDLE.FW, BUNDLE.FH = BUNDLE.CW - S, BUNDLE.CH - S       -- the face: 562 x 468
+BUNDLE.CONTENT_W = BUNDLE.FW - 2 * BUNDLE.PAD               -- the art / contents box: 522 x 272, from y 98
+local function isRarity(tag) return RARITY[tag] ~= nil end
+-- the colour an item brings (its tile's strip, an Accessory's charm): its rarity's, or its kind's own
+local function bundleItemColour(item)
+	if isRarity(item.tag) then return RARITY[item.tag].c end
+	if item.tag == "ELEMENT" and EL[item.el] then return EL[item.el].base end
+	if item.tag == "SPARKS" then return SPARKS.main end
+	if item.tag == "CACHE OPEN" then return C.Cache end
+	return C.Red
+end
+-- an item's word: its rarity chip, or an ink chip with the kind's word in cream
+local function bundleChipW(item, size) return chipW(isRarity(item.tag) and RARITY[item.tag].word or item.tag, size) end
+local function bundleChip(parent, x, y, item, size, z)
+	if isRarity(item.tag) then return rarityChip(parent, x, y, item.tag, size, z) end
+	return chip(parent, "KindChip", x, y, item.tag, size, C.Ink, C.CreamText, { z = z })
+end
+-- PLACEHOLDER item art, s x s: the Element's logo (Elements, Skins, Wraps), the Sparks mark, the chest (a Cache open),
+-- a red "KO!" slab (the kill effect), a charm on a loop in its rarity colour (an Accessory)
+local function bundleArt(parent, x, y, s, item, z)
+	if item.art == "logo" then return elementArt(parent, x, y, s, item.el, z) end
+	if item.art == "sparks" then return sparksIcon(parent, x, y, s, z, true) end
+	if item.art == "cache" then return chestArt(parent, x + math.floor(s * 0.04), y + math.floor(s * 0.1), s / 170 * 0.92, z) end
+	if item.art == "killfx" then
+		local h = math.floor(s * 0.64)
+		local f = frame(parent, "KillArt", x, y + math.floor(s * 0.18), s, h, C.Red, { r = CHIP_R, z = z, stroke = { CHIP_B, C.Ink } })
+		label(f, "KO", 0, 0, s, h, "KO!", math.floor(s * 0.4), C.CreamText, { font = F.display, ax = "C", z = z, stroke = { 2, C.Ink } })
+		return f
+	end
+	local g = frame(parent, "CharmArt", x, y, s, s, nil, { z = z })
+	local d, l = math.floor(s * 0.62), math.floor(s * 0.24)
+	frame(g, "Loop", math.floor(s / 2 - l / 2), 0, l, l, nil, { r = l // 2, z = z, stroke = { CHIP_B, C.Ink } })
+	frame(g, "Charm", math.floor(s / 2 - d / 2), math.floor(s * 0.3), d, d, bundleItemColour(item), { r = d // 2, z = z, stroke = { 4, C.Ink } })
+	return g
+end
+-- a dashed ink rectangle (the "+ BONUS" box): a UIStroke cannot dash, so short ink segments, 16 on, 10 off, 3 thick
+local function dashed(parent, name, x, y, w, h, z)
+	local f = frame(parent, name, x, y, w, h, nil, { z = z })
+	local dash, gap, t = 16, 10, 3
+	for i = 0, w - dash, dash + gap do
+		frame(f, "Dash", i, 0, dash, t, C.Ink, { z = z }); frame(f, "Dash", i, h - t, dash, t, C.Ink, { z = z })
+	end
+	for i = 0, h - dash, dash + gap do
+		frame(f, "Dash", 0, i, t, dash, C.Ink, { z = z }); frame(f, "Dash", w - t, i, t, dash, C.Ink, { z = z })
+	end
+	return f
+end
+-- the currency's mark and the amount, ENDING on `right` (price draws from the left)
+local function priceRight(parent, right, y, p, size, color, z)
+	return price(parent, right - (size + 8 + textW(fmt(p[2]), size) + 6), y, p, size, color, z)
+end
+-- the bought-separately price, struck through, in Dim, ending on `right`; returns where it starts
+local function wasPrice(parent, right, y, p, size, z)
+	local str = fmt(p[2])
+	local tw = textW(str, size) + 6
+	local x = right - tw
+	label(parent, "WasPrice", x, y, tw, size + 10, "<s>" .. str .. "</s>", size, C.Dim, { rich = true, z = z })
+	if p[1] == "Robux" then robuxIcon(parent, x - size - 6, y + 5, size, C.Dim, z) else sparksIcon(parent, x - size - 6, y + 5, size, z, true) end
+	return x - size - 6
+end
+-- the art at rest, on a halftone patch: the hero Elements' logos in a row, or the Starter's Sparks mark and chest
+local function bundleHero(face, b)
+	local P, T, W, H = BUNDLE.PAD, BUNDLE.TOP, BUNDLE.CONTENT_W, BUNDLE.CONTENT_H
+	halftone(face, "Patch", P + 40, T + 24, W - 80, H - 48, "paper", 0.78, 12, ZR)
+	if b.hero == "starter" then
+		sparksIcon(face, P + 110, T + 50, 170, ZR, true)
+		chestArt(face, P + 290, T + 90, 0.8, ZR)
+		return
+	end
+	local n = #b.hero
+	local s = (n == 1 and 220) or (n == 2 and 180) or (n == 3 and 160) or 132
+	local step = n == 1 and 0 or math.min(s * 0.92, (W - s) / (n - 1))
+	local x0 = P + math.floor((W - (s + step * (n - 1))) / 2)
+	for i, el in ipairs(b.hero) do
+		elementArt(face, math.floor(x0 + (i - 1) * step), T + math.floor((H - s) / 2), s, el, ZR)
+	end
+end
+-- a headline item: a Pill slab with its colour strip, the art, the name (ns: one size for every tile of a card) and
+-- its word chip. tall = the card has no bonus box, so the tile takes the whole height and the art is bigger
+local function bundleTile(fx, i, n, item, tall, ns, z)
+	local P, T, W = BUNDLE.PAD, BUNDLE.TOP, BUNDLE.CONTENT_W
+	local w = math.min(190, math.floor((W - (n - 1) * 12) / n))
+	local x0 = P + math.floor((W - (n * w + (n - 1) * 12)) / 2)
+	local holder, tf, tfw, tfh = slab(fx, "Tile_" .. i, x0 + (i - 1) * (w + 12), T, w, tall and BUNDLE.CONTENT_H or 166, C.Pill, MED, { z = z })
+	holder:SetAttribute("Item", item.name); holder:SetAttribute("Tag", item.tag)
+	frame(tf, "Strip", 0, 0, tfw, 10, bundleItemColour(item), { z = z + 1 })
+	local a, ay = tall and math.min(tfw - 20, 120) or 66, tall and 26 or 16
+	bundleArt(tf, math.floor(tfw / 2 - a / 2), ay, a, item, z + 1)
+	label(tf, "Name", 4, ay + a + (tall and 14 or 4), tfw - 8, 28, item.name, ns, C.Text, { ax = "C", z = z + 1 })
+	bundleChip(tf, math.floor(tfw / 2 - bundleChipW(item, 16) / 2), tfh - 12 - 30, item, 16, z + 1)
+	return holder
+end
+-- the bonus items, small and flat in the dashed "+ BONUS" box under the headline tiles
+local function bundleBonus(fx, b, z)
+	local P, T, W, H = BUNDLE.PAD, BUNDLE.TOP, BUNDLE.CONTENT_W, BUNDLE.CONTENT_H
+	local box = dashed(fx, "BonusBox", P, T + 180, W, H - 180, z)
+	box:SetAttribute("Count", #b.bonus)
+	mono(box, "BonusLabel", 14, 6, 200, 24, "+ BONUS", 18, C.Text, { z = z })
+	local pitch = math.floor((W - 28) / math.max(2, #b.bonus))
+	for i, item in ipairs(b.bonus) do
+		local x, nw = 14 + (i - 1) * pitch, pitch - 56 - 10
+		bundleArt(box, x, 34, 46, item, z)
+		label(box, "BonusName_" .. i, x + 56, 30, nw, 26, item.name, fitSize(item.name, nw, 20, 14, FE.black), C.Text, { z = z })
+		bundleChip(box, x + 56, 58, item, 14, z)
+	end
+	return box
+end
+local function bundleCard(parent, b, x, y, value)
+	local P = BUNDLE.PAD
+	local card, face, fw, fh = slabCard(parent, "Item_" .. b.id, x, y, BUNDLE.CW, BUNDLE.CH)
+	card:SetAttribute("ItemId", b.id); card:SetAttribute("Kind", "Bundle")
+	card:SetAttribute("Currency", b.price[1]); card:SetAttribute("Amount", b.price[2])
+	card:SetAttribute("Limited", b.limited == true)
+	if b.rarity then card:SetAttribute("Rarity", b.rarity) end
+	if b.rarity == "Mythic" then card:SetAttribute("HoverStroke", B + 5) end   -- as wallCard: no glow, a heavier lifted border
+	-- on top in every state: the name over its extrude and the kind line; LIMITED beside the name
+	local name = b.name:upper()
+	local nameW = fw - 2 * P - (b.limited and 196 or 0)
+	local ns, font = nameFit(name, nameW, 46, 30, 20)
+	display(face, "Name", P, 10, nameW, 56, name, ns, C.Text, C.Extrude, 3, { font = font, z = ZTXT })
+	mono(face, "KindLine", P, 64, BUNDLE.CONTENT_W, 26, b.line, 20, C.Dim, { z = ZTXT })
+	if b.limited then
+		local _, lf, lfw, lfh = slab(face, "LimitedTag", fw - P - 180, 12, 180, 54, C.Red, SML, { z = ZTXT })
+		display(lf, "Word", 0, 3, lfw, lfh, "LIMITED", 30, C.CreamText, C.Ink, 3, { ax = "C", stroke = 2, z = ZTXT + 1 })
+	end
+	bundleHero(face, b)   -- rest only: the hover fill covers it
+	local fx = hoverFX(face, fw, fh, C.Card)
+	local tall, n = #b.bonus == 0, #b.headline
+	-- one name size for every tile of the card, each name on one line (the approved look)
+	local maxW = math.min(190, math.floor((BUNDLE.CONTENT_W - (n - 1) * 12) / n)) - MED.s - 10
+	local ts = 22
+	for _, item in ipairs(b.headline) do ts = math.min(ts, fitSize(item.name, maxW, 22, 14, FE.black)) end
+	for i, item in ipairs(b.headline) do bundleTile(fx, i, n, item, tall, ts, 2) end
+	if not tall then bundleBonus(fx, b, 2) end
+	-- the price row
+	local pillX = fw - P - pillW(b.price, 36, MED)
+	pricePill(face, pillX, BUNDLE.ROW, b.price, 36, 72, MED, ZTXT)
+	if b.rarity then rarityChip(face, P, BUNDLE.ROW + 18, b.rarity, 22, ZTXT) end
+	if value == "mult" and b.mult then
+		local word = b.mult .. " VALUE"
+		local w = chipW(word, 24, FE.black)
+		chip(face, "ValueTag", pillX - 14 - w, BUNDLE.ROW + 14, word, 24, C.Red, C.CreamText, { font = F.black, fe = FE.black, z = ZTXT })
+	elseif b.was then
+		wasPrice(face, pillX - 16, BUNDLE.ROW + 16, { b.price[1], b.was }, 28, ZTXT)
+	end
+	faceCard(card)
+	return card
+end
+-- buildBundleGrid(grid, bundles, groups, value): the Bundles wall. Destroys the old headings and cards; one section
+-- per group ({ key, title }, in order; a bundle whose group is not listed joins the last), cards 3 across.
+local function buildBundleGrid(grid, bundles, groups, value)
+	for _, ch in ipairs(grid:GetChildren()) do if ch:IsA("GuiObject") then ch:Destroy() end end
+	local known = {}
+	for _, g in ipairs(groups) do known[g.key] = true end
+	local y, cards, sections = GRID.TOP0, 0, 0
+	for gi, g in ipairs(groups) do
+		local list = {}
+		for _, b in ipairs(bundles) do
+			if b.group == g.key or (gi == #groups and not known[b.group]) then table.insert(list, b) end
+		end
+		if #list > 0 then
+			sectionHeader(grid, y, g.key, g.title, #list, "BUNDLE")
+			sections += 1
+			y += GRID.HEADH + GRID.HGAP
+			for i, b in ipairs(list) do
+				bundleCard(grid, b, GRID.PAD + ((i - 1) % BUNDLE.COLS) * (BUNDLE.CW + BUNDLE.GX), y + ((i - 1) // BUNDLE.COLS) * (BUNDLE.CH + BUNDLE.GY), value)
+				cards += 1
+			end
+			y += math.ceil(#list / BUNDLE.COLS) * (BUNDLE.CH + BUNDLE.GY)
+		end
+	end
+	grid.CanvasSize = UDim2.fromOffset(0, y)
+	grid.CanvasPosition = Vector2.zero
+	grid:SetAttribute("Cards", cards); grid:SetAttribute("Sections", sections)
+	return cards, sections
+end
+
 -- ---------------------------------------------------------------- highlights (one painter per control)
 -- a segment or a sort option (the filter bar's ONE control style): a Sel block (ink; cream in the Ink palette) under
 -- the chosen word. Only BackgroundTransparency and Word.TextColor3 change.
@@ -748,9 +946,108 @@ end
 -- The modal is three canvases wide and tall (the ink scrim reaches the screen edges at any aspect), so the sheet sits
 -- at the canvas centre plus one canvas (MODAL_X, MODAL_Y).
 local CW, HEAD, MODAL_X, MODAL_Y = 800, 68, 1920, 1080
+-- the sheet sized round its content (the buttons at y), centred on the canvas; the price p and the title as attributes
+local function placeConfirm(card, ct, y, p, name)
+	local H = y + 104 + 28
+	ct.Size = UDim2.fromOffset(CW, H)
+	card.Size = UDim2.fromOffset(CW + S, H + S)
+	card.Position = UDim2.fromOffset(MODAL_X + (1920 - CW) // 2, MODAL_Y + (1080 - H) // 2)
+	card.Shadow.Size = UDim2.fromOffset(CW, H); card.Face.Size = UDim2.fromOffset(CW, H)
+	card.Cancel.Position = UDim2.fromOffset(60, y)
+	card.Buy.Position = UDim2.fromOffset(CW - 60 - 320, y)
+	card:SetAttribute("Currency", p[1]); card:SetAttribute("Amount", p[2]); card:SetAttribute("Title", name)
+	return H
+end
+-- THE BUNDLE SHEET (2026-10-26): everything inside, then the total. INCLUDES: one Pill row per headline item (art,
+-- name, word chip); "+ BONUS": dashed rows, as on the card. A bundle with ownedOff (the Roster) takes that much off for
+-- every headline ELEMENT in t.owned (the server's "OwnedElements"): the row goes Track with an OWNED chip and its
+-- "-150", and the lines over the total say why. Owning every one leaves nothing to buy: the total says so and the
+-- card's Blocked attribute stops BUY. t.robux = the balance line (a placeholder: no API reads a player's Robux).
+-- Returns the buttons' y, the price to charge and whether it is blocked.
+local function bundleSheet(ct, t)
+	local b, W = t.b, CW - 56
+	local y = HEAD + 18
+	local nm = b.name:upper()
+	display(ct, "Name", 28, y, W, 60, nm, fitSize(nm, W, 48, 30, FE.display), C.Text, C.Extrude, 4)
+	y += 68
+	mono(ct, "IncludesHead", 28, y, W, 28, "INCLUDES", 20, C.Text); y += 34
+	local owned, off, left = {}, 0, 0
+	for i, item in ipairs(b.headline) do
+		local has = b.ownedOff ~= nil and item.tag == "ELEMENT" and t.owned ~= nil and t.owned[item.el] == true
+		if b.ownedOff and item.tag == "ELEMENT" and not has then left += 1 end
+		local _, rf, rw, rh = slab(ct, "Row_" .. i, 28, y, W, 64, has and C.Track or C.Pill, MED)
+		bundleArt(rf, 12, (rh - 42) // 2, 42, item, 2)
+		local nw = textW(item.name, 26)
+		label(rf, "Name", 66, 0, nw + 8, rh, item.name, 26, has and C.Dim or C.Text, { z = 2 })
+		if has then
+			table.insert(owned, item.name); off += b.ownedOff
+			chip(rf, "OwnedChip", 66 + nw + 22, (rh - 34) // 2, "OWNED", 20, C.Ink, C.CreamText, { z = 2 })
+			label(rf, "Off", rw - 220, 0, 200, rh, "-" .. fmt(b.ownedOff), 26, C.Text, { ax = "R", z = 2 })
+		else
+			bundleChip(rf, rw - 20 - bundleChipW(item, 20), (rh - 34) // 2, item, 20, 2)
+		end
+		y += 70
+	end
+	if #b.bonus > 0 then
+		mono(ct, "BonusHead", 28, y + 6, W, 28, "+ BONUS", 20, C.Text); y += 40
+		for i, item in ipairs(b.bonus) do
+			local row = dashed(ct, "BonusRow_" .. i, 28, y, W, 54, 2)
+			bundleArt(row, 12, 6, 42, item, 2)
+			label(row, "Name", 66, 0, 400, 54, item.name, 24, C.Text, { z = 2 })
+			bundleChip(row, W - 20 - bundleChipW(item, 18), 11, item, 18, 2)
+			y += 62
+		end
+	end
+	y += 10
+	local blocked = b.ownedOff ~= nil and left == 0
+	local total = math.max(0, b.price[2] - off)
+	if off > 0 and not blocked then -- (blocked: the OWNED rows say it; a deduction past the price would not add up)
+		label(ct, "BundlePriceLabel", 28, y, 400, 34, "Bundle price", 24, C.Dim, { font = F.bold })
+		priceRight(ct, CW - 28, y, b.price, 26, C.Dim); y += 38
+		local s = "You already own " .. table.concat(owned, ", ")
+		label(ct, "OwnedLabel", 28, y, W - 170, 34, s, fitSize(s, W - 170, 24, 16, Enum.Font.GothamBold), C.Dim, { font = F.bold })
+		label(ct, "OwnedOff", CW - 28 - 150, y, 150, 34, "-" .. fmt(off), 26, C.Dim, { ax = "R" }); y += 46
+	end
+	frame(ct, "Rule", 28, y, W, 4, C.Ink); y += 14
+	label(ct, "TotalLabel", 28, y, 300, 56, "TOTAL", 40, C.Text, { font = F.display })
+	if blocked then
+		label(ct, "Total", CW - 28 - 440, y, 440, 56, "YOU OWN THEM ALL", 32, C.Text, { font = F.display, ax = "R" })
+	else
+		priceRight(ct, CW - 28, y + 6, { b.price[1], total }, 44, C.Text)
+	end
+	y += 66
+	mono(ct, "BalanceLine", 28, y, 180, 30, "YOUR ROBUX", 20, C.Dim)
+	price(ct, 210, y, { "Robux", t.robux or 0 }, 24, C.Dim)
+	y += 30 + 26
+	return y, { b.price[1], total }, blocked
+end
+-- BUY, or (blocked: nothing left to buy) the daily strip's CLAIMED treatment saying OWNED: a Track face, the word in
+-- LockedInk with no stroke and no extrude. Every fillConfirm repaints it, so the next sheet gets BUY back.
+local function paintBuy(card, blocked)
+	local f = card:FindFirstChild("Buy") and card.Buy:FindFirstChild("Face")
+	if not f then return end
+	f.BackgroundColor3 = blocked and C.Track or C.Green
+	for _, w in ipairs({ f:FindFirstChild("Word"), f:FindFirstChild("WordExtrude") }) do
+		if w:GetAttribute("BuiltSize") == nil then w:SetAttribute("BuiltSize", w.TextSize) end
+		w.Text = blocked and "OWNED" or "BUY"
+		w.TextSize = blocked and 44 or w:GetAttribute("BuiltSize")
+		local st = w:FindFirstChildOfClass("UIStroke"); if st then st.Enabled = not blocked end
+	end
+	if f:FindFirstChild("Word") then f.Word.TextColor3 = blocked and C.LockedInk or C.CreamText end
+	if f:FindFirstChild("WordExtrude") then f.WordExtrude.Visible = not blocked end
+	card:SetAttribute("BuyBlocked", blocked)
+end
 local function fillConfirm(card, t)
 	local old = card:FindFirstChild("Content"); if old then old:Destroy() end
 	local ct = frame(card, "Content", 0, 0, CW, 1080, nil, { z = 3 })
+	card:SetAttribute("Blocked", nil)
+	if t.type == "bundle" then -- (2026-10-26) a bundle's own sheet: everything inside, then the total
+		local y, p, blocked = bundleSheet(ct, t)
+		if blocked then card:SetAttribute("Blocked", "You already own every Element in the " .. t.b.name) end
+		paintBuy(card, blocked)
+		return placeConfirm(card, ct, y, p, t.b.name)
+	end
+	paintBuy(card, false)
 	local name, rarity, kind, p, q1, lines, odds
 	if t.type == "cache" then
 		local cache = t.cache
@@ -815,15 +1112,7 @@ local function fillConfirm(card, t)
 	local ex = price(ct, qx + q1w + 14, y + 4, p, qs + 4, C.Text)
 	label(ct, "Unit", ex + 6, y, textW(unit, qs) + 8, 52, unit, qs, C.Text)
 	y += 52 + 32
-	local H = y + 104 + 28
-	ct.Size = UDim2.fromOffset(CW, H)
-	card.Size = UDim2.fromOffset(CW + S, H + S)
-	card.Position = UDim2.fromOffset(MODAL_X + (1920 - CW) // 2, MODAL_Y + (1080 - H) // 2)
-	card.Shadow.Size = UDim2.fromOffset(CW, H); card.Face.Size = UDim2.fromOffset(CW, H)
-	card.Cancel.Position = UDim2.fromOffset(60, y)
-	card.Buy.Position = UDim2.fromOffset(CW - 60 - 320, y)
-	card:SetAttribute("Currency", p[1]); card:SetAttribute("Amount", p[2]); card:SetAttribute("Title", name)
-	return H
+	return placeConfirm(card, ct, y, p, name)
 end
 
 -- ---------------------------------------------------------------- the toast: an ink slab, cream GothamBlack
@@ -916,6 +1205,7 @@ K.RARITY, K.RARITY_ORDER, K.rarityInk, K.rarityChip, K.ELEMENTS, K.EL, K.element
 K.C, K.KIT = C, { BIG = BIG, MED = MED, SML = SML, SHADOW = S, BORDER = B, RADIUS = R, LIFT = LIFT, DOT = DOT }
 K.hoverFX, K.swapText, K.title, K.artPatch, K.faceCard, K.fadeParts, K.poseCard = hoverFX, swapText, title, artPatch, faceCard, fadeParts, poseCard
 K.pillW, K.pricePill, K.itemCard, K.wallCard, K.chestArt, K.ticketArt, K.GRID, K.sectionHeader, K.buildGrid = pillW, pricePill, itemCard, wallCard, chestArt, ticketArt, GRID, sectionHeader, buildGrid
+K.BUNDLE, K.bundleCard, K.buildBundleGrid = BUNDLE, bundleCard, buildBundleGrid
 K.paintSegment, K.paintSort, K.paintTab, K.paintDaily, K.countdown = paintSegment, paintSort, paintTab, paintDaily, countdown
 K.fillConfirm, K.setToast, K.shopChip = fillConfirm, setToast, shopChip
 K.PALETTES, K.THEMES, K.THEME_ORDER, K.setTheme, K.copyLook = PALETTES, PALETTES, THEME_ORDER, setTheme, copyLook

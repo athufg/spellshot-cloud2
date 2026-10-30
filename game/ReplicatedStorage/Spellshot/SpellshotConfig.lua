@@ -1,8 +1,13 @@
 --[[
 	SpellshotConfig  (ModuleScript)  ->  ReplicatedStorage/Spellshot/SpellshotConfig
 
-	Single source of truth for the Element roster, the three shared Technique pools, the status
-	effect vocabulary, the movement numbers and every uploaded icon id.
+	Single source of truth for the Element roster, the Technique pool, the status effect vocabulary, the
+	movement numbers and every uploaded icon id.
+
+	(2026-10-19, audit P4-14 / P6B-01 / P6B-11) READ THE HISTORY BELOW AS HISTORY. Since P31 (2026-10-18, the owner:
+	Techniques swap within your own Element only) Config.TechniquesOwnElementOnly is on: every Element holds only its OWN
+	Techniques (Config.ElementMayHold), two slots (Q / E), so the "shared pools", "any Element may equip it" and "a Cryo
+	running Scorching Lash" below describe the game with that flag off.
 
 	SOURCE: SPELLSHOT -- Elemental Duels, Full Design Manual **v0.2**.
 
@@ -21,8 +26,9 @@
 	Primary, Passive AND ULTIMATE come with the Element -- its Ultimate is the Config.Ultimate entry whose
 	Origin it is. The other two slots are TWO EQUAL TECHNIQUE SLOTS over ONE pool (Config.Mobility and
 	Config.Defense together): any Technique goes in either, never the same one in both, and a Technique
-	is still keyed by its ORIGIN Element for colour -- a Cryo running Heat Rush genuinely should see an
-	orange slot. Players never read "Mobility" or "Defense" any more (Config.SlotLabel); the words stay
+	is still keyed by its ORIGIN Element for colour -- a Cryo running Scorching Lash (with the P31 flag off)
+	genuinely should see an orange slot.
+	Players never read "Mobility" or "Defense" any more (Config.SlotLabel); the words stay
 	only as the internal names of the Q and E slots and of the two halves of the pool. An Element may
 	name DEFAULT Techniques (Config.ElementDefaults: Pyro -> Detonate + Scorching Lash), equipped when a
 	player becomes it, and a Technique may be kept to its own Element (Exclusive: Detonate, Pyro only).
@@ -53,7 +59,7 @@ Config.UltChargePerDamage = 1 / 260
 -- it. The slide and slide-jump speeds below are all set as multiples of sprint, so they move with it.
 Config.Movement = {
 	BaseWalkSpeed = 16,          -- Roblox default; the uniform baseline every Element shares
-	SprintSpeed = 25,            -- asked for 2026-09-12; RIVALS' measured pace is 30, this is calmer
+	SprintSpeed = 22,            -- 2026-10-21 "slow the running even more": 25 -> 22 (25 was asked for 2026-09-12; RIVALS' pace is 30)
 	CrouchSpeed = 8,             -- half base; the trade you make for the smaller silhouette
 	CrouchHipHeight = 0.9,       -- R15 default is ~2.0, so this genuinely lowers head and hitbox
 	CrouchCameraDip = -1.15,     -- Humanoid.CameraOffset, so the default camera follows it
@@ -135,6 +141,30 @@ Config.Movement = {
 	RunningOnlyTouchCrouch = false,  --[[true until 2026-10-18]] -- RunningOnly on touch: true keeps the SLIDE / CROUCH button as a crouch-only button; false hides it
 }
 
+-- (2026-10-19, audit P1-03) THE SERVER'S MOVEMENT GUARD (CombatCore, "movement"). Each player's body moves on its own
+-- client, so a modified client could teleport, out-run every legal speed, or walk out of a root. On every Heartbeat the
+-- server measures each living player's FLAT (XZ) speed over the last Window seconds -- vertical is never judged (falls,
+-- launches) -- against BaseSpeed, or FastSpeed while the body is in a fast state (a Skyrider ride, a knock or pull --
+-- KnockedUntil --, a held Technique, or a cast in the last FastAfterCast seconds), and a jump of more than MinStep studs over that
+-- speed is counted in ServerStorage.ShotStats ("move_snap") and, while Enforce is on, put back where it last stood.
+-- Enforce = false only counts (read move_snap against play before turning it on for real). Server moves of a body open a
+-- Grace window (CombatCore.AllowMove), and a body the server holds (CombatCore.HoldBody: roots, the Tomb) is the
+-- server's own physics and is not judged. Conservative on purpose: every legal speed sits well under these (sprint 25,
+-- slide-jump at most 52, a Skyrider boost ~75, Undertow's pull 125 under its KnockedUntil).
+Config.MovementGuard = {
+	Enabled = true,
+	Enforce = false,        -- (import 2026-10-19) count-only until move_snap has been read against real play; then true
+	BaseSpeed = 90,          -- studs/s, flat
+	FastSpeed = 170,         -- studs/s, flat, in a fast state
+	FastAfterCast = 1.5,     -- seconds after a cast (the character's CastAt, SpellshotService) that still count as fast
+	MinStep = 10,            -- studs: a move shorter than this is never judged
+	Grace = 1.0,             -- seconds CombatCore.AllowMove leaves a body alone by default
+	-- (the two below are the guard's own: the speed is measured over a window, not frame to frame, so replication arriving
+	-- in bursts averages out, and a steady speed hack is seen as well as a teleport)
+	Window = 0.5,            -- seconds: the speed is taken from where the body stood at least this long ago
+	MaxGap = 3,              -- seconds: the longest a position that never changed counts for (standing still, then a jump)
+}
+
 ----------------------------------------------------------------------------------------------------
 -- developer conveniences
 ----------------------------------------------------------------------------------------------------
@@ -164,6 +194,11 @@ Config.Dev = {
 	FreeUltimate = true,         -- Ultimate always charged, casting never spends it
 	FreeMana = false,            -- abilities cost no mana
 	NoCooldowns = false,         -- Q/E/F come back instantly
+
+	-- 2026-10-23: Studio Play (RunService:IsStudio()) saves Sparks and owned Elements to a separate TEST DataStore
+	-- ("SpellshotPlayerData_StudioTest", PlayerData), so a test never changes a real save. false = Studio reads and
+	-- writes the real save again. Live servers and Team Test (not IsStudio) always use the real one.
+	StudioTestSave = true,
 
 	Keys = {                     -- hints for the on-screen readout; the binds live in SpellshotInput
 		FillUlt = "]",
@@ -231,6 +266,11 @@ Config.Duel = {
 	StartTimeout = 15,       -- the longest a round waits for both duellists to be rebuilt on their marks
 	RoundTime = 90,          -- seconds a round runs before its clock settles it: the larger share of health left takes it
 	                         -- (equal shares: a draw). 0 turns the clock off. Added 2026-10-17 (balance pass).
+	-- (2026-10-19, audit P3-13) a draw scores nobody, so a match whose rounds kept drawing (two sides that never engage)
+	-- never ended, and only a dev may leave one. After this many rounds PLAYED the match ends anyway: more round wins takes
+	-- it, equal wins are a draw. 15 leaves room for six draws in a full 5-4; 0 turns the cap off. A team match reads it
+	-- here unless Config.Team names its own. PROPOSED: the owner may prefer a sudden-death or damage-dealt tiebreak.
+	MaxRounds = 15,
 }
 
 ----------------------------------------------------------------------------------------------------
@@ -252,6 +292,44 @@ Config.Team = {
 	SpawnFloorDrop = 10,     -- how far below its spot a teammate's floor may be; no floor, or a wall between the spot and the
 	                         -- mark, puts that teammate on the mark itself
 	VoteSeconds = 15,        -- the map vote before a team match (a pad duel's is HubServer's 12)
+}
+
+----------------------------------------------------------------------------------------------------
+-- matchmaking across servers (2026-10-28, the owner: "it should be matches from all server (preferring same region
+-- server but still if not found then any server to server)", with SEPARATE MATCH SERVERS). ServerScriptService.Matchmaker
+-- runs it; HubServer hands it every QUEUE while Mode is "Global". Studio: teleports do not work there, so a match whose
+-- players are all in the Studio server runs in it; the workspace attribute "MM_SimulateMatchServer" (Studio only, set it
+-- true during Play; off by default) makes the Studio server act as a match server for the players present, and its trip
+-- home is logged instead of teleported.
+----------------------------------------------------------------------------------------------------
+Config.Matchmaking = {
+	Mode = "Global",         -- "Global": one queue for every server, each match in its own reserved server.
+	                         -- "Local": the queue before 2026-10-28, this server's players only (the kill switch)
+	WidenAfter = 20,         -- seconds a ticket matches only its own region; after that also anyone who has waited as long
+	ArriveTimeout = 45,      -- seconds a match server waits for its players before it starts (or calls the match off)
+	MinPerTeam = 2,          -- at ArriveTimeout, a team with fewer here than this (never more than Team.Size) calls it off
+	PollEvery = 2.5,         -- seconds between matchmaker turns (only servers with someone queued take part)
+	TicketTTL = 120,         -- a ticket its server stops refreshing (the server is gone) expires after this
+	RefreshEvery = 20,       -- how often a server refreshes its own players' tickets
+	LockTTL = 6,             -- the matchmaker lock's life; whoever holds it renews it every turn
+	RecordTTL = 900,         -- a match record's life (15 min)
+	Store = "SPELLSHOT_MM_v1", -- MemoryStore and MessagingService names start with this (Studio adds "_Studio")
+	DefaultRegion = "OT",    -- the region of a country the table below does not list
+	-- the player's country (LocalizationService:GetCountryRegionForPlayerAsync, ISO 3166 codes) to a matchmaking region
+	Regions = {
+		NA = { "US", "CA", "MX", "PR", "GT", "BZ", "SV", "HN", "NI", "CR", "PA", "CU", "DO", "HT", "JM", "BS", "TT", "BB",
+			"BM", "KY", "VI", "GU", "AG", "LC", "VC", "GD", "DM", "KN", "AW", "CW" },
+		SA = { "BR", "AR", "CL", "CO", "PE", "VE", "EC", "BO", "PY", "UY", "GY", "SR", "GF", "FK" },
+		EU = { "GB", "IE", "FR", "DE", "NL", "BE", "LU", "CH", "AT", "IT", "ES", "PT", "DK", "NO", "SE", "FI", "IS", "PL",
+			"CZ", "SK", "HU", "SI", "HR", "BA", "RS", "ME", "MK", "AL", "XK", "GR", "BG", "RO", "MD", "UA", "BY", "LT",
+			"LV", "EE", "RU", "TR", "CY", "MT", "AD", "MC", "SM", "VA", "LI", "GI", "FO", "GL", "GE", "AM", "AZ" },
+		ME = { "AE", "SA", "QA", "KW", "BH", "OM", "IL", "PS", "JO", "LB", "SY", "IQ", "IR", "YE", "EG", "LY", "TN", "DZ",
+			"MA", "SD", "ZA", "NG", "KE", "GH", "ET", "TZ", "UG", "SN", "CI", "CM", "AO", "ZW", "ZM", "MZ", "BW", "NA",
+			"MU", "RW", "MG" },
+		AS = { "IN", "PK", "BD", "LK", "NP", "BT", "MV", "AF", "JP", "KR", "CN", "TW", "HK", "MO", "MN", "SG", "MY", "TH",
+			"VN", "PH", "ID", "KH", "LA", "MM", "BN", "TL", "KZ", "UZ", "KG", "TJ", "TM" },
+		OC = { "AU", "NZ", "FJ", "PG", "NC", "PF", "WS", "TO", "VU", "SB" },
+	},
 }
 
 ----------------------------------------------------------------------------------------------------
@@ -283,7 +361,8 @@ Config.Elements = {
 	Cryo = {
 		Order = 2, Display = "Cryo", Archetype = "Control/Zone",
 		Base = Color3.fromRGB(64, 181, 240), Light = Color3.fromRGB(222, 247, 255), Dark = Color3.fromRGB(13, 79, 168),
-		M1 = { Name = "Icicle Shard", Desc = "Fast flat trajectory, low damage, stacks Chill; 3 stacks briefly roots" },
+		-- (2026-10-19, audit P3-24 / P6B-11) "3 stacks briefly roots" until then: the third stack is a deep slow since 2026-10-08
+		M1 = { Name = "Icicle Shard", Desc = "Fast flat trajectory, low damage, stacks Chill; 3 stacks is a deep slow" },
 		Primary = { Name = "Flash Freeze", Desc = "Ground zone: linger past 1s and you are rooted, then shattered if still frozen when it ends" },
 		Passive = { Name = "Cold Momentum", Desc = "+10% move speed for 2s after landing any hit", Display = "Timer", Duration = 2,
 			SpeedBonus = 0.10 },
@@ -291,7 +370,7 @@ Config.Elements = {
 	Voltaic = {
 		Order = 3, Display = "Voltaic", Archetype = "High-skill snowball",
 		Base = Color3.fromRGB(245, 199, 15), Light = Color3.fromRGB(255, 245, 115), Dark = Color3.fromRGB(74, 26, 140),
-		M1 = { Name = "Chain Bolt", Desc = "Instant hitscan, short range, auto-chains to a second enemy" }, -- ("very short range" until 2026-10-18: 30 -> 55)
+		M1 = { Name = "Chain Bolt", Desc = "Instant hitscan out to 55 studs, auto-chains to a second enemy" }, -- ("very short range" until 2026-10-18: 30 -> 55; "short range" until 2026-10-19, audit P6B-11)
 		Primary = { Name = "Overcharge", Desc = "Instant short dash; your next M1 chains to 2 extra targets" },
 		Passive = { Name = "Chain Reaction", Desc = "Filling Charged on an enemy takes 2 s off Overcharge's cooldown", Display = "Proc" },
 	},
@@ -366,8 +445,10 @@ Config.SlotLabel = {
 }
 
 ----------------------------------------------------------------------------------------------------
--- shared Technique pools (manual v0.2, Section 2) -- Origin drives the icon colour
+-- the Technique pool (manual v0.2, Section 2) -- Origin drives the icon colour
 ----------------------------------------------------------------------------------------------------
+-- (2026-10-19, audit P4-14) Since P31 (2026-10-18) each Element holds only the entries whose Origin it is
+-- (Config.ElementMayHold, below); "any Element may equip it" in a comment here means with TechniquesOwnElementOnly off.
 -- Every entry was checked against the others in its pool for the "distinct verb" rule, so the
 -- Desc text below is deliberately the mechanic that makes it different, not flavour.
 -- Since v0.7 (2026-09-24) Mobility and Defense are ONE pool split in two halves: an entry from either half goes in
@@ -375,9 +456,9 @@ Config.SlotLabel = {
 -- defensive one -- which the HUD glyph and Earthen Tomb's escape (TerraHandler) read.
 -- Exclusive = true: only the Origin Element may equip it (Detonate reads Pyro's own Fireball and Immolate hits).
 Config.Mobility = {
-	HeatRush        = { Name = "Heat Rush",        Origin = "Pyro",    Desc = "Hold to sprint and build Heat; above a threshold, incoming ranged hits are reduced", Cooldown = 8 },
 	-- Blizzard (2026-09-24) REPLACES Frost Slide. Cooldown is documentation; the row's (CryoTuning) is charged.
-	Blizzard        = { Name = "Blizzard",         Origin = "Cryo",    Desc = "A storm where you stand: everyone else inside is slowed and can barely see, for 8 seconds", Cooldown = 18 },
+	-- (2026-10-19, audit P6B-11) Desc was "where you stand ... for 8 seconds": CryoTuning has CastRange 20 (P29) and Duration 6
+	Blizzard        = { Name = "Blizzard",         Origin = "Cryo",    Desc = "A storm at your crosshair, up to 20 studs away: everyone else inside is slowed and can barely see, for 6 seconds", Cooldown = 18 },
 	-- Railspike (2026-09-25) REPLACES Chain Lurch, which never had a cast path. Cooldown is documentation; the row's is charged.
 	Railspike       = { Name = "Railspike",        Origin = "Voltaic", Desc = "A short windup, then a bolt that pierces everyone in a 90-stud line", Cooldown = 10 },
 	-- Aftershock (2026-09-25) REPLACES Tremor Vault: its burrow and its cast path are gone (the TerraVault meshes stay in
@@ -400,7 +481,6 @@ Config.Mobility = {
 }
 
 Config.Defense = {
-	CinderShield  = { Name = "Cinder Shield",  Origin = "Pyro",    Desc = "See-through shield held in one hand that glows hotter as it absorbs; a burst sends a heatwave where you face, expiring releases nothing", Cooldown = 15 },
 	-- Deep Freeze (2026-09-24) REPLACES Chill Aura.
 	DeepFreeze    = { Name = "Deep Freeze",    Origin = "Cryo",    Desc = "An unseen trap at your feet: whoever sets it off is sealed in a crystal prison, rooted", Cooldown = 16 },
 	-- Volt Orb (2026-09-25) REPLACES Static Field, which never had a cast path. Cooldown is documentation; the row's is charged.
@@ -408,14 +488,17 @@ Config.Defense = {
 	BulwarkWall   = { Name = "Bulwark Wall",   Origin = "Terra",   Desc = "The one wall in the game -- full projectile/sightline block", Cooldown = 16 },
 	-- Gust Pad (2026-10-06, the Zephyr v6 import) REPLACES Deflect Gust (retired: ServerStorage.ZephyrKitSuperseded.v6_2026_10_06).
 	-- Cooldown is documentation; the row's (VFXLibrary) is charged.
-	GustPad       = { Name = "Gust Pad",       Origin = "Zephyr",  Desc = "Press a gust pad into the ground at your crosshair: whoever steps on it -- friend or foe -- is launched straight up", Cooldown = 14 },
+	GustPad       = { Name = "Gust Pad",       Origin = "Zephyr",  Desc = "Press a gust pad into the ground at your crosshair: you and any enemy who steps on it are launched straight up -- teammates are spared", Cooldown = 14 },
+	-- (2026-10-19, audits P5E-04 / P3-18) the Desc said "friend or foe": since P1-14 a pad launches its caster, enemies and
+	-- dummies, never a player the caster may not hurt (a teammate, a Solo Test stranger)
 	DecoyDouble   = { Name = "Decoy Double",   Origin = "Umbra",   Desc = "Stationary illusion -- the only misdirection tool in the game", Cooldown = 20 },
 	Benediction   = { Name = "Benediction",    Origin = "Radiant", Desc = "Plant your staff: rays heal every ally near you, or you when none are near. You are rooted while it lasts", Cooldown = 17 },   -- replaced Cleansing Ring (2026-09-29)
 	-- Acid Rain (2026-09-30, manual v0.15/v0.17) REPLACES Antidote Cloak (retired: ServerStorage.ToxinKitSuperseded).
 	-- Offense/setup by flavour, in this half because Antidote Cloak was. Cooldown is documentation; the row's is charged.
 	AcidRain      = { Name = "Acid Rain",      Origin = "Toxin",   Desc = "A poison downpour on a spot: a light tick on everyone under it, and stacks that make Toxin's poison hit them harder", Cooldown = 14 },
-	-- Pyro's second (2026-09-23; in the pool since 2026-09-24): Pyro's default, and any Element may equip it.
-	ScorchingLash = { Name = "Scorching Lash", Origin = "Pyro",    Desc = "Hold to carry a burning whip; let go to crack it where you aim, up to 35 studs; each hit stacks a burn (up to 3)", Cooldown = 2.5 },
+	-- Pyro's second (2026-09-23; in the pool since 2026-09-24): Pyro's default (any Element could equip it before P31).
+	-- Cooldown is documentation; the row's (VFXLibrary, 5 since the 2026-10-17 balance pass) is charged.
+	ScorchingLash = { Name = "Scorching Lash", Origin = "Pyro",    Desc = "Hold to carry a burning whip; let go to crack it where you aim, up to 35 studs; each hit stacks a burn (up to 3)", Cooldown = 5 },   --[[2.5 until 2026-10-19, audit P4-14 / P6B-11]]
 	-- Aqua's two (2026-09-24): "Aqua-pure" in the manual, so Aqua's ONLY (Exclusive), and Aqua's defaults. Cooldowns are
 	-- documentation; the rows' (AquaTuning) are charged.
 	TwinTide      = { Name = "Twin Tide",      Origin = "Aqua",    Desc = "Two wave-walls close in on a lane from either side; whoever is caught where they meet is crushed", Cooldown = 16, Exclusive = true },
@@ -423,7 +506,8 @@ Config.Defense = {
 }
 
 Config.Ultimate = {
-	RingOfFire      = { Name = "Ring of Fire",     Origin = "Pyro",    Desc = "Point at the ground: your hand draws a circle of fire there, and a snap erupts it -- bigger and hotter at high Heat" },
+	-- (2026-10-27) Heat Rush is gone, and with it the only source of Heat: the Ring is always the one size
+	RingOfFire      = { Name = "Ring of Fire",     Origin = "Pyro",    Desc = "Point at the ground: your hand draws a circle of fire there, and a snap erupts it" },
 	-- Mirror Cage (2026-09-24) REPLACES Cryo Beam: the only Origin = "Cryo" entry, so it is Cryo's (ElementUltimate).
 	MirrorCage      = { Name = "Mirror Cage",      Origin = "Cryo",    Desc = "Locks a target and cages them in a dome of ice panels that volley bolts at them" },
 	-- Cascade (2026-09-25) REPLACES Thunderclap, which never had a cast path: the only Origin = "Voltaic" entry, so Voltaic's.
@@ -484,6 +568,9 @@ Config.ElementDefaults = {
 Config.RetiredTechniques = {
 	GustJump = "Skyrider",
 	DeflectGust = "GustPad",
+	-- (2026-10-27, the owner) Heat Rush and Cinder Shield left the game; Pyro's other two take their slots
+	HeatRush = "Detonate",
+	CinderShield = "ScorchingLash",
 }
 
 --- Technique `key`'s pool entry, and the half of the pool it sits in ("Mobility" / "Defense"); nil for anything else.
@@ -581,9 +668,10 @@ end
 ----------------------------------------------------------------------------------------------------
 -- status effects
 ----------------------------------------------------------------------------------------------------
--- The manual has no status-effect section, so this vocabulary is derived from the kits
--- themselves: every entry is the readable name of something an existing M1/Primary/Technique
--- already does. `Element` is the Element that CAUSED it, which drives the tag's colour and icon.
+-- The manual had no status-effect section when this was written (it has one since v0.13, "Elemental Application";
+-- the numbers are ServerScriptService.StatusEffects'), so this vocabulary is derived from the kits themselves: every
+-- entry is the readable name of something an existing M1/Primary/Technique already does. (2026-10-19, audit P6B-11)
+-- `Element` is the Element that CAUSED it, which drives the tag's colour and icon.
 Config.Statuses = {
 	Burning   = { Element = "Pyro",    Label = "BURNING",  Source = "Immolate-buffed Fireball / Ring of Fire" },
 	Chilled   = { Element = "Cryo",    Label = "CHILLED",  Source = "Icicle Shard / Blizzard slow" },
@@ -594,8 +682,11 @@ Config.Statuses = {
 	Charged   = { Element = "Voltaic", Label = "CHARGED",  Source = "Chain Bolt (stacks; discharges at max)" },
 	Revealed  = { Element = "Voltaic", Label = "REVEALED", Source = "Static Field" },
 	Staggered = { Element = "Terra",   Label = "STAGGERED",Source = "Bulwark Charge knockdown" },
-	-- a working name: held on Earthen Tomb's pillar. MOVEMENT only -- the entombed can still attack, and a Mobility
-	-- Technique breaks it (TerraHandler) -- all but Aftershock (2026-09-25), which roots its own caster and is no escape
+	-- a working name: held on Earthen Tomb's pillar. MOVEMENT only -- the entombed can still attack, and a Technique from
+	-- the movement half of the pool breaks it when the server accepts the press (TerraHandler's CCBreak) -- all but
+	-- Aftershock, Detonate, Scorching Lash, Blizzard and Railspike, which are no escape (2026-10-19, audit P4-14: this
+	-- named only Aftershock). Skyrider and Shadow Step are refused outright while Entombed, before they are paid (their
+	-- Prechecks: audits P4-01 / GC-07), so they are no escape either (2026-10-19, audit P4-03)
 	Entombed  = { Element = "Terra",   Label = "ENTOMBED", Source = "Earthen Tomb" },
 	Airborne  = { Element = "Zephyr",  Label = "AIRBORNE", Source = "Cyclone juggle" },
 	Marked    = { Element = "Umbra",   Label = "MARKED",   Source = "Mark" },
@@ -670,11 +761,10 @@ Config.DefaultLoadout = {
 	Ultimate = "MirrorCage",
 }
 
---- WHICH ELEMENTS ARE ACTUALLY BUILT. Cryo and Pyro (wired 2026-09-14): the other six are designed
---- above -- name, archetype, colours, M1, Primary, Passive, and one Technique each in the three
---- pools -- and have no cast path behind them. The loadout menu greys out everything else and the
---- server checks this again before it will equip anything, because a player in an unbuilt Element
---- would be holding four abilities that do nothing.
+--- WHICH ELEMENTS ARE ACTUALLY BUILT. Cryo and Pyro were the first (wired 2026-09-14); since 2026-09-30 all nine are
+--- (the lines below add each as it landed). The loadout menu greys out anything not listed and the server checks this
+--- again before it will equip anything, because a player in an unbuilt Element would be holding abilities that do
+--- nothing. (2026-10-19, audit P6B-11: this said "the other six ... have no cast path behind them".)
 Config.BuiltElements = { Cryo = true, Pyro = true, Zephyr = true, Terra = true, Aqua = true }
 
 -- Voltaic (2026-09-25): selectable -- the whole kit is live (Chain Bolt, Overcharge, Chain Reaction, Railspike, Volt Orb,

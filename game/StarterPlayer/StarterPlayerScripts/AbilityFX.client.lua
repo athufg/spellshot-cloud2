@@ -216,7 +216,8 @@ end
 -- every client draws everyone's trail with no extra remote.
 do
 	local RunService = game:GetService("RunService")
-	local lastStep = {}          -- [character] = the half-cycle index of its last footfall
+	-- (2026-10-19, audit P5F-25) weak keys: a respawned character's entry went only when its player left
+	local lastStep = setmetatable({}, { __mode = "k" })   -- [character] = the half-cycle index of its last footfall
 	local rng = Random.new()
 	RunService.Heartbeat:Connect(function()
 		for _, plr in ipairs(Players:GetPlayers()) do
@@ -256,25 +257,18 @@ end
 -- PyroFX draws it and CastPose moves the body. The caster's own arms and fire start on the keypress in
 -- SpellshotInput, so for the local player these do only what the server decides.
 local PyroFX = require(iceFolder:WaitForChild("PyroFX"))
-PyroFX.WatchHeat()      -- Heat Rush draws itself off every character's HeatRush / Heat attributes
--- ...and Scorching Lash's burn stacks on every burning body, off RX_Burning_Stacks (2026-09-23). Guarded: PyroFX's
+-- Scorching Lash's burn stacks on every burning body, off RX_Burning_Stacks (2026-09-23). Guarded: PyroFX's
 -- phase-two functions are written only after the owner approves the shape sheet and the colour pass.
 if PyroFX.WatchBurnStacks then pcall(PyroFX.WatchBurnStacks) end
 
 -- M1, Fireball: the punch for everyone; for everybody else's throw, the charge on the fist and the fireball
--- leaving it at full extension. Thrown with the Cinder Shield up, it is the left hand, and the right arm
--- swings the shield aside.
+-- leaving it at full extension.
 handlers.Fireball = function(d)
 	local c = d.Character
 	if not c then return end
 	local side = (d.Side == "L") and "L" or "R"
-	if d.Shielded then
-		CastPose.Play(c, "FireballShieldL")
-	else
-		CastPose.Play(c, "Fireball" .. side)
-	end
+	CastPose.Play(c, "Fireball" .. side)
 	if c == player.Character then return end
-	if d.Shielded then PyroFX.ShieldAside(c) end
 	PyroFX.Charge(c, side, d.Hot, false)
 	task.delay(PyroFX.Tuning.Fireball.Trigger / VFXLibrary.ShotTimeScale(), function()
 		local hand = c:FindFirstChild(side == "L" and "LeftHand" or "RightHand")
@@ -294,13 +288,13 @@ handlers.WindBlade = function(d)
 	local side = (d.Side == "L") and "L" or "R"
 	local stroke = (d.Stroke == "Up") and "Up" or "Down"
 	-- chained into the last shot (inside the body clip's hold, HoldUntil), the other arm holds where it is; otherwise
-	-- (a new burst, or over the Cinder Shield's hold) only the slashing arm moves
+	-- (a new burst) only the slashing arm moves
 	local now = os.clock()
 	local last = windShotAt[c]
 	windShotAt[c] = now
 	local chained = last ~= nil
 		and (now - last) * VFXLibrary.ShotTimeScale() < CastPose.Clips.WindBladeDownR.HoldUntil
-	CastPose.Play(c, "WindBlade" .. stroke .. side .. ((chained and not d.Shielded) and "" or "Solo"))
+	CastPose.Play(c, "WindBlade" .. stroke .. side .. (chained and "" or "Solo"))
 	if c == player.Character or typeof(d.Dir) ~= "Vector3" then return end
 	ZephyrFX = ZephyrFX or require(iceFolder:WaitForChild("ZephyrFX"))
 	-- the kit's pre-fire swirl, winding into that palm over the Trigger before its blade leaves (2026-10-08)
@@ -310,7 +304,14 @@ handlers.WindBlade = function(d)
 	task.delay(ZephyrFX.Tuning.WindBlade.Trigger / VFXLibrary.ShotTimeScale(), function()
 		local hand = c:FindFirstChild(side == "L" and "LeftHand" or "RightHand")
 			or c:FindFirstChild(side == "L" and "Left Arm" or "Right Arm")
-		if hand and hand.Parent then ZephyrFX.FireWindBlade(hand.Position, d.Dir, shotExclude(c), nil, nil, side, stroke) end
+		-- (2026-10-19, audit P5E-08) the hit line is the shooter's eye down Dir, so the blade flies that line and eases
+		-- onto it from the hand (visualFrom), as the shooter's own does; the broadcast carries no eye, so the Head
+		-- (where the first-person camera sits) stands in for it. Was: flown from the hand, parallel to the real line.
+		local head = c:FindFirstChild("Head")
+		if hand and hand.Parent then
+			ZephyrFX.FireWindBlade(head and head.Position or hand.Position, d.Dir, shotExclude(c),
+				head and hand.Position or nil, nil, side, stroke)
+		end
 	end)
 end
 
@@ -508,48 +509,6 @@ handlers.EmberRefund = function(d)
 	if d.Character then PyroFX.EmberRefund(d.Character, d.From) end
 end
 
--- Heat Rush let go: above a third of Heat, the exhale -- the body's, your own arms', and the steam
-handlers.HeatRushRelease = function(d)
-	local c = d.Character
-	if not c then return end
-	if (d.Heat or 0) >= PyroFX.Tuning.HeatRush.ExhaleAbove then
-		CastPose.Play(c, "HeatRushExhale")
-		if c == player.Character and not Viewmodel.IsPlaying() then Viewmodel.Play("HeatRushExhale") end
-	end
-	PyroFX.HeatRelease(c, d.Heat or 0)
-end
-
-handlers.HeatDeflect = function(d)
-	if d.Character and typeof(d.Position) == "Vector3" then PyroFX.Deflect(d.Character, d.From, d.Position) end
-end
-
--- Cinder Shield: the fists' punch and the hold are one clip, which the body also rests on (SetBase) so a
--- Fireball thrown with the shield up comes back to the hold
-handlers.CinderShield = function(d)
-	local c = d.Character
-	if not c then return end
-	CastPose.Play(c, "CinderShieldCast")
-	CastPose.SetBase(c, "CinderShieldCast")
-	PyroFX.Shield(c, d.T0)
-end
-
-handlers.CinderShieldEnd = function(d)
-	local c = d.Character
-	if not c then return end
-	CastPose.SetBase(c, nil)
-	CastPose.Stop(c)
-	PyroFX.ShieldEnd(c)
-	if c == player.Character and Viewmodel.CurrentClip() == "CinderShieldHold" then Viewmodel.Stop() end
-end
-
-handlers.CinderBurst = function(d)
-	local c = d.Character
-	if not c then return end
-	CastPose.SetBase(c, nil)
-	CastPose.Play(c, "CinderShieldBurst")
-	PyroFX.ShieldBurst(c, d.Origin, d.Dir, d.T0)
-	if c == player.Character then Viewmodel.Play("CinderShieldBurst") end
-end
 
 -- Ring of Fire, on the server's clock from T0: the hand draws the circle round the pointed spot by itself (the arm
 -- follows the drawing point in third person, and your own fist loops round in first person), then the settle as it
@@ -735,7 +694,7 @@ handlers.BoulderChargeStart = function(d)
 		local held = (token.StopAt or os.clock()) - token.At
 		if token.StopAt and os.clock() - token.StopAt >= (token.Grace or 0) then return nil end
 		return math.clamp(held / TerraFX.Tuning.BoulderShot.ChargeTime, 0, 1)
-	end, bodyHand(c), { Thin = true, Character = c, Wrap = d.Skin })
+	end, bodyHand(c), { Thin = VFXLibrary.IsEnemy(c), Character = c, Wrap = d.Skin })   -- (2026-10-19, audit P5F-06) a teammate's is drawn full
 end
 
 handlers.BoulderChargeStop = function(d)
@@ -800,11 +759,13 @@ end
 handlers.WallRaise = function(d)
 	if d.Character and typeof(d.CF) == "CFrame" then terra().WallRaise(d.Character, d.CF, d.T0) end
 end
+-- (2026-10-19, audit P5B-17) the server's T0 rides along, as WallRaise's does, so the rework's late-beat logic runs
+-- from the server's moment, not the arrival (TerraFX forwards it to TerraFX_Wall's Hit / Drop)
 handlers.WallHit = function(d)
-	if d.Character and typeof(d.Point) == "Vector3" then terra().WallHit(d.Character, d.Point, d.Left) end
+	if d.Character and typeof(d.Point) == "Vector3" then terra().WallHit(d.Character, d.Point, d.Left, d.T0) end
 end
 handlers.WallDrop = function(d)
-	if d.Character then terra().WallDrop(d.Character, d.Reason) end
+	if d.Character then terra().WallDrop(d.Character, d.Reason, d.T0) end
 end
 -- AFTERSHOCK (the Mobility Technique, 2026-09-25; it REPLACES Tremor Vault, whose VaultSink / VaultPop handlers are
 -- deleted rather than disabled, as Glacial Spikes' were): both fists into the ground and a ring of erupting rock racing
@@ -829,7 +790,8 @@ handlers.Aftershock = function(d)
 	local own = c == player.Character
 	CastPose.PlayClocked(c, "Aftershock", aftershockClock(d.T0))
 	terra().Aftershock(c, d.At, d.Face, d.T0, {
-		Own = own, Seed = (type(d.Seed) == "number" and d.Seed == d.Seed) and d.Seed or 0, Thin = not own,
+		-- (2026-10-19, audit P5F-06) no Thin: TerraFX.Aftershock thins an enemy's (VFXLibrary.IsEnemy), not a teammate's
+		Own = own, Seed = (type(d.Seed) == "number" and d.Seed == d.Seed) and d.Seed or 0,
 	})
 end
 
@@ -1015,6 +977,21 @@ do
 	end
 end
 
+-- (2026-10-19, audit P5F-25) the five merges below run off the load path, after the listener at the bottom can already
+-- hear their kinds: a broadcast with no handler YET is held (at most 64) and played when its module's merge lands,
+-- instead of dropped. Once every merge has finished, an unknown kind is just ignored again.
+local held = { Waiting = 5, List = {} }
+function held.Done()
+	held.Waiting -= 1
+	local keep = {}
+	for _, e in ipairs(held.List) do
+		local h = handlers[e[1]]
+		if h then task.spawn(h, e[2])
+		elseif held.Waiting > 0 then keep[#keep + 1] = e end
+	end
+	held.List = keep
+end
+
 -- Voltaic (2026-09-25): every Voltaic broadcast is VoltaicClient's (plus StatusDischarge, which had no handler).
 -- Merged off the load path so nothing here waits on it, and never over a kind that already has a handler.
 task.spawn(function()
@@ -1025,6 +1002,7 @@ task.spawn(function()
 	elseif m then
 		warn("[AbilityFX] VoltaicClient failed to load: " .. tostring(mod))
 	end
+	held.Done()
 end)
 
 -- Umbra (2026-09-27): every Umbra broadcast is UmbraClient's. Merged off the load path, never over an existing handler.
@@ -1036,6 +1014,7 @@ task.spawn(function()
 	elseif m then
 		warn("[AbilityFX] UmbraClient failed to load: " .. tostring(mod))
 	end
+	held.Done()
 end)
 
 -- Radiant (2026-09-29): every Radiant broadcast is RadiantClient's. Merged off the load path, never over an existing handler.
@@ -1047,6 +1026,7 @@ task.spawn(function()
 	elseif m then
 		warn("[AbilityFX] RadiantClient failed to load: " .. tostring(mod))
 	end
+	held.Done()
 end)
 
 -- Toxin (2026-09-30): every Toxin broadcast is ToxinClient's. Merged off the load path, never over an existing handler.
@@ -1058,6 +1038,7 @@ task.spawn(function()
 	elseif m then
 		warn("[AbilityFX] ToxinClient failed to load: " .. tostring(mod))
 	end
+	held.Done()
 end)
 
 -- Zephyr (2026-10-06, the v6 import): every Skyrider, Gust Pad and Updraft broadcast is ZephyrClient's (it merges the three
@@ -1068,13 +1049,33 @@ task.spawn(function()
 	local ok, mod = pcall(function() return m and require(m) end)
 	if ok and mod and type(mod.Handlers) == "table" then
 		for kind, fn in pairs(mod.Handlers) do handlers[kind] = handlers[kind] or fn end
-	elseif m then
-		warn("[AbilityFX] ZephyrClient failed to load: " .. tostring(mod))
+		held.Done()
+		-- (2026-10-19, audit P5E-13) a piece that had not replicated within ZephyrClient's PieceWait is merged into its
+		-- Handlers later, and this copy was taken once: look again while any piece is still missing (for two minutes),
+		-- asking ZephyrClient to look for it too where it offers that (Refresh), since a non-Zephyr never presses a key
+		-- that would make it look
+		local function missing()
+			local okL, loaded = pcall(mod.Loaded)
+			if not (okL and type(loaded) == "table") then return false end
+			for _, st in pairs(loaded) do if st == "missing" then return true end end
+			return false
+		end
+		for _ = 1, 40 do
+			if not missing() then break end
+			task.wait(3)
+			if type(mod.Refresh) == "function" then pcall(mod.Refresh) end
+			for kind, fn in pairs(mod.Handlers) do handlers[kind] = handlers[kind] or fn end
+		end
+	else
+		if m then warn("[AbilityFX] ZephyrClient failed to load: " .. tostring(mod)) end
+		held.Done()
 	end
 end)
 
 remote.OnClientEvent:Connect(function(action, kind, data)
 	if action ~= "VFX" then return end
 	local handler = handlers[kind]
-	if handler and type(data) == "table" then task.spawn(handler, data) end
+	if type(data) ~= "table" then return end
+	if handler then task.spawn(handler, data)
+	elseif held.Waiting > 0 and #held.List < 64 then held.List[#held.List + 1] = { kind, data } end   -- (audit P5F-25)
 end)

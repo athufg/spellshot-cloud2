@@ -160,10 +160,15 @@ local function castParams(character, extra)
 end
 
 -- the character (a model with a Humanoid) that inst is part of, or nil
+-- (2026-10-19, audit P6A-05) Terra's Bulwark Wall is a Model with a Humanoid too, but it is a wall: a model stamped
+-- WallOwner (CombatCore.IsWall's rule) is never a body, so a ThroughCharacters dash stops at it and never no-collides it
 local function characterOf(inst)
 	local model = inst:FindFirstAncestorOfClass("Model")
 	while model do
-		if model:FindFirstChildOfClass("Humanoid") then return model end
+		if model:FindFirstChildOfClass("Humanoid") then
+			if model:GetAttribute("WallOwner") ~= nil then return nil end
+			return model
+		end
 		model = model:FindFirstAncestorOfClass("Model")
 	end
 	return nil
@@ -324,8 +329,7 @@ local function steerHold(request)
 		velocity.VectorVelocity = Vector3.zero
 		return
 	end
-	local run = math.min(MOVE.SprintSpeed * (character:GetAttribute("MoveSpeedMult") or 1)
-		* (character:GetAttribute("RushSpeedMult") or 1), capOf(character))
+	local run = math.min(MOVE.SprintSpeed * (character:GetAttribute("MoveSpeedMult") or 1), capOf(character))
 	velocity.VectorVelocity = move * (run * share)
 end
 
@@ -399,7 +403,6 @@ local function finish(reason)
 		local v = root.AssemblyLinearVelocity
 		local keep = 0
 		local sprint = MOVE.SprintSpeed * (a.Character:GetAttribute("MoveSpeedMult") or 1)
-			* (a.Character:GetAttribute("RushSpeedMult") or 1)
 		if a.Free then
 			-- a 3D dash hands back the level part of its speed along its heading, at no more than the run, and lets go of
 			-- the height: the body falls from rest from here, as any body does (straight up or down: nothing kept). An uncut

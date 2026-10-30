@@ -15,8 +15,7 @@
 	onRelease), a 0.865-radius sphere is cast 10 studs from the eye down the crosshair, the claim goes to the server
 	("ChainBoltFire") and leg 1 is drawn at once from the muzzle to the claimed point (ChainBoltFX.FireLocal). The server
 	checks it, chains it and broadcasts ChainBolt; the chained legs are drawn from that. Any M1 fired while primed spends
-	the prime, so the primed tell ends on this click (predicted), not a round trip later. With Cinder Shield up the left
-	hand throws while the right swings the shield aside (SpellshotInput's own exemption, copied).
+	the prime, so the primed tell ends on this click (predicted), not a round trip later.
 
 	OVERCHARGE (Primary) is Bulwark Charge's dash (tryBulwarkCharge): DashMotor moves the body, and on the dash's first
 	frame the cast goes out with where it started ({Start, Dir, Dist}) and the dash look is drawn HERE, on that frame, from
@@ -30,7 +29,8 @@
 	and the shot is drawn from it here. Unanswered within twice the round trip (+0.3 s), the windup is dropped and the slot
 	flashes; a death, a respawn, an interrupt or the server's RailspikeChargeStop drops it too.
 
-	VOLT ORB (Technique): the throw on the key (Fireball's arm shot, borrowed) and the orb's windup in the hand; the flight
+	VOLT ORB (Technique): hold the key to aim (the arc, VOLT ORB AIM below), the throw on release (Fireball's arm shot,
+	borrowed; 2026-10-19, audit P5D-18) and the orb's windup in the hand; the flight
 	is the server's VoltOrbThrow. CASCADE (Ultimate): its own summon (CascadeSummon: both arms overhead; the hands
 	are CascadeFX's, from the server's CascadeGather). Both flash the slot when the server never
 	answers (a refused Volt Orb, a Cascade with no ground -- its charge is given back).
@@ -318,21 +318,12 @@ function VoltaicClient.FireM1(character, ability)
 	local VM = need("Viewmodel")
 	local C = tune("ChainBolt")
 
-	-- a two-handed cast owns the arms -- except Cinder Shield's hold, over which the left hand throws while the right
-	-- swings the shield aside (SpellshotInput 1361-1362 / 1480-1486)
+	-- a two-handed cast owns the arms
 	if VM and VM.Tracing() then return true end
-	local shielded = character:GetAttribute("CinderShield") == true or clipIs("CinderShieldHold")
 	if character:GetAttribute("Channeling") then return true end
-	if VM and VM.IsPlaying() and not shielded then return true end
-	local side
-	if shielded then
-		side = "L"
-		if VM then VM.PlayShot("R", "CinderShieldAside") end
-		fx("PyroFX", "ShieldAside", character)
-	else
-		side = nextSide
-		nextSide = (side == "R") and "L" or "R"
-	end
+	if VM and VM.IsPlaying() then return true end
+	local side = nextSide
+	nextSide = (side == "R") and "L" or "R"
 	-- the thrust is cosmetic: the shot is hitscan, and goes on this frame
 	if VM then VM.PlayShot(side, "IcicleShard") end
 
@@ -357,6 +348,10 @@ function VoltaicClient.FireM1(character, ability)
 		end
 	end
 
+	-- the PAID cast first (2026-10-19, audit P1-12): the server lets a bolt fire only once its M1 CastRequest has been
+	-- accepted and charged (CombatCore.TakePaidM1), and remotes from one client arrive in the order they were sent
+	local cast = castRemote()
+	if cast then cast:FireServer("M1", { Side = side, Dir = dir }) end
 	local remote = iceRemote()
 	if remote then
 		remote:FireServer("ChainBoltFire", {
@@ -393,8 +388,6 @@ function VoltaicClient.FireM1(character, ability)
 		fx("OverchargeFX", "SetPrimed", character, false)
 	end
 
-	local cast = castRemote()
-	if cast then cast:FireServer("M1", { Side = side, Dir = dir }) end
 	return true
 end
 
@@ -650,6 +643,9 @@ end
 -- this client's own body: a death, a new body or a new Element ends what it had running
 ----------------------------------------------------------------------------------------------------
 local function endOwn(character, all)
+	-- (2026-10-19, audit P5D-10) a death, a new body or a new Element also takes down a Volt Orb aim arc still up (the
+	-- key's release may never come); through the module table, as the aim section is declared further down
+	if VoltaicClient.AimStop then VoltaicClient.AimStop() end
 	if rail then endRail(rail, "ended") end
 	if all and orb then dropOrb(orb) end
 	local o = own
@@ -702,6 +698,10 @@ if player then
 	player:GetAttributeChangedSignal("Element"):Connect(function()
 		endOwn(player.Character, false)
 	end)
+	-- (2026-10-19, audit P5D-10) alt-tab: the key-up is lost with the focus, so the aim arc goes with it
+	game:GetService("UserInputService").WindowFocusReleased:Connect(function()
+		if VoltaicClient.AimStop then VoltaicClient.AimStop() end
+	end)
 
 	-- off the load path: the own-press listener, the core modules, and the borrowed clips checked by name (warn only)
 	task.spawn(function()
@@ -734,8 +734,8 @@ if player then
 			end
 		end
 		if VM then
-			check(VM.Clips, "Viewmodel.Clips", { "RailspikeSurge", "FrostSlide", "CinderShieldHold", "CascadeSummon" })
-			check(VM.ArmClips, "Viewmodel.ArmClips", { "IcicleShard", "Fireball", "CinderShieldAside", "RailspikeThrow" })
+			check(VM.Clips, "Viewmodel.Clips", { "RailspikeSurge", "FrostSlide", "CascadeSummon" })
+			check(VM.ArmClips, "Viewmodel.ArmClips", { "IcicleShard", "Fireball", "RailspikeThrow" })
 		end
 		if CP then
 			check(CP.Clips, "CastPose.Clips",
@@ -810,11 +810,10 @@ H.ChainReaction = function(d)
 	local V = need("VFXLibrary")
 	if not V then return end
 	local Kit = need("VoltaicKit")
-	local thin = c ~= player.Character
-	if Kit and type(Kit.thin) == "function" then
-		local ok, t = pcall(Kit.thin, c)
-		if ok then thin = t end
-	end
+	-- (2026-10-19, audit P5D-07) VFXLibrary's `thin` means "somebody else's cast" (it applies Reduce Enemy VFX and the
+	-- Graphics Quality density itself); Kit.thin also says yes on LOW for your own, which halved your sparks twice
+	-- (2026-10-19, audit P5F-06) ...and only an ENEMY's (VFXLibrary.IsEnemy): a teammate's sparks are not halved either
+	local thin = if type(V.IsEnemy) == "function" then V.IsEnemy(c) else c ~= player.Character
 	for _, side in ipairs({ "R", "L" }) do
 		local pos = nil
 		if Kit and type(Kit.muzzle) == "function" then
@@ -840,6 +839,9 @@ H.RailspikeChargeStart = function(d)
 	local c = d.Character
 	if not isModel(c) then return end
 	if rail and rail.Character == c then return end
+	-- (2026-10-19, audit P5D-17) our own body with no live local windup: this press was already given up here (its
+	-- answer came after GiveUpAt) and cannot fire, so no stuck observer windup is drawn on our hands
+	if c == player.Character then return end
 	pose(c, "RailspikeSurge")
 	stopHandle(otherRails[c])
 	otherRails[c] = fx("RailspikeFX", "Charge", c, { Own = c == player.Character, T0 = d.T0 })
@@ -990,6 +992,11 @@ end
 
 function VoltaicClient.AimStop()
 	aimClear()
+end
+
+--- (2026-10-19, audit P5D-10) Is the aim arc up? SpellshotInput resets its held Volt Orb role when this is false.
+function VoltaicClient.Aiming()
+	return aimConn ~= nil
 end
 
 return VoltaicClient

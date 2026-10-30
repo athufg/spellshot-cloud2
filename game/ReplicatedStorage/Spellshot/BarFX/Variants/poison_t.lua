@@ -211,7 +211,7 @@ function V.mount(fx)
 			fx.shake(2, 0.27)
 			local k = TK[tickN % 3 + 1]
 			tickN += 1
-			local n = tostring(st.s * 2)
+			local n = tostring(st.drop or st.s * 2)   -- (2026-10-19, audit GA-05) the real HP lost (BarFX st.drop); the bench's s * 2 in previews
 			burst(k[1], k[2], k[3] .. " " .. minus(n), k[3] .. " -" .. n, { rot = k[4], wx = k[1] > 480 and -120 or -44 })
 		end
 	end

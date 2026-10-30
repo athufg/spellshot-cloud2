@@ -25,6 +25,7 @@ local rng = Random.new()
 
 function DFX.Init(helpers, kit)
 	H, FD = helpers, kit
+	if kit and kit.OnRelease then kit.OnRelease(function() DFX._release() end) end   -- (2026-10-19, MeshBudget)
 	DFX.Kit = kit                                 -- what CryoFX drops a finished bolt through
 	-- dress styles in CryoFX's STYLE table (H.STYLE), read by name like its own:
 	--   DragonGlow   the ground's soft pale-cyan glow (the cage's crystal spikes, their thrown tops, the shatter's
@@ -552,7 +553,8 @@ function DFX.HitBloom(hit, dir, thin)
 		if u >= 1 and not cracked then
 			cracked = true
 			H.burst(pos, -dir, { Glints = 4 }, nil, 1)                  -- the crack: a flash on the teeth
-			pcall(H.flashAt, pos, 2.5, 8, 0.12)
+			-- (2026-10-19, audit P5A-09) no second flash on top of the Default's impact flash under Reduce Flashing
+			if not (H.Settings.Get and H.Settings.Get("ReduceFlashing")) then pcall(H.flashAt, pos, 2.5, 8, 0.12) end
 		end
 		if t >= SNAP.Close + SNAP.Hold and not broke then
 			broke = true
@@ -598,14 +600,21 @@ local CLAW = { Drop = 0.16, From = 40, Wave = 0.15, Base = 10 }
 local FROSTOVER = true                -- (flagged: a cosmetic frost-over at the shockwave, ahead of the real root)
 local SPINES = { [1] = 22, [2] = 16, [3] = 10 }
 
-local function frostOver(model, folder, dens, life)
+-- (2026-10-19, audit P5A-04) the frost-over goes (its 0.3 s shrink) as soon as the body leaves the spot it was frosted
+-- on, or when the server's root (IceFrozenState) has not come by LingerToRoot + a grace: a body that walked out, or one
+-- the server never roots, no longer wears a fake freeze. Thinned (`thin`): 7 spines, not 14 (audit P5A-12).
+local function frostOver(model, folder, dens, life, thin)
 	local root = model:FindFirstChild("HumanoidRootPart")
 	if not root then return end
 	local hum = model:FindFirstChildOfClass("Humanoid")
 	local feet = root.Position - Vector3.new(0, root.Size.Y / 2 + (hum and hum.HipHeight or 2), 0)
+	local plant = root.Position
+	local FFT = H.VFXLibrary.Tuning and H.VFXLibrary.Tuning.FlashFreeze
+	local grace = ((FFT and FFT.LingerToRoot) or 1) + 0.4
 	local list = {}
-	for q = 1, 14 do
-		local a = 2 * math.pi * q / 14 + rng:NextNumber(-0.15, 0.15)
+	local n = thin and 7 or 14
+	for q = 1, n do
+		local a = 2 * math.pi * q / n + rng:NextNumber(-0.15, 0.15)
 		local out = Vector3.new(math.cos(a), 0, math.sin(a))
 		local hi = (q % 3 == 0)
 		local o = FD.New("Spine", folder)
@@ -620,6 +629,12 @@ local function frostOver(model, folder, dens, life)
 	local t0 = os.clock()
 	H.run(function(now, dt, parts, cframes)
 		local t = now - t0
+		if life > t then
+			local r = model.Parent and model:FindFirstChild("HumanoidRootPart")
+			if not r or H.flat(r.Position - plant).Magnitude > 1.5 or (t > grace and not model:FindFirstChild("IceFrozenState")) then
+				life = t
+			end
+		end
 		local grow = H.easeOut(math.clamp(t / 0.12, 0, 1)) * (1 - H.smooth(math.clamp((t - life) / 0.3, 0, 1)))
 		if t > life + 0.3 or not folder.Parent then
 			for _, c in ipairs(list) do FD.Drop(c.O) end
@@ -648,12 +663,10 @@ function DFX.Field(ground, R, leadIn, expand, breakTime, wave, caster)
 	local shadow = FD.New("claw", folder)
 	if claw then
 		FD.Fade(claw, 1)
-		-- (the caster's own view: the claw is one mesh per material, so a per-part proximity fade would fade it for every
-		-- camera near the zone; the caster's client alone draws it 60% clear instead)
-		local me = game:GetService("Players").LocalPlayer
-		if me and caster == me.Character then
-			for _, p in ipairs(claw.Parts) do p.Part.LocalTransparencyModifier = 0.6 end
-		end
+		-- (the claw is one mesh per material, so a per-part proximity fade would fade it for every camera near the zone; it is
+		-- drawn 60% clear instead -- 2026-10-19, audit P5A-03: on EVERY client, not the caster's alone, so the trapped zone
+		-- reads the same to the wearer, their opponents and teammates)
+		for _, p in ipairs(claw.Parts) do p.Part.LocalTransparencyModifier = 0.6 end
 	end
 	if shadow then FD.Fade(shadow, 1) end
 	-- the spikes: a rim ring and (above the low tier) an inner ring, erupting behind the shockwave
@@ -671,12 +684,24 @@ function DFX.Field(ground, R, leadIn, expand, breakTime, wave, caster)
 			end
 		end
 	end
-	ring(SPINES[tier] or 16, R + 1.6, 1, leadIn + CLAW.Wave + 0.02, leadIn + CLAW.Wave + 0.22)    -- (outside the foot's rim)
+	-- (2026-10-19, audit P5A-22) the spines' feet on the zone's edge (the Frost Line), not 1.6 studs outside it: the solid
+	-- ring reads as where the root ends (they lean out above it)
+	ring(SPINES[tier] or 16, R, 1, leadIn + CLAW.Wave + 0.02, leadIn + CLAW.Wave + 0.22)
 	-- who stands in the zone (players, and Studio dummies), for the frost-over
+	-- (2026-10-19, audit P5A-04) only a body the caster may hurt (Config.MayHurt): never a teammate, or anyone in the Hub
 	local inside = {}
 	if FROSTOVER then
+		local okC, Config = pcall(function()
+			return require(game:GetService("ReplicatedStorage"):WaitForChild("Spellshot"):WaitForChild("SpellshotConfig"))
+		end)
+		local cp = typeof(caster) == "Instance" and Players:GetPlayerFromCharacter(caster) or nil
 		for _, m in ipairs(workspace:GetChildren()) do
 			local r = m:IsA("Model") and m ~= caster and m:FindFirstChildOfClass("Humanoid") and m:FindFirstChild("HumanoidRootPart")
+			local vp = r and Players:GetPlayerFromCharacter(m)
+			if r and cp and vp and okC and type(Config.MayHurt) == "function" then
+				local ok, may = pcall(Config.MayHurt, cp, vp)
+				if ok and may == false then r = nil end
+			end
 			if r then
 				local d = H.flat(r.Position - c).Magnitude
 				if d <= R then inside[#inside + 1] = { M = m, At = leadIn + CLAW.Wave * d / R } end
@@ -748,7 +773,7 @@ function DFX.Field(ground, R, leadIn, expand, breakTime, wave, caster)
 		for _, v in ipairs(inside) do
 			if not v.Done and t >= v.At then
 				v.Done = true
-				if v.M.Parent then frostOver(v.M, folder, dens, math.max(0.5, breakTime + wave - t)) end
+				if v.M.Parent then frostOver(v.M, folder, dens, math.max(0.5, breakTime + wave - t), H.thinFor(caster)) end
 			end
 		end
 		-- the spikes: erupt, hold, shatter outward on the rim's wave
@@ -791,12 +816,12 @@ end
 -- shoulder, elbow and wrist) and beating slowly and hard -- BZ.Rate a second, a BZ.Stroke sweep at the shoulder, up and
 -- back, then down and forward, the elbow and wrist lagging so the membrane follows. Each downbeat throws the storm off
 -- the wings: crescent wind streaks and driven snow from the membrane and the tips, travelling inward along the sweep,
--- meeting in the middle and churning up into a cloud. The Default's wall is thinned, and cut where it would pass in
--- front of a dragon, so both dragons stand in clear air and the zone stays no heavier than the Default's.
+-- meeting in the middle and churning up into a cloud. The Default's wall keeps its rate and is cut only in a narrow
+-- pocket where it would pass in front of a dragon, so both dragons stand in clear air (2026-10-19, audit P5A-05).
 ----------------------------------------------------------------------------------------------------
 local BZ = { Rate = 1.2, Down = 0.42, Stroke = math.rad(75), Mid = math.rad(7.5), Sweep = math.rad(16), Elbow = 0.25,
 	Wrist = 0.3, LagE = 0.07, LagW = 0.13, Back = math.rad(15), Elev = math.rad(5), Speed = 27, Life = 1.05, Beams = 16,
-	Pocket = math.rad(45), WallKeep = 0.4, InnerKeep = 0.6, Snow = 7, Powder = 1.5, Meet = { Powder = 6, Flakes = 5 },
+	Pocket = math.rad(15), WallKeep = 1, InnerKeep = 1, Snow = 7,   -- (2026-10-19, audit P5A-05: was 45 deg, 0.4, 0.6) Powder = 1.5, Meet = { Powder = 6, Flakes = 5 },
 	Bob = 0.125, BobH = 12.97 }                       -- (the heavy hover: a share of the body's height, 12.97 studs at 1x)
 local WSEG = { "A", "B", "C" }
 local TIP = Vector3.new(-2.18, 1.27, -1.29)          -- the open wing's outermost point, from the wrist (R side; L mirrored)
@@ -889,9 +914,11 @@ function DFX.Storm(s, c, R, form, caster)
 		workspace:BulkMoveTo(parts, cframes, Enum.BulkMoveMode.FireCFrameChanged)
 	end
 
-	-- the Default's wall thinned, and cut out where it would stream in front of a dragon (a pocket of clear air round
-	-- each); its inside snow shortened so none drifts out over a dragon; its sweeping gust lines off (the wings make the
-	-- wind now). The live count is kept below the Default's (Folder attributes, for the test).
+	-- the Default's wall cut out only where it would stream in front of a dragon (a narrow pocket of clear air round each,
+	-- BZ.Pocket); its inside snow shortened so none drifts out over a dragon; its sweeping gust lines off (the wings make
+	-- the wind now). (2026-10-19, audit P5A-05) the wall used to be thinned to 40% and cut over half the ring, so the
+	-- zone hid far less than the Default's: the manual's "a skin never changes effect intensity" (655). The rest of the
+	-- wall now keeps the Default's rate, so DragonLive (Folder attributes, for the test) runs above DefaultLive.
 	local before, after = 0, 0
 	for _, b in ipairs(s.Folder:GetDescendants()) do
 		if b:IsA("Beam") then b.Enabled = false end
@@ -1130,7 +1157,7 @@ end
 -- it, and two scale chips dropping beside it, tumbling and fading. Low count, pooled.
 ----------------------------------------------------------------------------------------------------
 local printPool, chipPool = {}, {}
-function DFX.Print(cf, PR)
+function DFX.Print(cf, PR, thin)
 	if not (FD and FD.Built and FD.Kind("Print") and FD.Kind("Plate")) then return end
 	local folder = H.fxFolder()
 	local o = table.remove(printPool) or FD.New("Print")
@@ -1139,7 +1166,7 @@ function DFX.Print(cf, PR)
 	FD.Fade(o, 0)
 	local K = cf * CFrame.new(0, 0.02, 0) * CFrame.Angles(0, rng:NextNumber(-0.25, 0.25), 0)
 	local chips = {}
-	for q = 1, 2 do
+	for q = 1, (thin and 0 or 2) do                          -- (2026-10-19, audit P5A-12) thinned: the print only
 		local ch = table.remove(chipPool) or FD.New("Plate")
 		if ch then
 			FD.Parent(ch, folder)
@@ -1248,6 +1275,16 @@ function DFX.CageDrop(cage)
 		if not p.Gone then FD.Drop(p.O) p.Gone = true end
 	end
 	L.List, L.Plates = {}, {}
+end
+
+--- the kit let go of its meshes (2026-10-19, MeshBudget): every pooled piece here goes with it
+function DFX._release()
+	for _, s in ipairs(snapPool) do FD.Drop(s.Head) FD.Drop(s.Jaw) end
+	for _, o in ipairs(printPool) do FD.Drop(o) end
+	for _, o in ipairs(chipPool) do FD.Drop(o) end
+	table.clear(snapPool)
+	table.clear(printPool)
+	table.clear(chipPool)
 end
 
 return DFX

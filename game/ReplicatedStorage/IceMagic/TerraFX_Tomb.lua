@@ -39,6 +39,13 @@
 	the break faces (the flare) take their place, biggest pieces first. Somebody else's Tomb (not yours, not on you) draws
 	at MaxPartsThin.
 
+	WRAPS (2026-10-25, the ladder's round 2; each on its own skin field, so Default and Obsidian Magma are as before): the
+	heap, the boulders, the clod, the pebbles and the chips in the wrap's material (Stone, ChargedRock's grey copies,
+	prewarmed when the cast's look is made), Epic crystals on the pieces (CrystalsBaked: a fifth part kind, "Crystal",
+	granted from the same budget), Mythic molten break faces (Core, in ChargedRock), the burst's ground ring (Shock) and
+	star embers rising off the risen pillar (Drift; not on your own Tomb). The gap, the head, the mark and the mouth stay
+	Default: they are the telegraph.
+
 	OUT OF SCOPE here (contract section 0.7): the caster's poses, the hitpause, the film's 0.06 s later burst (the live
 	burst time is kept), any server change.
 ]]
@@ -124,6 +131,8 @@ Tomb.Tuning = {
 	Late = 0.35,            -- a one-shot beat this late (a late join) is skipped
 	LevelHz = 30,           -- charged-rock writes a second, outside the flares
 	FPThin = 0.3,           -- first person: the dust at your own chest drawn at this share (it sits at the lens)
+	-- (2026-10-25, round 2) a Mythic wrap's Drift (TerraWrap.DriftSet): its host round the heap, this far over the slab's top
+	DriftSize = Vector3.new(4.4, 5, 4.4), DriftUp = 2.6,
 
 	-- SHAKES: the film's (amp, decay), through the Viewmodel's own path; others' by distance out to ShakeReach
 	ShakeReach = 40,
@@ -139,7 +148,9 @@ local LIVE_DEFAULT = {
 	EncaseEruptTime = 0.18,
 }
 
-local KINDS = { "Stone", "Brk", "Lit", "Dead" }
+-- (2026-10-25, round 2) "Crystal": an Epic wrap's crystal on a piece (ChargedRock CrystalsBaked) -- hidden, shown and
+-- moved like the strips; Default and every other wrap have none, so nothing changes for them
+local KINDS = { "Stone", "Brk", "Lit", "Dead", "Crystal" }
 local DISC = { Kick = true, Skirt = true, Haze = true }
 
 ----------------------------------------------------------------------------------------------------
@@ -572,7 +583,7 @@ local function placePiece(pc, cf)
 	local s = pc.Stone
 	if s.Parent then move(s, cf) end
 	local rel = pc.Rel or {}
-	for i = 2, 4 do
+	for i = 2, #KINDS do
 		local p = pc[KINDS[i]]
 		if p and p.Parent then move(p, cf * (rel[p] or CFrame.new())) end
 	end
@@ -583,7 +594,7 @@ end
 local function placeNow(pc, cf)
 	pc.Stone.CFrame = cf
 	local rel = pc.Rel or {}
-	for i = 2, 4 do
+	for i = 2, #KINDS do
 		local p = pc[KINDS[i]]
 		if p then p.CFrame = cf * (rel[p] or CFrame.new()) end
 	end
@@ -643,15 +654,26 @@ end
 --- `count` particles of `kind` at `at` (a Disc kind from the host's rim, `radius` across it; the rest from its centre,
 --- along its Up), sized by `scale` -- Aftershock's asBurst on this cast's own host. `tag` + `extra` make an emitter of
 --- their own (wider or faster grit).
-local function puff(fx, kind, at, count, scale, radius, tag, extra)
+local function puff(fx, kind, at, count, scale, radius, tag, extra, min)
 	local h = fx.Host
 	if not (h and h.Parent) or count <= 0 then return end
 	h.CFrame = typeof(at) == "CFrame" and at or CFrame.new(at)
 	if radius then h.Size = Vector3.new(radius * 2, 0.2, radius * 2) end
 	scale = math.max(0.1, math.floor((scale or 1) * 10 + 0.5) / 10)
 	local key = kind .. (tag or "") .. "@" .. scale
+	-- (2026-10-25) a wrap's Dust (SkinCatalog Dust) recolours the kind's Default dust roles, its sequence kept
+	-- (ChargedRock.DustColor), merged into a COPY of `extra` (WIDE and BLAST are shared). fx.Emitters is this cast's
+	-- own; the wrap's key in the emitter's is belt and braces.
+	local dw = fx.Wrap and fx.Wrap.Skin.Dust and fx.Wrap
+	if dw then key ..= "#" .. dw.Key end
 	local pe = fx.Emitters[key]
 	if not pe then
+		local cs = dw and not (extra and extra.Color) and CR.DustColor(dw, "A", kind)
+		if cs then
+			local merged = { Color = cs }
+			for f, v in pairs(extra or {}) do merged[f] = v end
+			extra = merged
+		end
 		local ok, res = pcall(VFXLibrary.AftershockBurst, DISC[kind] and h or fx.Point, kind, 0, fx.Thin, extra)
 		if not (ok and res) then return end
 		pe = res
@@ -668,8 +690,15 @@ local function puff(fx, kind, at, count, scale, radius, tag, extra)
 		fx.Emitters[key] = pe
 	end
 	local density = (Settings.EffectDensity or 1) * ((fx.Thin and Settings.ThinEnemyVFX) and 0.5 or 1)
-	local n = math.floor(count * density + 0.5)
+	local n = math.max(min or 0, math.floor(count * density + 0.5))   -- (`min`: a telegraph's floor, 2026-10-19 P5B-07)
 	if n > 0 then pe:Emit(n) end
+	-- (2026-10-25) a wrap's added Layers (Rare+): each layer's Share.Tomb of this puff's own count, from TerraWrap's
+	-- pooled hosts at `at` (the raw count: TerraWrap applies Graphics Quality and Reduce Enemy VFX itself, once)
+	local sk = fx.Wrap and fx.Wrap.Skin
+	if sk and sk.Layers then
+		local TW = CR.TerraWrap()
+		if TW then pcall(TW.LayerBurst, sk, "Tomb", count, nil, at, fx.Thin) end
+	end
 end
 
 local BOILS = { 0.1, 0.25, 0.4 }    -- s after the tear: the hole boils dust as the slab leaves it
@@ -710,6 +739,9 @@ local function newFx(character, victim, L)
 		Queue = {}, Beats = {}, Emitters = {}, StonesLeft = 0, LevelAt = 0 }
 	fx.Thin = character ~= me and not fx.Mine
 	fx.Budget = fx.Thin and TU.MaxPartsThin or TU.MaxParts
+	-- (2026-10-25, round 2) a wrap's Stone: the kit's grey copies queued now (ChargedRock; cheap once they are built) --
+	-- the pieces the cast clones ahead ask for theirs first
+	if fx.Wrap and fx.Wrap.Skin.Stone and type(CR.Prewarm) == "function" then pcall(CR.Prewarm, L.Kit) end
 	local folder = Instance.new("Folder")
 	folder.Name = "EarthenTomb"
 	folder.Parent = fxFolder()
@@ -731,6 +763,7 @@ local function teardown(fx, abrupt)
 	if fx.Dead then return end
 	fx.Dead = true
 	if tombs[fx.Character] == fx then tombs[fx.Character] = nil end
+	if fx.Drift then pcall(function() fx.Drift.E.Rate = 0 end) end   -- (2026-10-25, round 2: the folder takes its host)
 	local owned = {}
 	for pc in pairs(fx.Owned) do owned[#owned + 1] = pc end
 	for _, pc in ipairs(owned) do releasePiece(fx, pc) end
@@ -802,6 +835,9 @@ local function addScuff(fx, pos, footprint)
 	d.Face = Enum.NormalId.Top
 	d.Texture = TU.ScuffTexture
 	d.Transparency = 1
+	-- (2026-10-25) a wrap's Scuff (SkinCatalog Scuff) tints the print: Decal.Color3 multiplies the texture
+	local tone = fx.Wrap and fx.Wrap.Skin.Scuff
+	if typeof(tone) == "Color3" then d.Color3 = tone end
 	d.Parent = p
 	show(fx, p)
 	fx.Scuffs[#fx.Scuffs + 1] = { Part = p, Decal = d, Born = fx.LT }
@@ -889,21 +925,31 @@ end
 --- Dead. Only the first `room` entries are ever granted, so a strip planned in never loses its place to one planned out.
 local function planStrips(fx, after, room)
 	local q = {}
+	-- (2026-10-25, round 2) an Epic wrap's crystals (ChargedRock CrystalsBaked) take the same room: after the Lit strips,
+	-- ahead of the Dead; on your own Tomb none on the boulders or the rings round your head (they would sit at the lens)
+	local cw = fx.Wrap and type(fx.Wrap.Skin.CrystalsBaked) == "table" and type(CR.HasCrystal) == "function" and fx.Wrap
 	for _, it in ipairs(fx.Items) do
 		local P = it.P
+		local cry = cw and not (fx.Mine and (it.Boulder or (it.Rock and it.Rock.L.Ring >= 3)))
+			and CR.HasCrystal(cw, fx.L.Kit, it.Name)
 		if not after then
 			if it.Boulder then
 				if P.HasLit then q[#q + 1] = { It = it, Kind = "Lit", W = 10 + P.VolN } end
 				if P.HasDead then q[#q + 1] = { It = it, Kind = "Dead", W = 4 + P.VolN } end
+				if cry then q[#q + 1] = { It = it, Kind = "Crystal", W = 8 + P.VolN } end
 			else
 				local f = it.Rock.Facing or 0
 				if P.HasLit then q[#q + 1] = { It = it, Kind = "Lit", W = 5 + 2 * f + P.VolN * 0.1 } end
 				if P.HasDead then q[#q + 1] = { It = it, Kind = "Dead", W = 2 + 2 * f + P.VolN * 0.1 } end
+				if cry then q[#q + 1] = { It = it, Kind = "Crystal", W = 4.5 + 2 * f + P.VolN * 0.1 } end
 			end
 		elseif it.Flyer and it.PC and not it.Gone then
 			if P.HasBrk then q[#q + 1] = { It = it, Kind = "Brk", W = (it.Boulder and 20 or 12) + P.VolN } end
 			if P.HasLit and not (it.PC.Lit and it.PC.Lit.Parent) then q[#q + 1] = { It = it, Kind = "Lit", W = 6 + P.VolN } end
 			if P.HasDead then q[#q + 1] = { It = it, Kind = "Dead", W = 3 + P.VolN } end
+			if cry and not (it.PC.Crystal and it.PC.Crystal.Parent) then
+				q[#q + 1] = { It = it, Kind = "Crystal", W = 8 + P.VolN }
+			end
 		end
 	end
 	table.sort(q, function(a, b) return a.W > b.W end)
@@ -955,7 +1001,8 @@ local function updateLevels(fx, now)
 	local reduce = Settings.Get and Settings.Get("ReduceFlashing")
 	local function apply(it)
 		local pc = it.PC
-		if pc and not it.Gone and fx.Owned[pc] and pc.Stone.Parent and (pc.Lit or pc.Brk) then
+		-- (2026-10-25, round 2: an Epic crystal breathes in SetLevel too -- a piece with one but no strip is levelled)
+		if pc and not it.Gone and fx.Owned[pc] and pc.Stone.Parent and (pc.Lit or pc.Brk or pc.Crystal) then
 			local lv = levelOf(fx, it)
 			if reduce and lv > 0 then lv *= 0.5 end
 			CR.SetLevel(pc, lv, now)
@@ -979,8 +1026,39 @@ local function addSegment(fx, mid, d, run)
 	p.CFrame = cf - Vector3.new(0, 0.1, 0)
 	show(fx, p)
 	fx.Segments[#fx.Segments + 1] = { Part = p, CF = cf, Born = fx.LT }
-	puff(fx, "Landing", mid + Vector3.new(0, 0.2, 0), 1, 0.7)
-	puff(fx, "Grit", mid + Vector3.new(0, 0.1, 0), 2, 1)
+	-- (2026-10-19, audit P5B-07) the run's dust is its telegraph: at least one of each per segment, whatever the
+	-- Graphics Quality or Reduce Enemy VFX (at LOW + thinned both used to round to none)
+	puff(fx, "Landing", mid + Vector3.new(0, 0.2, 0), 1, 0.7, nil, nil, nil, 1)
+	puff(fx, "Grit", mid + Vector3.new(0, 0.1, 0), 2, 1, nil, nil, nil, 1)
+end
+
+-- (2026-10-19, audit P5B-07) the telegraph the port dropped (the old look's TR_Tomb_CrackHead and its Mark): a dark head
+-- at the crack's tip, a little wider than the gap, and a mark at the target's feet growing from MarkFrom to MarkTo
+-- studs across as the head closes in -- "it is about to reach you" reads with no dust at all. Plain parts, the gap's Void.
+local TELL = { HeadW = 0.55, HeadL = 1.1, HeadH = 0.14, MarkFrom = 1.4, MarkTo = 3.6, MarkT = 0.45 }
+local function tellStep(fx, goal)
+	if not fx.TellHead then
+		local h = inertPart()
+		h.Name, h.Color, h.Size = "TombHead", TU.Void, Vector3.new(TELL.HeadW, TELL.HeadH, TELL.HeadL)
+		local m = inertPart()
+		m.Name, m.Shape, m.Color, m.Transparency = "TombMark", Enum.PartType.Cylinder, TU.Void, TELL.MarkT
+		fx.TellHead, fx.TellMark = h, m
+		fx.TellDist = math.max(1, Vector3.new(goal.X - fx.From.X, 0, goal.Z - fx.From.Z).Magnitude)
+		show(fx, h)
+		show(fx, m)
+	end
+	local d = fx.Dir or Vector3.zAxis
+	fx.TellHead.CFrame = CFrame.lookAt(fx.HeadAt, fx.HeadAt + d) + Vector3.new(0, 0.05, 0)
+	local left = Vector3.new(goal.X - fx.HeadAt.X, 0, goal.Z - fx.HeadAt.Z).Magnitude
+	local r = TELL.MarkFrom + (TELL.MarkTo - TELL.MarkFrom) * (1 - math.clamp(left / fx.TellDist, 0, 1))
+	fx.TellMark.Size = Vector3.new(0.05, r, r)
+	fx.TellMark.CFrame = CFrame.new(goal + Vector3.new(0, 0.03, 0)) * CFrame.Angles(0, 0, math.pi / 2)
+end
+local function tellDrop(fx)
+	if not fx.TellHead then return end
+	destroyPart(fx, fx.TellHead)
+	destroyPart(fx, fx.TellMark)
+	fx.TellHead, fx.TellMark = nil, nil
 end
 
 --- Closes the gap back into the floor, head first, starting `delay` from now.
@@ -1118,6 +1196,7 @@ local function castStep(fx, now)
 			addSegment(fx, mid, d, fx.Run)
 			fx.Last = Vector3.new(nextAt.X, mid.Y, nextAt.Z)
 		end
+		tellStep(fx, goal)                                          -- (2026-10-19, audit P5B-07) the head and the mark
 	end
 	-- THE SPLIT round the feet as the head reaches them, and the pebbles rattling
 	local left = Vector3.new(goal.X - fx.HeadAt.X, 0, goal.Z - fx.HeadAt.Z).Magnitude
@@ -1307,7 +1386,7 @@ local function throwChips(fx, at)
 	local L = fx.L
 	if #L.Pebbles == 0 then return end
 	local rng = fx.FlyRng
-	local n = math.floor(TU.Chips * (Settings.EffectDensity or 1) * (fx.Thin and 0.5 or 1) + 0.5)
+	local n = math.floor(TU.Chips * (Settings.EffectDensity or 1) * ((fx.Thin and Settings.ThinEnemyVFX) and 0.5 or 1) + 0.5)   -- (2026-10-19, audit P5B-16)
 	for i = 1, n do
 		if fx.Count >= fx.Budget - (TU.Scuffs - fx.ScuffsMade) then break end
 		local pc = takePiece(fx, L.Pebbles[(i - 1) % #L.Pebbles + 1])
@@ -1354,6 +1433,16 @@ local function catchStep(fx, now, dt)
 		dy -= TU.ClodDepth * su * su
 	end
 	local slab = fx.CF * CFrame.new(0, TU.Lift + h + dy, 0) * CFrame.Angles(ax, ay, 0) * L.Turn
+	-- (2026-10-25, round 2) a Mythic Tomb's Drift rides the slab, on through the rise and the hold
+	local dr = fx.Drift
+	if dr then
+		move(dr.Host, slab * CFrame.new(0, TU.DriftUp, 0))
+		local on = (fx.State == "Rise" or fx.State == "Hold") and not fx.DescT0
+		if on ~= dr.On then
+			dr.On = on
+			pcall(function() dr.E.Rate = on and dr.Rate or 0 end)
+		end
+	end
 
 	-- THE TEAR (c = 0): the slab torn loose, dust off the seam, the hole's dark mouth
 	if beat(fx, "Tear", 0, c) then
@@ -1533,6 +1622,7 @@ frame = function(fx, now, dt)
 	cloneAhead(fx)
 	if fx.State == "Cast" then castStep(fx, now) end
 	if fx.Dead then return false end
+	if fx.State ~= "Cast" then tellDrop(fx) end                   -- (2026-10-19, audit P5B-07) gone on the catch or miss
 	segmentsStep(fx)
 	pebblesStep(fx, dt)
 	if fx.CatchT0 then
@@ -1687,6 +1777,27 @@ function Tomb.Catch(character, victim, at, face, T0, rise, height)
 	m.CFrame = fx.CF * CFrame.new(0, TU.Lift * 0.5, 0) * CFrame.Angles(0, 0, math.pi / 2)
 	show(fx, m)
 	fx.Mouth = m
+	-- (2026-10-25, round 2) MYTHIC Drift: star embers rising off the risen pillar -- TerraWrap's emitter on a host round
+	-- the heap (catchStep moves and rates it); never on your own Tomb (it would sit at the lens); gone with the folder
+	local sk = fx.Wrap and fx.Wrap.Skin
+	if sk and type(sk.Drift) == "table" and not fx.Mine and not fx.Drift then
+		local TW = CR.TerraWrap and CR.TerraWrap()
+		if TW and type(TW.DriftSet) == "function" then
+			local dh = inertPart()
+			dh.Name = "TombDrift"
+			dh.Transparency = 1
+			dh.Size = TU.DriftSize
+			dh.CFrame = fx.CF * CFrame.new(0, TU.Lift + TU.DriftUp, 0)
+			dh.Parent = fx.Folder
+			local ok, pe = pcall(TW.DriftSet, sk, dh, fx.Thin)
+			if ok and typeof(pe) == "Instance" and pe:IsA("ParticleEmitter") then
+				fx.Drift = { Host = dh, E = pe, Rate = pe.Rate, On = false }
+				pe.Rate = 0
+			else
+				dh:Destroy()
+			end
+		end
+	end
 	-- the strips before the burst: what is left after every stone, the clod, the mouth and the chips' and scuffs' room
 	planStrips(fx, false, fx.Budget - #fx.Items - 2 - TU.ReserveFX)
 	ensureStepper()
@@ -1721,6 +1832,16 @@ function Tomb.Burst(character, position, hit)
 	puff(fx, "Haze", floor + Vector3.new(0, 0.3, 0), 3, 1, 4)
 	shake(fx, TU.ShakeBurst, chest)
 	shake(fx, TU.ShakeRumble, chest)
+	-- (2026-10-25, round 2) MYTHIC Shock: the burst's ring on the floor under the pillar (TerraWrap draws it by the
+	-- settings: thinner / off at LOW, no flash under Reduce Flashing)
+	local sk = fx.Wrap and fx.Wrap.Skin
+	local R = sk and type(sk.Shock) == "table" and type(sk.Shock.Radius) == "table" and tonumber(sk.Shock.Radius.Tomb)
+	if R and R > 0 then
+		local TW = CR.TerraWrap and CR.TerraWrap()
+		if TW and type(TW.Shockwave) == "function" then
+			pcall(TW.Shockwave, sk, CFrame.new(floor + Vector3.new(0, 0.03, 0)), R, fx.Thin)
+		end
+	end
 	throwChips(fx, chest)
 	planStrips(fx, true, fx.Budget - fx.Count - (TU.Scuffs - fx.ScuffsMade))
 end

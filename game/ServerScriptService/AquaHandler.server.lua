@@ -44,7 +44,8 @@
 	                 Fireball's; the release only ends the hold. Every bullet that lands knocks its target back (2026-09-25).
 
 	Server -> client (AbilityFX -> AquaClient): ("VFX", kind, data) on IceAbilityRemote -- Aqua* kinds to everyone, and
-	AquaPull / AquaKnock / AquaInterrupted to the one player they move.
+	AquaPull / AquaKnock / AquaInterrupted to the one player they move. AquaMawEnd / AquaTwinTideEnd { Character, T0 }
+	(2026-10-19, audit P5D-09) go to everyone when the server forgets a cast whose walls are still up (see liveWalls).
 ]]
 
 local Players = game:GetService("Players")
@@ -123,10 +124,56 @@ local function groundBelow(point, reach)
 	return hit and hit.Position or nil
 end
 
+--- (2026-10-19, audit P1-09) LINE OF SIGHT for an aimed spot (ZephyrGustPadServer's sightPoint, copied): the honest client
+--- can only pick a spot its camera sees, so the server asks the same -- from the caster's eye to the spot, or to a point a
+--- few studs over it (low cover in front of the spot does not hide it), nothing solid in between. Bodies never count; a
+--- Bulwark Wall does (Core.Blocked's rule). Returns the spot when seen, else the point just short of the first thing in the way.
+local SIGHT_RISES = { 0.5, 3, 5 }
+local function sightPoint(character, root, spot)
+	local head = character:FindFirstChild("Head")
+	local eye = head and head.Position or (root.Position + Vector3.new(0, 1.5, 0))
+	local list = { character }
+	local fx = Core.FxFolder()
+	if fx then list[#list + 1] = fx end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.RespectCanCollide = true
+	local stop
+	for _, rise in ipairs(SIGHT_RISES) do
+		local d = spot + Vector3.new(0, rise, 0) - eye
+		local len = d.Magnitude
+		if len < 0.5 then return spot end
+		local dir = d / len
+		stop = nil
+		for _ = 1, 8 do
+			params.FilterDescendantsInstances = list
+			local hit = workspace:Raycast(eye, d, params)
+			if not hit then break end
+			local depth = (hit.Position - eye):Dot(dir)
+			if depth >= len - Core.SameSurface then break end
+			local model = hit.Instance:FindFirstAncestorOfClass("Model")
+			if not (model and model:FindFirstChildOfClass("Humanoid")) or model:GetAttribute("WallOwner") then
+				stop = eye + dir * math.max(0, depth - 1)
+				break
+			end
+			list[#list + 1] = model
+		end
+		if not stop then return spot end
+	end
+	return stop
+end
+
 --- A spot the caster aimed at, held to `range` and put down on the floor.
+--- (2026-10-19, audit P1-09) ...and in the caster's sight: a floor behind a wall, or on the storey above or below, comes
+--- back to this side -- the floor under where the sight line stops (or that point itself, as an unfloored aim always was).
 local function aimedGround(root, target, range)
 	local spot = Core.ClampTarget(root, target, range)
-	return groundBelow(spot, 60) or spot
+	local ground = groundBelow(spot, 60) or spot
+	local seen = sightPoint(root.Parent, root, ground)
+	if seen ~= ground then
+		ground = groundBelow(seen - Vector3.new(0, 6, 0), 60) or seen   -- groundBelow starts 6 over the point: from `seen`
+	end
+	return ground
 end
 
 local function feetY(model)
@@ -194,6 +241,11 @@ local function launch(model, velocity)
 	local victim = Players:GetPlayerFromCharacter(model)
 	if victim then
 		tell(victim, "AquaKnock", { Velocity = velocity, Until = serverNow() + A.Sidearm.KnockTime })
+		-- (2026-10-19, audit P4-04 / P1-03) thrown by an enemy, until it lands: KnockedUntil (server time) -- not Updraft's air,
+		-- and the movement guard's fast ceiling. The hold, the arc's time up and down (the range dummy's own sum), and a margin
+		local g = math.max(workspace.Gravity, 1)
+		model:SetAttribute("KnockedUntil", math.max(serverNow() + A.Sidearm.KnockTime
+			+ math.clamp(2 * math.max(velocity.Y, 0) / g, 0.35, 1.4) + 0.3, model:GetAttribute("KnockedUntil") or 0))
 	elseif serverOwned(root) then
 		moveDummy(root, velocity, A.Sidearm.KnockTime, A.Sidearm.KnockForcePerMass)
 	elseif root.Anchored then
@@ -279,8 +331,12 @@ local function setRiding(player, on)
 	if not c then return end
 	if (c:GetAttribute("AquaRiding") == true) == on then return end
 	c:SetAttribute("AquaRiding", on or nil)
-	c:SetAttribute("PassiveActive", on)
-	c:SetAttribute("MoveSpeedMult", on and (1 + A.Current.SpeedBonus) or nil)
+	-- (2026-10-19, audit P4-20) off: the speed and the passive flag go only while they are still this passive's (Cryo's
+	-- Cold Momentum may have written its own since); AquaRiding always goes
+	if on or c:GetAttribute("MoveSpeedMult") == 1 + A.Current.SpeedBonus then
+		c:SetAttribute("PassiveActive", on)
+		c:SetAttribute("MoveSpeedMult", on and (1 + A.Current.SpeedBonus) or nil)
+	end
 end
 
 local function slip(humanoid, model, now)
@@ -354,7 +410,8 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local character, humanoid, root = Core.CanAct(player)
 	if not character then return end
 	local origin, dir, id = a.Origin, a.Dir, a.Id
-	if not (Core.ValidVector(origin) and Core.ValidVector(dir)) or type(id) ~= "number" or flat(dir).Magnitude < 0.1 then
+	-- (2026-10-19, audit P1-11) `id ~= id`: a NaN Id is no table key (the write below would throw)
+	if not (Core.ValidVector(origin) and Core.ValidVector(dir)) or type(id) ~= "number" or id ~= id or flat(dir).Magnitude < 0.1 then
 		return
 	end
 	local R = A.Riptide
@@ -375,8 +432,8 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	-- the wave starts at the shooter's own body, allowing for the server's copy of a moving player trailing the real one
 	local ping = 0
 	pcall(function() ping = player:GetNetworkPing() end)
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	if (origin - root.Position).Magnitude > 6 + speed * (0.35 + ping) then
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	if (origin - root.Position).Magnitude > 6 + speed * (0.35 + Core.Lag(ping)) then
 		Core.CountShot("rej_origin")
 		return
 	end
@@ -457,7 +514,17 @@ remote.OnServerEvent:Connect(function(player, action, a)
 		return
 	end
 	if not humanoid then
+		-- 2026-10-23: one world hit per wave (it breaks once): a resent wall hit scored a board again and again
+		if shot.World then
+			Core.CountShot("rej_repeat")
+			return
+		end
+		shot.World = true
 		Core.CountShot("hit_world")
+		-- (2026-10-20) the world hit's announcement, as every other M1 makes it, for the Training Ground's TargetBoards.
+		-- (2026-10-21) The shooter's AquaFX.Riptide now reports the wall its wave breaks on (OnWorld), and looks for one at
+		-- the crest as well as the knee, so the wave breaks on a board's plate (2 studs up) instead of running under it.
+		Core.ShotImpact:Fire(part, position, player)
 		return                                      -- the wave breaks on the world client-side; nothing to apply here
 	end
 	if shot.Hit[model] then
@@ -470,6 +537,13 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local ground = root and groundBelow(Vector3.new(root.Position.X, (feet or root.Position.Y) + 1, root.Position.Z), 12)
 	if feet and ground and feet - ground.Y > R.Height + R.HeightSlack then
 		Core.CountShot("rej_over")
+		return
+	end
+	-- only a PAID wave hurts (2026-10-19, audit P1-12 / GC-14), asked once per wave: a pierce is one shot
+	if shot.Paid == nil then shot.Paid = Core.TakePaidM1(player) end
+	if not shot.Paid then
+		mine[a.Id] = nil
+		Core.CountShot("rej_unpaid")
 		return
 	end
 	Core.CountShot("hit")
@@ -490,13 +564,17 @@ end)
 local ROLES = { "M1", "Primary", "Mobility", "Defense", "Ultimate" }
 
 --- End whatever the body is holding (its cooldown starts, as a release would start it) and refuse casts a moment.
+--- A longer interrupt already running (Terra's Aftershock) is not shortened.
 local function interrupt(victim)
 	local c = victim.Character
 	if not c then return end
 	for _, role in ipairs(ROLES) do
-		if c:GetAttribute("Holding_" .. role) then releaseHold:Fire(victim, role) end
+		-- (2026-10-19, audit P4-05) the reason rides along, so a kit whose release IS its attack (Scorching Lash) can
+		-- end the hold without striking; a listener that does not read it treats this as the release it always was
+		if c:GetAttribute("Holding_" .. role) then releaseHold:Fire(victim, role, "Interrupted") end
 	end
-	local untilT = serverNow() + A.Undertow.InterruptTime
+	-- (2026-10-19, audit P3-12) the later of the two ends, as TerraHandler.interruptVictim writes it
+	local untilT = math.max(serverNow() + A.Undertow.InterruptTime, c:GetAttribute("InterruptedUntil") or 0)
 	c:SetAttribute("InterruptedUntil", untilT)
 	tell(victim, "AquaInterrupted", { Until = untilT })
 end
@@ -542,6 +620,10 @@ local function snapUndertow(player, character, eye, look, center)
 				local victim = Players:GetPlayerFromCharacter(model)
 				if victim then
 					tell(victim, "AquaPull", { Caster = character, Center = center, Until = serverNow() + U.PullTime + 0.1 })
+					-- (2026-10-19, audit P4-04 / P1-03) carried by an enemy at up to PullMaxSpeed: KnockedUntil past the pull and
+					-- its little hop's fall, as Cyclone's pull stamps it (not Updraft's air; the movement guard's fast ceiling)
+					model:SetAttribute("KnockedUntil",
+						math.max(serverNow() + U.PullTime + 0.1 + 0.8, model:GetAttribute("KnockedUntil") or 0))
 					interrupt(victim)
 				elseif serverOwned(root) then
 					local v = flat(center - root.Position) / U.PullTime
@@ -576,6 +658,38 @@ local function castUndertow(player, character, humanoid, root, payload)
 end
 
 ----------------------------------------------------------------------------------------------------
+-- the solid walls every client draws (Twin Tide, Leviathan's Maw) -- (2026-10-19, audit P5D-09)
+----------------------------------------------------------------------------------------------------
+-- Each client builds its own colliders and keeps them to the cast's own end. When the server forgets a cast early (a
+-- round reset, leaving the arena, the caster leaving the game), every client is told, so nobody respawned or teleported
+-- beside a tank stays walled in by an ability that no longer exists: AquaMawEnd / AquaTwinTideEnd { Character, T0 }.
+-- (A client with no handler for them ignores them.)
+local liveWalls = {}          -- [player] = { { Kind, Character, T0, Until (os.clock) } }
+
+local function noteWalls(player, endKind, character, t0, life)
+	local list = liveWalls[player]
+	if not list then
+		list = {}
+		liveWalls[player] = list
+	end
+	local now = os.clock()
+	for i = #list, 1, -1 do
+		if now > list[i].Until then table.remove(list, i) end
+	end
+	list[#list + 1] = { Kind = endKind, Character = character, T0 = t0, Until = now + life }
+end
+
+local function endWalls(player)
+	local list = liveWalls[player]
+	liveWalls[player] = nil
+	if not list then return end
+	local now = os.clock()
+	for _, w in ipairs(list) do
+		if now <= w.Until then broadcast(w.Kind, { Character = w.Character, T0 = w.T0 }) end
+	end
+end
+
+----------------------------------------------------------------------------------------------------
 -- TECHNIQUE: TWIN TIDE
 ----------------------------------------------------------------------------------------------------
 local function castTwinTide(player, character, humanoid, root, payload)
@@ -584,13 +698,15 @@ local function castTwinTide(player, character, humanoid, root, payload)
 	local axis = flat(center - root.Position)
 	if axis.Magnitude < 1 then axis = flat(root.CFrame.LookVector) end
 	axis = axis.Unit
-	broadcast("AquaTwinTide", { Character = character, Center = center, Axis = axis, T0 = serverNow() })
+	local t0 = serverNow()
+	broadcast("AquaTwinTide", { Character = character, Center = center, Axis = axis, T0 = t0 })
+	noteWalls(player, "AquaTwinTideEnd", character, t0, W.CloseTime + W.HoldTime + W.SinkTime)   -- (2026-10-19, audit P5D-09)
 	-- the lane is flooded from the cast until WetLife past the sink
 	local life = W.CloseTime + W.HoldTime + W.SinkTime + A.Current.WetLife
 	addStrip(player, center - axis * (W.Length / 2), center + axis * (W.Length / 2), W.StartGap / 2, 1e6, center.Y, life)
 	local epoch = Core.Epoch(player)
 	task.delay(W.CloseTime, function()
-		if Core.Epoch(player) ~= epoch then return end
+		if Core.Epoch(player) ~= epoch or not player.Parent then return end   -- (2026-10-19, audit P5D-09: a caster gone)
 		local right = axis:Cross(Vector3.yAxis)
 		local crushed = {}
 		for hum, model in pairs(Core.HumanoidsNear(center + Vector3.new(0, W.Height / 2, 0), W.Length / 2 + W.Height, character)) do
@@ -627,7 +743,8 @@ local lastPuddle = {}         -- [player] = { At, Position }: the wet disks unde
 local function castSidearm(player, character, humanoid, root, payload)
 	if payload.Phase == "Start" then
 		local now = os.clock()
-		sidearmHolds[player] = { Start = now, Character = character, Held = true, Shots = 0, Tokens = 1, At = now }
+		sidearmHolds[player] = { Start = now, Character = character, Held = true, Shots = 0, Tokens = 1, At = now,
+			StartServer = serverNow() }                -- (2026-10-19, audit P1-13) to tell an interrupt after the press
 		broadcast("AquaSidearmHold", { Character = character, On = true, T0 = serverNow() })
 		return
 	end
@@ -643,14 +760,27 @@ end
 remote.OnServerEvent:Connect(function(player, action, a)
 	if action ~= "SidearmShot" or type(a) ~= "table" then return end
 	local S = A.Sidearm
-	local character, humanoid, root = Core.AliveCharacter(player)
+	-- (2026-10-19, audit P1-13) CanAct, as every other release handler asks: no shot while interrupted (Undertow,
+	-- Aftershock), burrowed or round-locked
+	local character, humanoid, root = Core.CanAct(player)
 	local h = sidearmHolds[player]
 	if not (character and h and h.Character == character) then
 		Core.CountShot("rej_nohold")
 		return
 	end
+	-- (2026-10-19, audit P1-13) an interrupt that landed after the press ended this hold: its drawn shot (whose window
+	-- outlasts InterruptTime) never leaves either. A press is refused while one runs, so any later stamp is newer.
+	if (character:GetAttribute("InterruptedUntil") or 0) > (h.StartServer or math.huge) then
+		Core.CountShot("rej_interrupted")
+		return
+	end
+	-- (2026-10-19, audit P1-13) the gun left the loadout since the press (a swap outside a duel)
+	if not VFXLibrary.TechniqueSlot(player, "Sidearm") then
+		Core.CountShot("rej_nohold")
+		return
+	end
 	local origin, dir, id = a.Origin, a.Dir, a.Id
-	if not (Core.ValidVector(origin) and Core.ValidVector(dir)) or type(id) ~= "number" or dir.Magnitude < 0.1 then return end
+	if not (Core.ValidVector(origin) and Core.ValidVector(dir)) or type(id) ~= "number" or id ~= id or dir.Magnitude < 0.1 then return end   -- (2026-10-19, audit P1-11) NaN
 	local now = os.clock()
 	local ts = VFXLibrary.ShotTimeScale()
 	local first = h.Shots == 0
@@ -684,8 +814,8 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local head = character:FindFirstChild("Head")
 	local ping = 0
 	pcall(function() ping = player:GetNetworkPing() end)
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	if (origin - (head and head.Position or root.Position)).Magnitude > 6 + speed * (0.35 + ping) then
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	if (origin - (head and head.Position or root.Position)).Magnitude > 6 + speed * (0.35 + Core.Lag(ping)) then
 		Core.CountShot("rej_origin")
 		return
 	end
@@ -775,6 +905,7 @@ remote.OnServerEvent:Connect(function(player, action, a)
 		if g then splashAt = g end
 	else
 		Core.CountShot("hit_world")
+		Core.ShotImpact:Fire(part, position, player)   -- (2026-10-20) a TargetBoard on the Training Ground scores it
 	end
 	-- (every client's own copy of the bullet splashes where it stops, so no splash is broadcast.) The wet ground under
 	-- the splashes: one disk per spot, not one per rapid bullet
@@ -791,7 +922,9 @@ end)
 local function castMaw(player, character, humanoid, root, payload)
 	local M = A.Maw
 	local center = aimedGround(root, payload.Target, M.Range)
-	broadcast("AquaMaw", { Character = character, Center = center, T0 = serverNow() })
+	local t0 = serverNow()
+	broadcast("AquaMaw", { Character = character, Center = center, T0 = t0 })
+	noteWalls(player, "AquaMawEnd", character, t0, M.EndTime)        -- (2026-10-19, audit P5D-09)
 	local start = os.clock()
 	addDisk(player, center, M.Radius, start + M.FloodTime, start + M.ReleaseTime + M.WetAfter)
 	local epoch = Core.Epoch(player)
@@ -805,7 +938,7 @@ local function castMaw(player, character, humanoid, root, payload)
 		return nil
 	end
 	task.delay(M.CloseTime, function()
-		if Core.Epoch(player) ~= epoch then return end
+		if Core.Epoch(player) ~= epoch or not player.Parent then return end   -- (2026-10-19, audit P5D-09: a caster gone)
 		local n = 0
 		for hum, model in pairs(Core.HumanoidsNear(center + Vector3.new(0, M.WallHeight / 2, 0), M.Radius + M.WallHeight, character)) do
 			if not Core.IsWall(model) and not Core.IsFriendly(player, model) and within(model, -0.5) then
@@ -817,7 +950,7 @@ local function castMaw(player, character, humanoid, root, payload)
 		broadcast("AquaMawTrapped", { Character = character, Center = center, Count = math.clamp(n, 1, M.MaxSharks) })
 	end)
 	task.delay(M.LungeTime, function()
-		if Core.Epoch(player) ~= epoch then return end
+		if Core.Epoch(player) ~= epoch or not player.Parent then return end
 		-- EVERY trapped enemy still inside gets a shark of its own (the owner: "if more than 1 person is in the shark tank,
 		-- more than 1 shark will appear and each will get hit separately"), nearest the centre first, up to MaxSharks;
 		-- anyone past the cap takes the surge instead
@@ -835,7 +968,7 @@ local function castMaw(player, character, humanoid, root, payload)
 		end
 		broadcast("AquaMawLunge", { Character = character, Center = center, Targets = list })
 		task.delay(M.BiteTime - M.LungeTime, function()
-			if Core.Epoch(player) ~= epoch then return end
+			if Core.Epoch(player) ~= epoch or not player.Parent then return end
 			local bitten = {}
 			for i, t in ipairs(targets) do
 				if t.Hum.Health > 0 and t.Model.Parent and within(t.Model, 2) then
@@ -896,6 +1029,7 @@ end)
 -- lifecycle
 ----------------------------------------------------------------------------------------------------
 local function forget(player)
+	endWalls(player)                              -- (2026-10-19, audit P5D-09) every client drops the walls it still has
 	shots[player] = nil
 	buckets[player] = nil
 	slugs[player] = nil

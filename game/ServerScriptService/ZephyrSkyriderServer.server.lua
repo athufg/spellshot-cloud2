@@ -39,7 +39,8 @@
 	the existing pattern (TerraHandler's / AquaHandler's): a PLAYER's body is its own client's, so it is SENT the throw
 	(SkyriderKnock { Velocity, Until, Caster }, to them alone); a dummy the server simulates takes a server mover for
 	KnockTime; a range dummy held Anchored is carried along the throw's arc and put back. A Bulwark Wall takes the
-	damage only. Updraft's knockback scale is NOT applied (the plan: it is not a passive hit). A round reset in between
+	damage only. Updraft's knockback scale is NOT applied (the plan: it is not a passive hit), nor its damage bonus
+	(NoUpdraft = true: 2026-10-19, audit P5E-10). A round reset in between
 	(CombatCore.Epoch) cancels the hits still on their way.
 
 	THE WOBBLE. Any hit that lands on a rider (CombatCore.OnHitLanded) broadcasts SkyriderHit { Caster, At, T0 } (At =
@@ -139,6 +140,25 @@ local function startRide(player, role, character, humanoid, root)
 	broadcast("SkyriderStart", { Caster = character, T0 = T0 })
 end
 
+-- PRECHECK (2026-10-19, audit P4-01): SpellshotService asks this BEFORE a press is paid (Precheck = true on the row),
+-- with startRide's own refusals, so a press that cannot fly costs and changes nothing. Before it, a modified client
+-- pressing while Entombed or rooted was paid (+6% Ultimate, no cooldown once given back) and TerraHandler counted the
+-- accepted Mobility press as the Tomb's escape. Gust Pad's arrangement: built whole, answer set first, parented last.
+do
+	local precheck = spellFolder:FindFirstChild("Precheck_" .. ID)
+	local fresh = not (precheck and precheck:IsA("BindableFunction"))
+	if fresh then
+		precheck = Instance.new("BindableFunction")
+		precheck.Name = "Precheck_" .. ID
+	end
+	precheck.OnInvoke = function(player)
+		local character, humanoid = Core.AliveCharacter(player)
+		if not character or player:GetAttribute("Zone") == "Hub" then return false end
+		return Skyrider.Stunned(character, humanoid) == nil and Core.CanAct(player) ~= nil
+	end
+	if fresh then precheck.Parent = spellFolder end
+end
+
 performCast.Event:Connect(function(player, role, ability, payload)
 	if type(ability) ~= "table" or ability.Id ~= ID then return end
 	payload = type(payload) == "table" and payload or {}
@@ -221,7 +241,9 @@ end
 local function strike(player, r, humanoid, model, vroot, dir, apex, epoch)
 	if Core.Epoch(player) ~= epoch then return end
 	if not (model.Parent and vroot.Parent and humanoid.Parent and humanoid.Health > 0) then return end
-	if not Core.DealDamage(player, humanoid, G.Damage, { From = apex, Ranged = true, Ability = ID }) then return end
+	-- (2026-10-19, audit P5E-10, an audit call the owner may reverse) NoUpdraft: a rider is always "airborne", so Updraft's x1.25 was a flat,
+	-- hidden +25% on every gust; the kit's own comment says the gust is not an Updraft hit
+	if not Core.DealDamage(player, humanoid, G.Damage, { From = apex, Ranged = true, Ability = ID, NoUpdraft = true }) then return end
 	local now = workspace:GetServerTimeNow()
 	broadcast("SkyriderGustHit", { Caster = r.Character, Victim = model, At = vroot.Position, T0 = now })
 	if Core.IsWall(model) then return end
@@ -238,6 +260,10 @@ local function strike(player, r, humanoid, model, vroot, dir, apex, epoch)
 		tell(victim, "SkyriderKnock", { Velocity = velocity, Until = now + G.KnockTime, Caster = r.Character })
 		local vr = rides[victim]
 		if vr then vr.KnockUntil = os.clock() + G.KnockTime + 0.6 + 2 * pingOf(victim) end   -- the speed check allows it
+		-- (2026-10-19, audit P4-04) thrown by someone else is not Updraft's air (ZephyrUpdraftServer): the throw, its fall
+		-- from the knock's apex, and a ping for the knock to reach them
+		local fall = math.clamp(2 * math.max(velocity.Y, 0) / workspace.Gravity, 0.35, 1.4)
+		model:SetAttribute("KnockedUntil", math.max(now + G.KnockTime + fall + 0.3, model:GetAttribute("KnockedUntil") or 0))
 	elseif serverOwned(vroot) then
 		moveDummy(vroot, velocity, G.KnockTime, G.KnockForcePerMass)
 	elseif vroot.Anchored then
@@ -269,7 +295,11 @@ local function launch(player, r, dir, epoch)
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p.Character then exclude[#exclude + 1] = p.Character end
 	end
-	for _, model in pairs(found) do exclude[#exclude + 1] = model end
+	-- ...but never a Bulwark Wall (2026-10-19, audit GC-03): it is a model with a Humanoid, so it was found -- and then
+	-- left out of its own line of sight, and the gust struck whoever stood behind "the one wall in the game"
+	for _, model in pairs(found) do
+		if not Core.IsWall(model) then exclude[#exclude + 1] = model end
+	end
 	local fx = Core.FxFolder()
 	if fx then exclude[#exclude + 1] = fx end
 	local params = RaycastParams.new()
@@ -282,7 +312,9 @@ local function launch(player, r, dir, epoch)
 			local along = d:Dot(dir)
 			if along > 0 and along <= G.Range + G.BodyPad then
 				local perp = (d - dir * along).Magnitude
-				if perp <= along * tanH + G.BodyPad and not workspace:Raycast(apex, d, params) then
+				local blocker = perp <= along * tanH + G.BodyPad and workspace:Raycast(apex, d, params)
+				-- (the wall's own body is no cover for the wall itself)
+				if perp <= along * tanH + G.BodyPad and not (blocker and not blocker.Instance:IsDescendantOf(model)) then
 					local delay = Skyrider.ConeTau(math.max(0.5, along - 0.9))
 					task.delay(delay, strike, player, r, humanoid, model, vroot, dir, apex, epoch)
 				end

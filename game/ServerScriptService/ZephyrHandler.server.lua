@@ -105,6 +105,13 @@ local function updraftAirborne(player)
 	if not (m and type(m.Holds) == "function" and type(m.IsAirborne) == "function") then return nil end
 	local ok, air = pcall(function() return m.Holds(player) and m.IsAirborne(player) end)
 	if not ok then return nil end
+	-- (2026-10-19, audit P4-04) air someone else put the body in is not Updraft's (ZephyrUpdraftServer's rule, `thrown`):
+	-- an Earthen Tomb holding it, or a knock or an enemy Cyclone still carrying it (KnockedUntil, server time)
+	local character = player.Character
+	if air == true and character and (character:GetAttribute("RX_Entombed") == true
+		or workspace:GetServerTimeNow() < (character:GetAttribute("KnockedUntil") or 0)) then
+		return false
+	end
 	return air == true
 end
 -- (no knockback here calls it yet: see the header. A new one is `velocity * updraftKnockScale(player)`.)
@@ -124,7 +131,6 @@ local function castWindBlade(player, character, humanoid, root, payload)
 	broadcast("WindBlade", {
 		Character = character, Side = (payload.Side == "L") and "L" or "R",
 		Stroke = (payload.Stroke == "Up") and "Up" or "Down", Dir = dir,
-		Shielded = character:GetAttribute("CinderShield") == true,
 	})
 end
 
@@ -139,7 +145,9 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local character, humanoid, root = Core.CanAct(player)          -- CanAct, not AliveCharacter: not from underground (2026-09-21)
 	if not character then return end
 	local origin, dir, id = a.Origin, a.Dir, a.Id
-	if not (Core.ValidVector(origin) and Core.ValidVector(dir)) or type(id) ~= "number" or dir.Magnitude < 0.1 then
+	-- id ~= id refuses a NaN Id (2026-10-19, audit P1-11): the write below raised "table index is NaN" (TerraHandler's fix)
+	if not (Core.ValidVector(origin) and Core.ValidVector(dir)) or type(id) ~= "number" or id ~= id
+		or dir.Magnitude < 0.1 then
 		return
 	end
 	local now = os.clock()
@@ -167,8 +175,8 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local head = character:FindFirstChild("Head")
 	local ping = 0
 	pcall(function() ping = player:GetNetworkPing() end)
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	if (origin - (head and head.Position or root.Position)).Magnitude > 6 + speed * (0.35 + ping) then
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	if (origin - (head and head.Position or root.Position)).Magnitude > 6 + speed * (0.35 + Core.Lag(ping)) then
 		Core.CountShot("rej_origin")
 		return
 	end
@@ -270,6 +278,15 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	-- line read healthy while no body was being cut -- the one number that would have shown this bug. hit_char is
 	-- bodies, hit_world is everything else, and a body hit that took nothing off now says why (rej_friendly:
 	-- Config.MayHurt or a team; dmg_soaked: a shield ate all of it).
+	-- a body is only cut by a PAID blade (2026-10-19, audit P1-12 / GC-14), asked once per blade: a pierce is one shot
+	if humanoid then
+		if shot.Paid == nil then shot.Paid = Core.TakePaidM1(player) end
+		if not shot.Paid then
+			mine[a.Id] = nil
+			Core.CountShot("rej_unpaid")
+			return
+		end
+	end
 	Core.CountShot("hit")
 	if humanoid then
 		Core.CountShot("hit_char")
@@ -292,7 +309,7 @@ end)
 ----------------------------------------------------------------------------------------------------
 -- PRIMARY: CROSS-SLASH DASH
 ----------------------------------------------------------------------------------------------------
--- HELD since 2026-09-17 (SpellshotService's held path, Heat Rush's arrangement). The press arrives as Phase
+-- HELD since 2026-09-17 (SpellshotService's held path). The press arrives as Phase
 -- "Start", already checked and paid for, with Holding_Primary set: the CHARGE. This refuses a body that cannot dash
 -- (frozen, or slowed under DashMinCap -- a root is a cap of 0: its cooldown starts at once and nothing is drawn, and that
 -- client drops its charge when no broadcast comes) and tells everyone (the held wind-up). Phase "Release" is the key
@@ -364,8 +381,8 @@ local function launchCrossSlash(player, character, humanoid, root, c, launch)
 	dir = dir.Unit
 	-- where it started: the client's claim, if the server's copy of the body could have been there
 	local start = launch.Start
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, humanoid.WalkSpeed)
-	if not Core.ValidVector(start) or (start - root.Position).Magnitude > 6 + speed * (0.35 + ping) then
+	local speed = Core.TrailSpeed(root, humanoid.WalkSpeed)
+	if not Core.ValidVector(start) or (start - root.Position).Magnitude > 6 + speed * (0.35 + Core.Lag(ping)) then
 		start = root.Position
 	end
 	local frame = ZephyrFX.CrossSlashFrame(Vector3.zero, dir)
@@ -441,7 +458,9 @@ remote.OnServerEvent:Connect(function(player, action, a)
 		Core.CountShot("rej_noshot")
 		return
 	end
-	local character, humanoid, root = Core.AliveCharacter(player)
+	-- (2026-10-19, audit P1-13) CanAct, not AliveCharacter: no strike while interrupted (Undertow, Aftershock), burrowed
+	-- or cast-locked by a round reset
+	local character, humanoid, root = Core.CanAct(player)
 	if not character or character ~= slash.Character then return end
 	local ping = 0
 	pcall(function() ping = player:GetNetworkPing() end)
@@ -463,10 +482,16 @@ remote.OnServerEvent:Connect(function(player, action, a)
 	local rel = origin - slash.Start
 	local along = rel:Dot(slash.Dir)
 	local off = rel - slash.Dir * along
-	local speed = math.max(root.AssemblyLinearVelocity.Magnitude, S.DashDistance / S.DashTime)
+	local speed = Core.TrailSpeed(root, S.DashDistance / S.DashTime)
 	if along < -3 or along > slash.Dist + 4 or math.abs(off:Dot(slash.Right)) > 4 or math.abs(off:Dot(slash.Up)) > 8
-		or (origin - root.Position).Magnitude > 6 + speed * (0.35 + ping) then
+		or (origin - root.Position).Magnitude > 6 + speed * (0.35 + Core.Lag(ping)) then
 		Core.CountShot("rej_origin")
+		return
+	end
+	-- (2026-10-19, audit GC-02) a glide through a Bulwark Wall strikes nothing: the wall stops the dash (DashMotor), so a
+	-- strike from its far side is a client that went through it, and every body it claims there is behind cover
+	if Core.WallBetween(slash.Start, origin) then
+		Core.CountShot("rej_wall")
 		return
 	end
 	-- a character the glide passed is only reported now, at the Trigger: it is checked against where the server had it
@@ -592,6 +617,47 @@ local function cycloneInReach(root, point)
 	return flatAway.Magnitude <= ABILITY.Cyclone.Range + T.Cyclone.RangeSlack
 end
 
+--- (2026-10-19, audit P1-09) LINE OF SIGHT for the aimed spot (PyroHandler's inSight, for the Ring of Fire). The honest
+--- client can only pick a spot its camera sees, so the server asks the same of its own copy of the world: from the
+--- caster's eye to the spot -- or to a point a few studs over it, so low cover in front of the spot does not hide it --
+--- nothing solid may stand in between. Bodies never count; a Bulwark Wall does (Core.Blocked's rule). A spot out of sight
+--- is grounded again from just short of the first thing in the way, so a spot through a wall, or on the storey above or
+--- below, comes back to this side of it. nil when there is no floor there either.
+local SIGHT_RISES = { 0.5, 3, 5 }
+local function inSight(character, root, spot)
+	local head = character:FindFirstChild("Head")
+	local eye = head and head.Position or (root.Position + Vector3.new(0, 1.5, 0))
+	local list = { character }
+	local fx = Core.FxFolder()
+	if fx then list[#list + 1] = fx end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.RespectCanCollide = true
+	local stop
+	for _, rise in ipairs(SIGHT_RISES) do
+		local d = spot + Vector3.new(0, rise, 0) - eye
+		local len = d.Magnitude
+		if len < 0.5 then return spot end
+		local dir = d / len
+		stop = nil
+		for _ = 1, 8 do
+			params.FilterDescendantsInstances = list
+			local hit = workspace:Raycast(eye, d, params)
+			if not hit then break end
+			local depth = (hit.Position - eye):Dot(dir)
+			if depth >= len - Core.SameSurface then break end
+			local model = hit.Instance:FindFirstAncestorOfClass("Model")
+			if not (model and model:FindFirstChildOfClass("Humanoid")) or model:GetAttribute("WallOwner") then
+				stop = eye + dir * math.max(0, depth - 1)
+				break
+			end
+			list[#list + 1] = model
+		end
+		if not stop then return spot end
+	end
+	return groundUnder(stop - Vector3.new(0, 2, 0), character)     -- groundUnder casts from 2 over the point it is given
+end
+
 -- THE TRAINING DUMMIES (2026-10-09): the range's dummies stand anchored (only the strafer walks), and an anchored body is
 -- not moved -- so one Cyclone lifted only the strafer, never the crowd round it. A caught anchored dummy is now unanchored
 -- for the ride (the server owns it, so it is moved here like any dummy), and DummyReturn seconds after the last Cyclone
@@ -681,6 +747,7 @@ local function castCyclone(player, character, humanoid, root, payload)
 	local C = T.Cyclone
 	local center = payload.Center
 	local ground = Core.ValidVector(center) and cycloneInReach(root, center) and groundUnder(center, character)
+	if ground then ground = inSight(character, root, ground) end     -- (2026-10-19, audit P1-09)
 	if not ground then
 		-- a spot that could not have been aimed at from here: nothing happens, and the Ultimate is given back
 		addUltCharge:Fire(player, 1)
@@ -723,6 +790,8 @@ remote.OnServerEvent:Connect(function(player, action, a)
 		ground = groundUnder(Vector3.new(p.X, math.max(ground.Y, cy.Center.Y) + 4, p.Z), character)
 		if not ground then return end
 	end
+	ground = inSight(character, root, ground)        -- (2026-10-19, audit P1-09) as the cast's own spot
+	if not ground then return end
 	cy.Center, cy.SteerAt = ground, now
 	broadcast("CycloneSteer", { Character = character, Center = ground })
 end)
@@ -773,6 +842,10 @@ local function pullCyclone(player, cy, now)
 				if held.Player and now - held.SentAt >= C.PullSend then
 					held.SentAt = now
 					local serverNow = workspace:GetServerTimeNow()
+					-- (2026-10-19, audit P4-04) juggled by an enemy is not Updraft's air: KnockedUntil runs past the pull's
+					-- hold by the fall from the juggle height (~0.6 s at this place's gravity), so the drop does not count
+					model:SetAttribute("KnockedUntil",
+						math.max(serverNow + C.PullHold + 0.8, model:GetAttribute("KnockedUntil") or 0))
 					pcall(function()
 						remote:FireClient(held.Player, "VFX", "CyclonePull", {
 							Caster = cy.Character, Center = cy.Center, Until = serverNow + C.PullHold,
@@ -827,7 +900,9 @@ local function stepCyclone(player, cy, now)
 	if now >= cy.NextTick then
 		cy.NextTick = now + C.TickInterval
 		for _, held in pairs(cy.Caught) do
-			if held.Humanoid.Health > 0 and Core.DealDamage(player, held.Humanoid, C.Damage, { From = cy.Center }) then
+			-- (2026-10-19, audit P4-13) a Bulwark Wall caught in it takes the damage and nothing else: no AIRBORNE tag
+			if held.Humanoid.Health > 0 and Core.DealDamage(player, held.Humanoid, C.Damage, { From = cy.Center })
+				and not Core.IsWall(held.Humanoid.Parent) then
 				Core.ApplyStatusTag(held.Humanoid, "Airborne", C.StatusTime)
 			end
 		end

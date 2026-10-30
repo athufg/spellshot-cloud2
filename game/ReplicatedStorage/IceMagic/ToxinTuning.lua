@@ -162,7 +162,9 @@ T.PatientZero = {
 
 -- TECHNIQUE: ANTITOXIN VENT (the Mobility half of the pool, where Overgrowth Vault was). A gas mask; on cast an instant
 -- cleanse of the caster's OWN poison, then zero self-damage from their own poison and free passage through their own
--- clouds while it is on. Own poison only: it never touches an enemy Toxin's poison.
+-- clouds while it is on. The cleanse and the immunity are own poison only. Since 2026-10-17 (DoTReduction, the owner's
+-- pick) the mask ALSO takes DoTReduction off every other DoT tick on the wearer -- enemy burn and enemy poison included;
+-- the manual and the diary still say "own poison only" (doc corrected here 2026-10-19, audit P6B-09).
 T.Vent = {
 	ManaCost = 20,             -- PROPOSAL
 	Cooldown = 16,             -- PROPOSAL (Antidote Cloak was 17)

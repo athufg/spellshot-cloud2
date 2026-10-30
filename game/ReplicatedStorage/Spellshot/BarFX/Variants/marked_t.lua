@@ -172,7 +172,7 @@ function V.mount(fx)
 		if onAt then
 			local e = now - onAt
 			local k = key(POP, e)
-			intro.Visible = e < 1.2
+			intro.Visible = e < 1.2 and not payAt   -- (2026-10-19, audit GA-16) a mark spent in its first 1.2 s: the payoff word alone (marked_a)
 			introS.Scale = k[2]
 			intro.Rotation = k[3]
 		end

@@ -6,7 +6,8 @@
 	requires this module and calls the API. Every number lives in ReplicatedStorage.Spellshot.EconomyConfig.
 
 	API
-	  PlayerData.AwardMatch(player, result, roundsWon)  result "win" | "loss" | "draw"; returns the Sparks paid (0 if refused)
+	  PlayerData.AwardMatch(player, result, roundsWon)  result "win" | "loss" | "draw"; returns the Sparks credited (0 if
+	                                                       refused or there is no profile)
 	  PlayerData.Owns(player, element)                   true / false. Before the save loads: the starter kit, never less
 	  PlayerData.AddSparks(player, n, reason)            returns the new balance (nil if refused); never below 0
 	  PlayerData.Unlock(player, element)                 grants an Element free (dev, events); true if newly owned
@@ -26,17 +27,19 @@
 	THE SAVE. DataStore "SpellshotPlayerData", key "p_<UserId>_v1" (a new shape gets a new key and migrates from this):
 	  { Version = 1, Sparks, Owned = { [element] = true }, Starter = { [element] = true },
 	    Purchases = { [purchaseId] = { P = productId, S = sparks, T = os.time() } }, PurchaseLog = { purchaseId, ... },
-	    Stats = { Wins, Losses, Draws, RoundsWon, Earned, Bought, Spent }, Created, Session = { Job, T } | nil }
+	    Stats = { Wins, Losses, Draws, RoundsWon, Earned, Bought, Spent }, Created, Session = { Job, Token, T } | nil }
 	  Starter is what the starter kit has ALREADY granted, per Element: a starter added to EconomyConfig later is given
 	  to everyone once, and one removed is never taken back. Every map is keyed by strings.
 
 	WRITES. Always UpdateAsync. Loaded on join (retries, each in a pcall), cached for the session, saved every AUTOSAVE
 	seconds, on leaving and in BindToClose; an unlock and a Robux purchase save at once. One write per player at a time.
 
-	THE SESSION LOCK. A save names the server holding it (Session.Job = game.JobId). A join that finds another server's
-	fresh lock waits and tries again -- that server is still writing the player's last moments -- and takes it anyway on
-	the last try, because a crashed server never lets go. A server that finds its lock taken stops writing that player,
-	so a stale copy can never overwrite a newer one. (Studio never waits: it takes the lock on the first try.)
+	THE SESSION LOCK. A save names the session holding it (Session.Token, one per profile; Session.Job too, for
+	reading). A join that finds another session's fresh lock waits and tries again -- that server is still writing the
+	player's last moments -- and takes it anyway on the last try, because a crashed server never lets go. A session that
+	finds the lock not its own (taken, or released) stops writing that player, so a stale copy can never overwrite a
+	newer one. (Studio never waits: it takes the lock on the first try.) Until 2026-10-19 the lock was the JobId, so a
+	player rejoining the SAME server raced their own leave save (audit P2-01); a rejoin now waits for that save too.
 
 	ROBUX. MarketplaceService.ProcessReceipt is set HERE and nowhere else. A receipt's PurchaseId is recorded in the
 	player's save in the same write that pays the Sparks, so a retried receipt pays nothing; PurchaseGranted is returned
@@ -54,12 +57,15 @@ local DataStoreService = game:GetService("DataStoreService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
 local folder = ReplicatedStorage:WaitForChild("Spellshot")
 local Config = require(folder:WaitForChild("SpellshotConfig"))
 local Economy = require(folder:WaitForChild("EconomyConfig"))
 
 local STORE_NAME = "SpellshotPlayerData"
+-- 2026-10-23: Studio Play saves to its own test store (Config.Dev.StudioTestSave), never the real one; live is unchanged
+if RunService:IsStudio() and Config.Dev.StudioTestSave ~= false then STORE_NAME = "SpellshotPlayerData_StudioTest" end
 local KEY = "p_%d_v1"
 local SCHEMA = 1
 local AUTOSAVE = 60            -- seconds between background saves (each also refreshes the session lock)
@@ -95,7 +101,17 @@ local function blank()
 	}
 end
 
+local function copy(t)
+	if type(t) ~= "table" then return t end
+	local c = {}
+	for k, v in pairs(t) do c[k] = copy(v) end
+	return c
+end
+
 --- A saved table (or nil) as a whole, valid current-shape one: every field present, every key a string.
+--- (2026-10-19, audit P2-16) a top-level field (or a Stats counter) this build does not know is CARRIED THROUGH, not
+--- dropped: a newer build may add one under the same key, and an older server still running would otherwise delete it
+--- the moment that player joined it.
 local function normalise(old)
 	local d = blank()
 	if type(old) ~= "table" then return d end
@@ -120,15 +136,19 @@ local function normalise(old)
 	end
 	if type(old.Stats) == "table" then
 		for k in pairs(d.Stats) do d.Stats[k] = tonumber(old.Stats[k]) or 0 end
+		for k, v in pairs(old.Stats) do
+			if type(k) == "string" and d.Stats[k] == nil then d.Stats[k] = copy(v) end
+		end
+	end
+	for k, v in pairs(old) do
+		if type(k) == "string" and d[k] == nil and k ~= "Session" then d[k] = copy(v) end
 	end
 	return d
 end
 
-local function copy(t)
-	if type(t) ~= "table" then return t end
-	local c = {}
-	for k, v in pairs(t) do c[k] = copy(v) end
-	return c
+--- (2026-10-19, audit P2-16) a record written by a NEWER schema than this server's: never normalised or written here.
+local function tooNew(old)
+	return type(old) == "table" and (tonumber(old.Version) or 0) > SCHEMA
 end
 
 --- The starter kit, once per Element. True if it gave anything.
@@ -146,6 +166,9 @@ end
 
 local function newProfile()
 	return {
+		-- (2026-10-19, audit P2-01 / P2-02) the lock's owner is THIS PROFILE, not this server: a player who rejoins the
+		-- same server gets a new profile, and with a JobId lock the new load and the old leave save never saw each other
+		token = HttpService:GenerateGUID(false),
 		data = nil,            -- the save, once loaded
 		loaded = false,
 		persist = false,       -- false: memory only (Studio without API access)
@@ -187,35 +210,50 @@ local function keyOf(player)
 	return string.format(KEY, player.UserId)
 end
 
---- Whether a stored value is held by ANOTHER live server.
-local function heldElsewhere(old)
+--- Whether a stored value is held by ANOTHER live session -- another server, or (2026-10-19, audit P2-01) an older
+--- profile of the same player on THIS server whose leave save has not landed yet. A lock is a session token now; one
+--- written before the token (Job only) is anyone else's until it goes stale, as a foreign server's always was.
+local function heldElsewhere(old, token)
 	if type(old) ~= "table" or type(old.Session) ~= "table" then return false end
-	if old.Session.Job == game.JobId then return false end
+	if old.Session.Token ~= nil and old.Session.Token == token then return false end
 	return os.time() - (tonumber(old.Session.T) or 0) < LOCK_STALE
 end
 
 --- Returns data, mode: mode "store" (loaded and locked), "memory" (Studio without API access) or "failed".
-local function loadData(player)
-	if memoryOnly or not store then
-		memoryOnly = true
+local function loadData(player, prof)
+	if memoryOnly then
 		warnOnce("no DataStore")
 		return blank(), "memory"
+	end
+	if not store then
+		-- (2026-10-19, audit P2-04) a LIVE server without its store is a failed load, never memory-only: memory-only
+		-- reported every save a success, so ProcessReceipt granted Robux packs that were never written. Ask again.
+		local ok, s = pcall(function() return DataStoreService:GetDataStore(STORE_NAME) end)
+		store = ok and s or nil
+		if not store then
+			warn("[PlayerData] the DataStore is unavailable on this live server: " .. tostring(s))
+			return nil, "failed"
+		end
 	end
 	-- Studio takes the lock at once: every Play session has its own JobId, and a stopped one that did not let go would
 	-- otherwise make the next Play wait LOCK_WAIT x LOAD_TRIES on the starter kit
 	local force = RunService:IsStudio()
 	for try = 1, LOAD_TRIES do
 		if not player.Parent then return nil, "failed" end
-		local claimed, held = nil, false
+		local claimed, held, newer = nil, false, false
 		local ok, err = pcall(function()
 			store:UpdateAsync(keyOf(player), function(old)
-				claimed, held = nil, false
-				if not force and heldElsewhere(old) then
+				claimed, held, newer = nil, false, false
+				if tooNew(old) then
+					newer = true
+					return nil                        -- a newer build's record: this server leaves it untouched
+				end
+				if not force and heldElsewhere(old, prof.token) then
 					held = true
 					return nil                        -- leave it as it is: its server is still writing
 				end
 				local d = normalise(old)
-				d.Session = { Job = game.JobId, T = os.time() }
+				d.Session = { Job = game.JobId, Token = prof.token, T = os.time() }
 				claimed = d
 				return d
 			end)
@@ -223,6 +261,10 @@ local function loadData(player)
 		if ok and claimed then
 			claimed.Session = nil                     -- the lock lives in the store, not in the session's copy
 			return claimed, "store"
+		end
+		if ok and newer then
+			warn(("[PlayerData] %s's save is from a newer schema than this server's (%d): not loaded here"):format(player.Name, SCHEMA))
+			return nil, "failed"
 		end
 		if ok and held then
 			if try == LOAD_TRIES - 1 then force = true end   -- the last try takes it: a crashed server never lets go
@@ -257,12 +299,15 @@ local function save(player, prof, releasing)
 	local ok, err = pcall(function()
 		store:UpdateAsync(keyOf(player), function(old)
 			lostLock = false
-			if type(old) == "table" and type(old.Session) == "table" and old.Session.Job ~= game.JobId then
-				lostLock = true                        -- another server took it (however old its lock looks): theirs now
+			-- (2026-10-19, audit P2-01 / P2-02 / P2-03) ours only while it carries OUR token. Another session's token, or
+			-- none (released -- by whoever took it, or by our own leave save, after which nothing of ours may write
+			-- again or it re-locks the record for the next server), or no record at all: theirs now.
+			if type(old) ~= "table" or type(old.Session) ~= "table" or old.Session.Token ~= prof.token then
+				lostLock = true
 				return nil
 			end
 			local out = copy(snapshot)
-			out.Session = (not releasing) and { Job = game.JobId, T = os.time() } or nil
+			out.Session = (not releasing) and { Job = game.JobId, Token = prof.token, T = os.time() } or nil
 			return out
 		end)
 	end)
@@ -275,6 +320,9 @@ local function save(player, prof, releasing)
 	if lostLock then
 		prof.lost = true
 		warn(("[PlayerData] %s's save is held by another server now; this server stops writing it"):format(player.Name))
+		-- (2026-10-19, audit P2-13 / P2-14) say so, as a failed load does: nothing earned here is saved any more, and
+		-- the shop must not prompt a Robux pack that ProcessReceipt can no longer pay
+		if player.Parent and profiles[player] == prof then player:SetAttribute("DataError", true) end
 		return false
 	end
 	return true
@@ -283,11 +331,13 @@ end
 --- Saves still running for a player who has left, and loads still in flight (the 2026-10-18 review): BindToClose waits on
 --- these as well as on the players still here, so a server closing on its last player's leave does not cut that write off.
 local releasing = {}       -- [prof] = true
+local releasingUser = {}   -- [UserId] = the profile whose leave save is still running (2026-10-19, audit P2-01)
 
 --- The leave save, RETRIED: once a profile is out of `profiles` nothing else would ever try it again, so a write that
 --- fails once (a throttle, a blip) goes again at 1, 2, 4 and 8 s while the lock is still this server's.
 local function release(player, prof)
 	releasing[prof] = true
+	releasingUser[player.UserId] = prof
 	local ok = save(player, prof, true)
 	for _, delay in ipairs({ 1, 2, 4, 8 }) do
 		if ok or prof.lost or not prof.loaded then break end
@@ -298,6 +348,7 @@ local function release(player, prof)
 		warn(("[PlayerData] gave up on %s's leave save"):format(player.Name))
 	end
 	releasing[prof] = nil
+	if releasingUser[player.UserId] == prof then releasingUser[player.UserId] = nil end
 end
 
 --- A save on the next resumption point, coalesced: several changes in one moment (UNLOCK ALL) are one write.
@@ -319,7 +370,11 @@ local function onJoin(player)
 	profiles[player] = prof
 	publish(player, prof)                              -- the starter kit at once: nobody waits on a DataStore to play
 	releasing[prof] = true                             -- a load in flight holds a shutdown too (it may take the lock)
-	local data, mode = loadData(player)
+	-- (2026-10-19, audit P2-01) back on the SAME server before the last visit's leave save landed: wait for it (it is
+	-- retried for at most ~15 s), so this load reads what that session wrote rather than racing it
+	local waitFrom = os.clock()
+	while releasingUser[player.UserId] and player.Parent and os.clock() - waitFrom < 30 do task.wait(0.2) end
+	local data, mode = loadData(player, prof)
 	releasing[prof] = nil
 	if mode == "failed" then
 		prof.failed = true
@@ -455,7 +510,10 @@ function PlayerData.AwardMatch(player, result, roundsWon)
 		if result == "win" then st.Wins += 1 elseif result == "loss" then st.Losses += 1 else st.Draws += 1 end
 		st.RoundsWon += math.clamp(math.floor(tonumber(roundsWon) or 0), 0, Economy.MaxRoundsCounted)
 	end
-	PlayerData.AddSparks(player, amount, "match")
+	-- (2026-10-19, audit P2-14) the Sparks actually credited: 0 when there was no profile to credit (AddSparks nil).
+	-- A failed or lost profile is still credited for this session (the balance shows it), but nothing of it is saved:
+	-- the player's DataError attribute says so.
+	if PlayerData.AddSparks(player, amount, "match") == nil then return 0 end
 	-- written now, not at the next autosave (2026-10-18 review): a player who quits on the result screen keeps it
 	if prof and prof.loaded then saveSoon(player, prof) end
 	return amount
@@ -521,7 +579,9 @@ function PlayerData.Start()
 		return DataStoreService:GetDataStore(STORE_NAME)
 	end)
 	store = ok and s or nil
-	if not store then
+	-- memory-only is Studio's answer alone (2026-10-19, audit P2-04): a live server without its store fails each load
+	-- instead (loadData asks again), which pauses spending and receipts rather than granting what is never saved
+	if not store and RunService:IsStudio() then
 		memoryOnly = true
 		warnOnce(s)
 	end
@@ -532,8 +592,10 @@ function PlayerData.Start()
 	task.spawn(function()
 		while true do
 			task.wait(AUTOSAVE)
+			-- (2026-10-19, audit P2-17) not while a write is still running: during an outage each tick used to add one more
+			-- waiter, and they all wrote back to back when the store recovered. The running write refreshes the lock.
 			for player, prof in pairs(profiles) do
-				if prof.loaded and player.Parent then task.spawn(save, player, prof) end
+				if prof.loaded and player.Parent and not prof.saving then task.spawn(save, player, prof) end
 			end
 		end
 	end)

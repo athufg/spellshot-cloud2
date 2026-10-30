@@ -58,7 +58,8 @@
 
 	SETTINGS.
 	  * Reduce Flashing: no Bloom; the flash is x0.6 and eased in (half on its first frame); bolts, pulse, palm glow and
-	    star are x0.85.
+	    star are x0.85; (2026-10-19, audit P5D-04) the legs keep a steady Brightness (no Snap, no +-Flicker per frame)
+	    and the pulse arcs re-jag at 10 Hz, not 60 (RailspikeFX's CalmEvery rule).
 	  * Thin (VoltaicKit.thin: another player's cast with Reduce Enemy VFX, or a low Graphics Quality): 2 shards a hit
 	    instead of 5, fewer pulse and self-zap arcs, and no leg lights (the showcase's first lights to drop).
 	  * Flat-lit maps: no PointLights (VoltaicKit.light returns nil), and every emission x0.35 / Brightness x0.7.
@@ -829,7 +830,8 @@ function Cast:stepArcs(A, t, hand)
 	local centre = A.at or hand
 	if A.f ~= f then
 		A.f = f
-		local rr = Random.new(self.seed * 131 + A.salt * 17 + f)
+		-- (2026-10-19, audit P5D-04) under Reduce Flashing the same shapes are rolled for 6 frames (10 Hz re-jag)
+		local rr = Random.new(self.seed * 131 + A.salt * 17 + (self.calm and math.floor(f / 6) or f))
 		local count = A.counts[f + 1]
 		local aim = A.toward and (A.toward - centre)
 		aim = (aim and aim.Magnitude > 1e-3) and aim.Unit or nil
@@ -932,6 +934,7 @@ function Cast:stepLeg(L, t, hand, camPos)
 		L.fN = fN
 		local k = (fN == 0 or not L.drawn) and T.Snap
 			or 1 + T.Flicker * Random.new(self.seed * 977 + L.n * 31 + fN):NextNumber(-1, 1)
+		if self.calm then k = 1 end                       -- (2026-10-19, audit P5D-04) steady under Reduce Flashing
 		L.kk = self.kb * k
 	end
 	L.drawn = true
@@ -973,7 +976,11 @@ function Cast:fireImpact(I, hand, camCF)
 	I.fired = true
 	if I.style == "spark" then
 		local V = vfx()
-		if V and V.VoltSparkBurst then pcall(V.VoltSparkBurst, I.at, I.normal, not self.own, I.count) end
+		-- (2026-10-19, audit P5F-06) VFXLibrary's thin is "an enemy's": a teammate's sparks are not halved
+		if V and V.VoltSparkBurst then
+			pcall(V.VoltSparkBurst, I.at, I.normal,
+				not self.own and (self.character == nil or kitFlag(Kit.isEnemy, self.character)), I.count)
+		end
 		return
 	end
 	local from = I.from or hand

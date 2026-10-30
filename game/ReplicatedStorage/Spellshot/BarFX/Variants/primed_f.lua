@@ -1,6 +1,6 @@
 --!nocheck
--- Pressure Charge: the fill becomes a packed explosive charge in six second-segments, a pressure wedge rams through it
--- inside a hazard-tape frame, then a crack tears the bar open: KRA-KOOM!
+-- Pressure Charge: the fill becomes a packed explosive charge in six segments (sixths of the fuse, not seconds: audit
+-- GA-04), a pressure wedge rams through it inside a hazard-tape frame, then a crack tears the bar open: KRA-KOOM!
 -- Ported from status_fx/bench/opts/primed-f.html (round 2, 2026-09-24).
 local V = { title = "Pressure Charge" }
 -- stepped CSS keyframes: keys = { {p, scale, rot}, ... }, steps() with fill both
@@ -108,7 +108,8 @@ function V.mount(fx)
 			local d = EMB[i]
 			local ph = math.floor(((fx.clock + d[3]) % 0.3) / 0.3 * 3) / 3
 			local k = 1 - 0.7 * ph
-			e.Position = UDim2.fromScale((17 + d[1] * ph) / sp.size, (17 + d[2] * ph) / sp.size)
+			-- (2026-10-19, audit GA-17) round the spark's own centre: 17 was half the 34 px spark this was copied from
+			e.Position = UDim2.fromScale((sp.size / 2 + d[1] * ph) / sp.size, (sp.size / 2 + d[2] * ph) / sp.size)
 			e.Size = UDim2.fromScale(4 * k / sp.size, 4 * k / sp.size)
 		end
 	end
@@ -295,10 +296,10 @@ function V.mount(fx)
 		sparkStep(sp, 104 + xe + 10, 140)
 
 		-- the PRIMED tag blinks when urgent
-		tag.Visible = not urg or (fx.clock % 0.4) < 0.2
+		tag.Visible = not urg or fx.calm() or (fx.clock % 0.4) < 0.2   -- (2026-10-19, audit P5F-04) steady under Reduce Flashing
 
 		-- the big numeral
-		local s = math.max(1, math.ceil(st.t * 6 - 1e-6))
+		local s = math.max(1, math.ceil(st.t * (st.total or 6) - 1e-6))   -- (2026-10-19, audit GA-04) real seconds left: st.total is the fuse (Detonate 1.5 s), 6 only on the bench
 		if s ~= lastSec then
 			lastSec = s
 			cd.label.Text = tostring(s)
