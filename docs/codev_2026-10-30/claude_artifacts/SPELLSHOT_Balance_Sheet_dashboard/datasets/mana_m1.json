@@ -1,0 +1,14 @@
+{
+  "description": "Damage and mana per second of each M1, with every hit landing and DoTs running in full.",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "mana_m1.json",
+    "url": "/_blob/e92ab88ed8d80bcfad344852d33af32d"
+  },
+  "title": "M1 mana economy",
+  "updated": {
+    "at": "2026-10-17T00:37:58+04:00",
+    "by": "Claude"
+  }
+}

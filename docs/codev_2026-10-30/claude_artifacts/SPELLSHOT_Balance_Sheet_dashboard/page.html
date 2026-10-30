@@ -1,0 +1,527 @@
+<style>
+.sb { display: grid; gap: var(--cds-gap-xl); max-width: 84rem; margin-inline: auto; font-family: var(--font-anthropic-sans); color: var(--color-fg); }
+.sb-head { display: grid; gap: var(--cds-gap-sm); }
+.sb-title { margin: 0; font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); line-height: 1.15; text-wrap: balance; }
+.sb-take { margin: 0; max-width: 68ch; color: var(--color-fg-muted); font-size: var(--cds-font-size-body); line-height: 1.5; }
+.sb-nav { display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs); }
+.sb-seg { display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs); }
+.sb-seg button[aria-pressed="true"] { background: var(--color-fg); color: var(--color-bg); border-color: var(--color-fg); }
+.sb-sub { margin: 0; max-width: 75ch; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); line-height: 1.45; }
+.sb-nav button, .sb-seg button { font: inherit; font-size: var(--cds-font-size-caption); color: var(--color-fg); background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: 999px; padding: var(--cds-pad-xs) var(--cds-pad-sm); cursor: pointer; }
+.sb-nav button:hover, .sb-seg button:hover { border-color: var(--color-fg-muted); }
+.sb-nav button:focus-visible, .sb-seg button:focus-visible, .sb-search:focus-visible { outline: 2px solid var(--color-fg); outline-offset: 2px; }
+.sb-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: var(--cds-gap-md); }
+.sb-card { display: grid; gap: var(--cds-gap-sm); align-content: start; min-width: 0; background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-lg); }
+.sb-lab { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.sb-num { font-family: var(--font-anthropic-serif); font-size: var(--cds-font-size-title); line-height: 1.1; font-variant-numeric: tabular-nums; }
+.sb .sb-num b { font-weight: 400; }
+.sb-num small { font-family: var(--font-anthropic-sans); font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.sb-note { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); line-height: 1.45; }
+.sb-note b, .sb-card p b, .sb-shared b { color: var(--color-fg); font-variant-numeric: tabular-nums; }
+.sb-sec { display: grid; gap: var(--cds-gap-md); scroll-margin-top: var(--cds-gap-md); }
+.sb-h2, .sb-h3 { margin: 0; font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); }
+.sb-card p { margin: 0; max-width: 75ch; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); line-height: 1.45; }
+.sb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); gap: var(--cds-gap-md); }
+.sb-heat { position: relative; min-height: 21rem; }
+.sb-heat svg { display: block; }
+.sb-ax { fill: var(--color-fg-muted); font-size: var(--cds-font-size-caption); }
+.sb-cell { fill: var(--color-fg); font-size: var(--cds-font-size-caption); font-variant-numeric: tabular-nums; }
+.sb-heat.tight .sb-cell { font-size: 10px; }
+.sb-mean { font-weight: var(--cds-font-weight-medium); }
+.sb-base { fill: var(--color-bg); }
+.sb-tip { position: absolute; z-index: 2; pointer-events: none; white-space: nowrap; background: var(--cds-surface-popover); border: 1px solid var(--cds-border); border-radius: var(--cds-radius); box-shadow: var(--cds-shadow-popover); padding: var(--cds-pad-xs) var(--cds-pad-sm); font-size: var(--cds-font-size-caption); }
+.sb-tip[hidden] { display: none; }
+.sb-tip span { display: block; color: var(--cds-text-secondary); }
+.sb-scroll { overflow: auto; min-width: 0; }
+.sb-scroll.tall { max-height: 34rem; }
+.sb-table { width: 100%; border-collapse: collapse; font-size: var(--cds-font-size-caption); line-height: 1.4; font-variant-numeric: tabular-nums; }
+.sb-table.wide { min-width: 64rem; }
+.sb-table th { position: sticky; top: 0; z-index: 1; background: var(--color-panel); text-align: left; vertical-align: bottom; font-weight: var(--cds-font-weight-medium); color: var(--color-fg-muted); padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); }
+.sb-table td { vertical-align: top; padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); }
+.sb-table td:first-child { font-weight: var(--cds-font-weight-medium); }
+.sb-bar { display: flex; flex-wrap: wrap; gap: var(--cds-gap-sm); align-items: center; justify-content: space-between; }
+.sb-search { font: inherit; font-size: var(--cds-font-size-caption); color: var(--color-fg); background: var(--color-bg); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-xs) var(--cds-pad-sm); width: min(100%, 16rem); }
+.sb-shared { display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs) var(--cds-gap-lg); font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.sb-fail { display: flex; align-items: center; justify-content: center; gap: var(--cds-gap-xs); min-height: inherit; color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); }
+.sb-fail::before { content: ""; width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--color-bad); }
+.sb [data-dash-source-state=refreshing] { opacity: .5; transition: opacity var(--cds-dur-slow); }
+.sb [data-dash-source-state=empty] { color: transparent; }
+</style>
+
+<div class="sb">
+  <header class="sb-head" id="sb-summary">
+    <h1 class="sb-title">SPELLSHOT balance sheet</h1>
+    <p class="sb-take">The 17 October changes let a kiter land far more damage before contact and pulled Toxin back into the fight. Chasing is still the best play more often than not, though: Pyro and Terra win most duels, and Aqua loses most.</p>
+    <nav class="sb-nav" aria-label="Sections">
+      <button type="button" data-go="sb-sim">Duel simulation</button>
+      <button type="button" data-go="sb-recs">Recommendations</button>
+      <button type="button" data-go="sb-kits">Abilities</button>
+      <button type="button" data-go="sb-move">Movement and control</button>
+      <button type="button" data-go="sb-mana">Mana</button>
+      <button type="button" data-go="sb-method">Method</button>
+    </nav>
+  </header>
+
+  <section class="sb-kpis" id="sb-headline" aria-label="Headline figures">
+    <div class="sb-card" id="sb-kpi-chase">
+      <span class="sb-lab">Best play is to chase</span>
+      <span class="sb-num"><b class="dash-skeleton" data-source="headline" data-field="both_rush" data-where="Run=after">—</b> <small>of <b data-source="headline" data-field="pairings" data-where="Run=after">—</b></small></span>
+      <span class="sb-note">matchups where both sides do best by chasing. Was <b data-source="headline" data-field="both_rush" data-where="Run=before">—</b></span>
+    </div>
+    <div class="sb-card" id="sb-kpi-contact">
+      <span class="sb-lab">Median time to contact</span>
+      <span class="sb-num"><b class="dash-skeleton" data-source="headline" data-field="contact_median" data-where="Run=after">—</b> <small>s</small></span>
+      <span class="sb-note">Was <b data-source="headline" data-field="contact_median" data-where="Run=before">—</b> s. <b data-source="headline" data-field="contact_under_10s" data-where="Run=after">—</b> of <b data-source="headline" data-field="pairings" data-where="Run=after">—</b> pairings close inside 10 s</span>
+    </div>
+    <div class="sb-card" id="sb-kpi-far">
+      <span class="sb-lab">Kiter damage before contact</span>
+      <span class="sb-num"><b class="dash-skeleton" data-source="headline" data-field="kiter_far_damage_mean" data-where="Run=after">—</b> <small>HP</small></span>
+      <span class="sb-note">Was <b data-source="headline" data-field="kiter_far_damage_mean" data-where="Run=before">—</b> HP. Mean, dealt from beyond 40 studs, out of <b data-source="shared" data-field="Value" data-where="Stat=HP">—</b> HP</span>
+    </div>
+    <div class="sb-card" id="sb-kpi-range">
+      <span class="sb-lab">Point-blank is the best range</span>
+      <span class="sb-num"><b class="dash-skeleton" data-source="headline" data-field="best_range_8" data-where="Run=after">—</b> <small>of <b data-source="headline" data-field="pairings" data-where="Run=after">—</b></small></span>
+      <span class="sb-note">pairings kill fastest from 8 studs, the closest range tested. Was <b data-source="headline" data-field="best_range_8" data-where="Run=before">—</b></span>
+    </div>
+    <div class="sb-card" id="sb-kpi-spread">
+      <span class="sb-lab">Kill-time spread</span>
+      <span class="sb-num"><b class="dash-skeleton" data-source="headline" data-field="ttk_spread" data-where="Run=after">—</b><small>×</small></span>
+      <span class="sb-note"><b data-source="headline" data-field="fastest_killer" data-where="Run=after">—</b> kills in <b data-source="headline" data-field="fastest_ttk" data-where="Run=after">—</b> s on average, <b data-source="headline" data-field="slowest_killer" data-where="Run=after">—</b> in <b data-source="headline" data-field="slowest_ttk" data-where="Run=after">—</b> s. Was <b data-source="headline" data-field="ttk_spread" data-where="Run=before">—</b>×</span>
+    </div>
+    <div class="sb-card" id="sb-kpi-chain">
+      <span class="sb-lab">Chase speed, every Element</span>
+      <span class="sb-num"><b class="dash-skeleton" data-source="shared" data-field="Value" data-where="Stat=Sustained chain">—</b> <small>studs/s</small></span>
+      <span class="sb-note">Measured in Play on 18 October: it settles at 44.8 after the first slide-jump's 52–54 peak. Was <b data-source="shared" data-field="Value" data-where="Stat=Sustained chain, before">—</b>, measured</span>
+    </div>
+  </section>
+
+  <section class="sb-sec" id="sb-sim">
+    <h2 class="sb-h2">Duel simulation</h2>
+    <div class="sb-bar">
+      <p class="sb-sub">After is the live game: the 17 October pass, 2× hitboxes and one projectile speed for every M1 (200 studs/s). Before is the 16 October kit on the same model. In both, the duellists move while they shoot, targets jump, and any shot can miss. Change is after minus before. Both runs use the corrected M1 timing (18 October): the first published runs stepped in 0.1 s and fired fast M1s late (Wind Blade 40% slow, Chain Bolt 20%, Icicle Shard 17%), which understated Zephyr most.</p>
+      <div class="sb-seg" id="sb-run" role="group" aria-label="Simulation run">
+        <button type="button" data-run="after" aria-pressed="true">After</button>
+        <button type="button" data-run="before" aria-pressed="false">Before</button>
+        <button type="button" data-run="change" aria-pressed="false">Change</button>
+      </div>
+    </div>
+    <article class="sb-card" id="sb-card-eq">
+      <h3 class="sb-h3">Win rate with best play</h3>
+      <p>The row's chance to beat the column when both pick their best approach, chasing or keeping distance, in percent. Hover a cell for each side's approach.</p>
+      <div class="sb-grid">
+        <div class="sb-heat dash-skeleton" id="sb-heat-eq" data-source="pairings pairings_after pair_means" data-metric="Eq_win"></div>
+        <div class="sb-scroll">
+          <table class="sb-table" data-source="by_element" data-row-key="Element">
+            <thead><tr><th data-field="Element">Element</th><th data-field="Best play">Best play %</th><th data-field="Chases">Chases %</th><th data-field="As chaser">As chaser %</th><th data-field="As kiter">As kiter %</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <p>The table is the live game against every Element. Chases is how often its best play is to chase.</p>
+    </article>
+    <div class="sb-grid">
+      <article class="sb-card" id="sb-card-rush">
+        <h3 class="sb-h3">Rusher win rate</h3>
+        <p>Row rushes, column kites: the share of duels the rusher won, in percent. After the pass, above 55% in <b data-source="headline" data-field="rusher_above_55" data-where="Run=after">—</b> pairings (was <b data-source="headline" data-field="rusher_above_55" data-where="Run=before">—</b>), below 45% in <b data-source="headline" data-field="rusher_below_45" data-where="Run=after">—</b> (was <b data-source="headline" data-field="rusher_below_45" data-where="Run=before">—</b>).</p>
+        <div class="sb-heat dash-skeleton" id="sb-heat-rush" data-source="pairings pairings_after pair_means" data-metric="Rush_win"></div>
+      </article>
+      <article class="sb-card" id="sb-card-contact">
+        <h3 class="sb-h3">Time to contact</h3>
+        <p>Seconds until the row (rusher) reaches its fighting range against the column (kiter). Only a Cryo kiter holds most rushers off.</p>
+        <div class="sb-heat dash-skeleton" id="sb-heat-contact" data-source="pairings pairings_after pair_means" data-metric="Contact_s"></div>
+      </article>
+      <article class="sb-card" id="sb-card-ttk">
+        <h3 class="sb-h3">Time to kill at best range</h3>
+        <p>Seconds for the row to kill the column from its best range. Hardest to kill after the pass: <b data-source="headline" data-field="hardest_target" data-where="Run=after">—</b>, <b data-source="headline" data-field="hardest_ttk" data-where="Run=after">—</b> s on average.</p>
+        <div class="sb-heat dash-skeleton" id="sb-heat-ttk" data-source="pairings pairings_after pair_means" data-metric="TTK_s"></div>
+      </article>
+      <article class="sb-card" id="sb-card-far">
+        <h3 class="sb-h3">Kiter damage before contact</h3>
+        <p>HP the column (kiter) dealt from beyond 40 studs while the row (rusher) closed in.</p>
+        <div class="sb-heat dash-skeleton" id="sb-heat-far" data-source="pairings pairings_after pair_means" data-metric="Kiter_far_damage"></div>
+      </article>
+    </div>
+    <article class="sb-card" id="sb-card-causes">
+      <h3 class="sb-h3">Why the rusher wins where it wins</h3>
+      <p>From the first run, before the pass: the kiters each rusher beat in more than 55% of duels, and the mechanic behind it.</p>
+      <div class="sb-scroll">
+        <table class="sb-table" data-source="rush_causes" data-row-key="Rusher">
+          <thead><tr><th data-field="Rusher">Rusher</th><th data-field="Beats these kiters (above 55%)">Beats these kiters</th><th data-field="Mechanical cause">Mechanical cause</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+
+  <section class="sb-sec" id="sb-recs">
+    <h2 class="sb-h2">Recommendations</h2>
+    <article class="sb-card" id="sb-card-recs">
+      <p>Applied in Studio on 17 October, apart from the parts the change log (CHANGES_2026-10-17_balance_pass.md) lists as skipped or waiting on a design pick; it also says how to revert. The simulation above shows the result.</p>
+      <div class="sb-scroll">
+        <table class="sb-table" data-source="recommendations" data-row-key="No">
+          <thead><tr><th data-field="No">#</th><th data-field="Change">Change</th><th data-field="Target">Target</th><th data-field="Confidence">Confidence</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+
+  <section class="sb-sec" id="sb-kits">
+    <h2 class="sb-h2">Abilities</h2>
+    <p class="sb-sub">The kit tables below are as read on 16 October, before the pass. CHANGES_2026-10-17_balance_pass.md lists every value it changed.</p>
+    <article class="sb-card" id="sb-card-abilities">
+      <div class="sb-bar">
+        <p>Live values for every castable ability. Flag: src = read from source text, doc = only in IMPLEMENTED.md, PROP = proposal awaiting sign-off.</p>
+        <input id="sb-ab-q" class="sb-search" type="search" placeholder="Search abilities" aria-label="Search abilities">
+      </div>
+      <div class="sb-scroll tall">
+        <table class="sb-table wide" id="sb-tbl-abilities" data-source="abilities" data-row-key="Ability" data-search="sb-ab-q">
+          <thead><tr><th data-field="Element">Element</th><th data-field="Ability">Ability</th><th data-field="Slot">Slot</th><th data-field="Mana">Mana</th><th data-field="Cooldown">Cooldown</th><th data-field="Cast / charge">Cast / charge</th><th data-field="Speed">Speed</th><th data-field="Space">Space</th><th data-field="Damage">Damage</th><th data-field="DoT / CC / utility">DoT / CC / utility</th><th data-field="Flag">Flag</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+
+  <section class="sb-sec" id="sb-move">
+    <h2 class="sb-h2">Movement and control</h2>
+    <div class="sb-shared" id="sb-shared">
+      <span>HP <b data-source="shared" data-field="Value" data-where="Stat=HP">—</b></span>
+      <span>Mana <b data-source="shared" data-field="Value" data-where="Stat=Mana">—</b></span>
+      <span>Regen <b data-source="shared" data-field="Value" data-where="Stat=Mana regen">—</b>/s</span>
+      <span>Gravity <b data-source="shared" data-field="Value" data-where="Stat=Gravity">—</b></span>
+      <span>Ultimate charge <b data-source="shared" data-field="Value" data-where="Stat=Ultimate charge">—</b></span>
+    </div>
+    <article class="sb-card" id="sb-card-movement">
+      <h3 class="sb-h3">Movement</h3>
+      <p>Shared by every Element, from SpellshotConfig.Movement, with speeds measured in Studio.</p>
+      <div class="sb-scroll">
+        <table class="sb-table" data-source="movement" data-row-key="Mechanic">
+          <thead><tr><th data-field="Mechanic">Mechanic</th><th data-field="Live values">Live values</th><th data-field="Terrain">Terrain</th><th data-field="Flag">Flag</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </article>
+    <div class="sb-grid">
+      <article class="sb-card" id="sb-card-slows">
+        <h3 class="sb-h3">Slows and roots against the thresholds</h3>
+        <p>A speed cap binds the slide, the slide-jump and the held air speed, so a slow cuts the chain. Dashes ignore any cap at or above the dash threshold.</p>
+        <div class="sb-scroll">
+          <table class="sb-table" data-source="slows" data-row-key="Effect">
+            <thead><tr><th data-field="Effect">Effect</th><th data-field="Cap / effect">Cap / effect</th><th data-field="Stops dashes (under 12)">Stops dashes (under 12)</th><th data-field="Stops wall-run catch (under 16)">Stops wall-run catch (under 16)</th><th data-field="Stops the chain">Stops the chain</th><th data-field="Source">Source</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="sb-card" id="sb-card-closers">
+        <h3 class="sb-h3">Gap closers against the chain</h3>
+        <p>Closing always wins once it starts, except against Cryo.</p>
+        <div class="sb-scroll">
+          <table class="sb-table" data-source="closers" data-row-key="Closer">
+            <thead><tr><th data-field="Closer">Closer</th><th data-field="Closing speed">Closing speed</th><th data-field="Against the chain">Against the chain</th><th data-field="Works under Chill or Blizzard">Works under Chill or Blizzard</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="sb-sec" id="sb-mana">
+    <h2 class="sb-h2">Mana economy</h2>
+    <div class="sb-grid">
+      <article class="sb-card" id="sb-card-m1">
+        <h3 class="sb-h3">M1 attacks</h3>
+        <p>Every hit lands and DoTs run in full. Only Light Lance costs more than the regen, so firing never costs a decision.</p>
+        <div class="sb-scroll">
+          <table class="sb-table" data-source="mana_m1" data-row-key="M1">
+            <thead><tr><th data-field="M1">M1</th><th data-field="Damage/s">Damage/s</th><th data-field="Mana/s">Mana/s</th><th data-field="Damage per mana">Damage per mana</th><th data-field="Sustainable on regen">Sustainable on regen</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="sb-card" id="sb-card-value">
+        <h3 class="sb-h3">Ability value per mana</h3>
+        <p>Scorching Lash works as a second M1 at close range. Twin Tide and Acid Rain return the least.</p>
+        <div class="sb-scroll">
+          <table class="sb-table" data-source="mana_abilities" data-row-key="Ability">
+            <thead><tr><th data-field="Ability">Ability</th><th data-field="Damage or heal a cast">Damage or heal a cast</th><th data-field="Per mana">Per mana</th><th data-field="Per second of cooldown">Per second of cooldown</th><th data-field="Note">Note</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="sb-sec" id="sb-method">
+    <h2 class="sb-h2">Method and open questions</h2>
+    <div class="sb-grid">
+      <article class="sb-card" id="sb-card-model">
+        <h3 class="sb-h3">Simulation model</h3>
+        <p>Rankings are directions, not exact rates: the aim model is assumed and no sensitivity sweep was run.</p>
+        <div class="sb-scroll">
+          <table class="sb-table" data-source="model" data-row-key="Part">
+            <thead><tr><th data-field="Part">Part</th><th data-field="Assumption">Assumption</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="sb-card" id="sb-card-questions">
+        <h3 class="sb-h3">Open questions</h3>
+        <div class="sb-scroll">
+          <table class="sb-table" data-source="questions" data-row-key="No">
+            <thead><tr><th data-field="No">#</th><th data-field="Question">Question</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+    </div>
+  </section>
+</div>
+
+<script>
+dash.calc('pair_means', {
+  inputs: ['pairings', 'pairings_after'],
+  title: 'Row and column means',
+  description: 'Mean of each simulation measure for every Element as the row (rusher or attacker) and as the column (kiter or target), in the run before and the run after the 17 October pass.',
+  fn: (pairings, pairings_after) => {
+    const out = [];
+    for (const [Run, rows] of [['before', pairings], ['after', pairings_after]]) {
+      for (const Metric of ['TTK_s', 'Rush_win', 'Contact_s', 'Kiter_far_damage', 'Eq_win']) {
+        for (const Axis of ['Element', 'Opponent']) {
+          const groups = {};
+          for (const r of rows) (groups[r[Axis]] = groups[r[Axis]] || []).push(+r[Metric]);
+          for (const [Name, v] of Object.entries(groups)) out.push({ Run, Metric, Axis, Name, Mean: v.reduce((a, b) => a + b, 0) / v.length });
+        }
+      }
+    }
+    return out;
+  },
+});
+
+dash.calc('headline', {
+  inputs: ['pairings', 'pairings_after', 'pair_means'],
+  title: 'Headline figures',
+  description: 'Contact time, kiter damage, best range, kill-time spread and win-rate counts across every pairing, before and after the 17 October pass.',
+  fn: (pairings, pairings_after, pair_means) => [['before', pairings], ['after', pairings_after]].map(([Run, rows]) => {
+    const col = (k) => rows.map((r) => +r[k]);
+    const r1 = (x) => Math.round(x * 10) / 10;
+    const contact = col('Contact_s').sort((a, b) => a - b);
+    const far = col('Kiter_far_damage');
+    const ttk = (axis) => pair_means.filter((r) => r.Run === Run && r.Metric === 'TTK_s' && r.Axis === axis).sort((a, b) => a.Mean - b.Mean);
+    const att = ttk('Element'), tgt = ttk('Opponent');
+    const slow = att[att.length - 1], hard = tgt[tgt.length - 1];
+    return {
+      Run,
+      pairings: rows.length,
+      contact_median: r1(contact[contact.length >> 1]),
+      contact_under_10s: contact.filter((x) => x < 10).length,
+      kiter_far_damage_mean: Math.round(far.reduce((a, b) => a + b, 0) / far.length),
+      best_range_8: col('TTK_range').filter((x) => x === 8).length,
+      fastest_killer: att[0].Name,
+      fastest_ttk: r1(att[0].Mean),
+      slowest_killer: slow.Name,
+      slowest_ttk: r1(slow.Mean),
+      ttk_spread: r1(slow.Mean / att[0].Mean),
+      hardest_target: hard.Name,
+      hardest_ttk: r1(hard.Mean),
+      rusher_above_55: col('Rush_win').filter((x) => x > 0.55).length,
+      rusher_below_45: col('Rush_win').filter((x) => x < 0.45).length,
+      both_rush: rows.filter((r) => +r.Rush_share === 1 && +r.Opp_rush_share === 1).length,
+    };
+  }),
+});
+
+dash.calc('by_element', {
+  inputs: ['pairings_after'],
+  title: 'Each Element against the field',
+  description: 'Per Element in the live game: its mean best-play win rate, how often its best play is to chase, and its win rates as chaser and as kiter, in percent.',
+  fn: (pairings_after) => {
+    const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const pct = (x) => Math.round(x * 100);
+    return [...new Set(pairings_after.map((r) => r.Element))].map((e) => {
+      const row = pairings_after.filter((r) => r.Element === e), col = pairings_after.filter((r) => r.Opponent === e);
+      return {
+        Element: e,
+        'Best play': pct(mean(row.map((r) => +r.Eq_win))),
+        Chases: pct(mean(row.map((r) => +r.Rush_share))),
+        'As chaser': pct(mean(row.map((r) => +r.Rush_win))),
+        'As kiter': pct(1 - mean(col.map((r) => +r.Rush_win))),
+      };
+    }).sort((a, b) => b['Best play'] - a['Best play']);
+  },
+});
+
+const root = document.querySelector('.sb');
+const stateOf = (...ids) => {
+  const s = ids.map((id) => dash.data(id).status);
+  return s.every((x) => x === 'ok') ? 'ok' : s.includes('loading') ? 'loading' : 'error';
+};
+const failNode = () => Object.assign(document.createElement('span'), { className: 'sb-fail', textContent: 'Failed to load' });
+
+const pick = (rows, el) => {
+  if (el.dataset.row != null) return rows[+el.dataset.row];
+  const where = [...new URLSearchParams(el.dataset.where || '')];
+  return rows.find((r) => where.every(([k, v]) => String(r[k]) === v));
+};
+
+const fillMarks = () => {
+  for (const el of root.querySelectorAll('[data-field]:not(th)')) {
+    const s = stateOf(el.dataset.source);
+    el.classList.toggle('dash-skeleton', s === 'loading');
+    const r = s === 'ok' ? pick(dash.data(el.dataset.source).data, el) : null;
+    el.textContent = r && r[el.dataset.field] != null ? r[el.dataset.field] : '—';
+  }
+};
+
+const fillTable = (t) => {
+  const s = stateOf(t.dataset.source);
+  const fields = [...t.tHead.rows[0].cells].map((th) => th.dataset.field);
+  const body = t.tBodies[0];
+  body.replaceChildren();
+  if (s === 'error') {
+    const td = body.insertRow().insertCell();
+    td.colSpan = fields.length;
+    td.append(failNode());
+  }
+  if (s !== 'ok') return;
+  const box = t.dataset.search && document.getElementById(t.dataset.search);
+  const q = box ? box.value.trim().toLowerCase() : '';
+  for (const r of dash.data(t.dataset.source).data) {
+    if (q && !fields.some((f) => String(r[f] ?? '').toLowerCase().includes(q))) continue;
+    const tr = body.insertRow();
+    for (const f of fields) tr.insertCell().textContent = r[f] ?? '';
+  }
+};
+
+const clamp1 = (x) => Math.max(-1, Math.min(1, x));
+const signed = (x, digits = 0) => {
+  const r = Number(x.toFixed(digits));
+  return (r > 0 ? '+' : r < 0 ? '−' : '') + Math.abs(r).toFixed(digits);
+};
+
+// tone > 0 favours the row (dash.colors[0]), tone < 0 the column (dash.colors[1]); the d* fields draw the Change view
+const approach = (p) => (p >= 0.99 ? 'chases' : p <= 0.01 ? 'keeps distance' : 'mixes, chasing ' + Math.round(p * 100) + '%');
+const METRICS = {
+  Eq_win: { verb: 'vs', roles: ['row', 'column'], fmt: (v) => Math.round(v * 100),
+    long: (v, r) => Math.round(v * 100) + '% to win' + (r ? '; row ' + approach(+r.Rush_share) + ', column ' + approach(+r.Opp_rush_share) : ''),
+    tone: (v) => (v - 0.5) * 2, legend: [[0, 'row favoured'], [1, 'column favoured']],
+    dfmt: (v) => signed(v * 100), dlong: (v) => signed(v * 100) + ' points of best-play win rate', dtone: (v) => clamp1(v * 2.5), dlegend: [[0, 'row gained'], [1, 'column gained']] },
+  Rush_win: { verb: 'rushes', roles: ['rusher', 'kiter'], fmt: (v) => Math.round(v * 100), long: (v) => Math.round(v * 100) + '% of duels won by the rusher', tone: (v) => (v - 0.5) * 2, legend: [[0, 'rusher wins'], [1, 'kiter wins']],
+    dfmt: (v) => signed(v * 100), dlong: (v) => signed(v * 100) + ' points of rusher win rate', dtone: (v) => clamp1(v * 2.5), dlegend: [[0, 'rusher gained'], [1, 'kiter gained']] },
+  Contact_s: { verb: 'rushes', roles: ['rusher', 'kiter'], fmt: (v) => (v < 10 ? v.toFixed(1) : Math.round(v)), long: (v) => v.toFixed(1) + ' s to contact', tone: (v) => -Math.min(1, Math.max(0, (v - 4) / 12)), legend: [[1, 'kiter holds the rusher off longer']],
+    dfmt: (v) => signed(v, 1), dlong: (v) => signed(v, 1) + ' s to contact', dtone: (v) => -clamp1(v / 8), dlegend: [[1, 'longer to contact'], [0, 'shorter']] },
+  TTK_s: { verb: 'attacks', roles: ['attacker', 'target'], fmt: (v) => v.toFixed(1), long: (v, r) => v.toFixed(1) + ' s to kill' + (r ? ' from ' + r.TTK_range + ' studs' : ''), tone: (v, lo, hi) => (hi - v) / (hi - lo), legend: [[0, 'faster kill']],
+    dfmt: (v) => signed(v, 1), dlong: (v) => signed(v, 1) + ' s to kill', dtone: (v) => clamp1(-v / 3), dlegend: [[0, 'kills faster'], [1, 'kills slower']] },
+  Kiter_far_damage: { verb: 'rushes', roles: ['rusher', 'kiter'], fmt: (v) => Math.round(v), long: (v) => Math.round(v) + ' HP dealt by the kiter from beyond 40 studs', tone: (v, lo, hi) => -v / hi, legend: [[1, 'more kiter damage']],
+    dfmt: (v) => signed(v), dlong: (v) => signed(v) + ' HP from beyond 40 studs', dtone: (v) => -clamp1(v / 25), dlegend: [[1, 'kiter dealt more'], [0, 'less']] },
+};
+
+const heat = (el) => {
+  const m = el.dataset.metric, cfg = METRICS[m];
+  const s = stateOf('pairings', 'pairings_after', 'pair_means');
+  el.classList.toggle('dash-skeleton', s === 'loading');
+  el.replaceChildren();
+  if (s === 'error') el.append(failNode());
+  const W = el.clientWidth;
+  if (s !== 'ok' || !W) return;
+  const before = dash.data('pairings').data, after = dash.data('pairings_after').data;
+  const change = view === 'change';
+  const rows = view === 'before' ? before : after;
+  const names = [...new Set(rows.map((r) => r.Element))].sort();
+  const n = names.length;
+  const key = (r) => r.Element + '>' + r.Opponent;
+  const atB = new Map(before.map((r) => [key(r), r])), atA = new Map(after.map((r) => [key(r), r]));
+  const at = view === 'before' ? atB : atA;
+  const meansOf = (run) => new Map(dash.data('pair_means').data.filter((r) => r.Run === run && r.Metric === m).map((r) => [r.Axis + '>' + r.Name, r.Mean]));
+  const mB = meansOf('before'), mA = meansOf('after');
+  const cellOf = (k) => (change ? +atA.get(k)[m] - +atB.get(k)[m] : +at.get(k)[m]);
+  const meanOf = (k) => (change ? mA.get(k) - mB.get(k) : (view === 'before' ? mB : mA).get(k));
+  const vals = rows.map((r) => +r[m]), lo = Math.min(...vals), hi = Math.max(...vals);
+  const tone = (v) => (change ? cfg.dtone(v) : cfg.tone(v, lo, hi));
+  const fmt = (v) => (change ? cfg.dfmt(v) : cfg.fmt(v));
+
+  const svg = d3.select(el).append('svg').attr('width', '100%');
+  const probe = svg.append('g');
+  const lw = Math.ceil(d3.max([...names, 'mean'], (t) => probe.append('text').attr('class', 'sb-ax').text(t).node().getComputedTextLength())) + 10;
+  probe.remove();
+  const gap = 6, cw = (W - lw - gap) / (n + 1), ch = Math.min(cw, 34), top = 22;
+  el.classList.toggle('tight', cw < 34);
+  const x = (i) => lw + i * cw + (i === n ? gap : 0);
+  const y = (j) => top + j * ch + (j === n ? gap : 0);
+  const H = y(n) + ch + 34;
+  svg.attr('viewBox', `0 0 ${W} ${H}`);
+
+  [...names, 'mean'].forEach((t, i) => {
+    const head = t === 'mean' ? (cw < 56 ? 'avg' : 'mean') : cw < 56 ? t.slice(0, 3) : t;
+    svg.append('text').attr('class', 'sb-ax').attr('x', x(i) + (cw - 2) / 2).attr('y', top - 8).attr('text-anchor', 'middle').text(head);
+    svg.append('text').attr('class', 'sb-ax').attr('x', lw - 10).attr('y', y(i) + (ch - 2) / 2).attr('dy', '0.35em').attr('text-anchor', 'end').text(t);
+  });
+
+  const cells = [];
+  names.forEach((a, j) => {
+    names.forEach((b, i) => cells.push({ i, j, a, b, r: at.get(a + '>' + b), v: cellOf(a + '>' + b) }));
+    cells.push({ i: n, j, a, v: meanOf('Element>' + a) });
+  });
+  names.forEach((b, i) => cells.push({ i, j: n, b, v: meanOf('Opponent>' + b) }));
+
+  const g = svg.append('g').selectAll('g').data(cells).join('g').attr('transform', (c) => `translate(${x(c.i)},${y(c.j)})`);
+  g.append('rect').attr('class', 'sb-base').attr('width', cw - 2).attr('height', ch - 2).attr('rx', 3);
+  g.append('rect').attr('width', cw - 2).attr('height', ch - 2).attr('rx', 3)
+    .style('fill', (c) => dash.colors[tone(c.v) >= 0 ? 0 : 1])
+    .style('fill-opacity', (c) => Math.min(1, Math.abs(tone(c.v))) * 0.75);
+  g.append('text').attr('class', (c) => (c.r ? 'sb-cell' : 'sb-cell sb-mean'))
+    .attr('x', (cw - 2) / 2).attr('y', (ch - 2) / 2).attr('dy', '0.35em').attr('text-anchor', 'middle').text((c) => fmt(c.v));
+
+  let lx = 0;
+  for (const [ci, label] of (change ? cfg.dlegend : cfg.legend)) {
+    svg.append('rect').attr('x', lx).attr('y', H - 16).attr('width', 12).attr('height', 12).attr('rx', 2).style('fill', dash.colors[ci]).style('fill-opacity', 0.75);
+    const t = svg.append('text').attr('class', 'sb-ax').attr('x', lx + 18).attr('y', H - 10).attr('dy', '0.35em').text(label);
+    lx += 34 + t.node().getComputedTextLength();
+  }
+
+  const tip = d3.select(el).append('div').attr('class', 'sb-tip').property('hidden', true);
+  g.on('pointerenter pointermove', (ev, c) => {
+    const [px, py] = d3.pointer(ev, el);
+    tip.selectAll('*').remove();
+    tip.append('span').text(c.r ? `${c.a} ${cfg.verb} ${c.b}` : c.a ? `${c.a} as ${cfg.roles[0]}, mean` : `${c.b} as ${cfg.roles[1]}, mean`);
+    tip.append('div').text(change ? cfg.dlong(c.v) + ', after minus before' : cfg.long(c.v, c.r));
+    tip.property('hidden', false);
+    const tw = tip.node().offsetWidth;
+    tip.style('left', Math.max(0, Math.min(px + 12, el.clientWidth - tw)) + 'px').style('top', py + 16 + 'px');
+  }).on('pointerleave', () => tip.property('hidden', true));
+};
+
+let view = 'after';   // the heatmaps' run: after | before | change
+const runSwitch = document.getElementById('sb-run');
+runSwitch.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-run]');
+  if (!b) return;
+  view = b.dataset.run;
+  for (const x of runSwitch.querySelectorAll('[data-run]')) x.setAttribute('aria-pressed', String(x === b));
+  root.querySelectorAll('.sb-heat').forEach(heat);
+});
+
+const go = (id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  dash.setLink(id);
+};
+root.querySelector('.sb-nav').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-go]');
+  if (b) go(b.dataset.go);
+});
+document.getElementById('sb-ab-q').addEventListener('input', () => fillTable(document.getElementById('sb-tbl-abilities')));
+
+let landed = false;
+dash.onData(() => {
+  fillMarks();
+  root.querySelectorAll('table[data-source]').forEach(fillTable);
+  root.querySelectorAll('.sb-heat').forEach(heat);
+  if (!landed && stateOf('pairings') === 'ok') {
+    landed = true;
+    const named = location.hash && document.getElementById(location.hash.slice(1));
+    if (named) named.scrollIntoView();
+  }
+});
+</script>

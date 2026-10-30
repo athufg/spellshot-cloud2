@@ -17,14 +17,20 @@ it. The live game is the Studio place, not this repo.
 | `docs/` | The design docs, copied as-is: `SPELLSHOT_Design_Manual.md` (the spec), `SPELLSHOT_Dev_Diary.md` (what was built, when), the SFX plans, and `HANDOFF.md` (an old 2026-09-12 project handoff). |
 | `docs/build_prompts/` | The build prompts each VFX kit was made from. |
 | `docs/vfx_handoffs/` | Per-kit VFX handoff specs from the Blender stage, named by their folder path. |
-| `sim/` | Simulation scripts and their results. Empty for now: see `sim/README.md`. |
+| `docs/codev_2026-10-30/` | The co-developer's paper trail, copied as-is (2026-10-30), in its source folders: the Problem Sheet, the suggestions list, the Balance Sheet dashboard (`claude_artifacts/SPELLSHOT_Balance_Sheet_dashboard/page.html` + its `data/`), the Implementation Handoffs (`claude_chat_extracts/`), the CHANGES notes, the 3v3 / P27-P29 sim reports, lore and season docs, and older design-manual / dev-diary copies. `FILE_LIST.csv` gives each file's original path, date and sha256. |
+| `sim/codev_2026-10-30/` | The simulation scripts (`team_sim_2026_10_17/`, `balance_2026_10_16/`, `balance_2026_10_17/`, ...) and their results. Result files over 5 MB are gzipped (`*.json.gz`: `gzip.open(path, "rt")`). The two `.pkl` caches were left out (pickles run code when loaded; rebuild them by rerunning the sim). |
+| `sim/` (top) | See `sim/README.md`. |
 | `tools/` | The refresh scripts (Windows, need Studio). A cloud session does not run them. |
 
 ## Read first
 
-- **For open questions:** the Problem Sheet. **It is not in this repo yet** (not found in D:/Spellshot - Atharv, D:/Spellshot - Nehal, Downloads, Desktop, Documents or OneDrive, 2026-10-30).
-- **For what is ready to build:** the most recent Implementation Handoff. **It is not in this repo yet.**
-- Until they arrive, `docs/SPELLSHOT_Design_Manual.md` says what the game should be, and the latest entries of
+- **For open questions:** the Problem Sheet: `docs/codev_2026-10-30/SPELLSHOT_Backup/SPELLSHOT_Problem_Sheet.md` (the newest
+  copy, 2026-10-29; an older 10-18 one is under `SPELLSHOT_Repo/docs/`).
+- **For what is ready to build:** the most recent Implementation Handoff:
+  `docs/codev_2026-10-30/claude_chat_extracts/Implementation_Handoff_2026-10-18_current.txt`.
+- Balance: the Balance Sheet dashboard (`docs/codev_2026-10-30/claude_artifacts/SPELLSHOT_Balance_Sheet_dashboard/`) and
+  the suggestions list (`docs/codev_2026-10-30/SPELLSHOT_Backup/SPELLSHOT_SUGGESTIONS_LIST.md`).
+- These came from the co-developer's machine and are dated; `docs/SPELLSHOT_Design_Manual.md` says what the game should be, and the latest entries of
   `docs/SPELLSHOT_Dev_Diary.md` say what was built last. If the code and the manual disagree, the code is what ships.
   Ask before treating the manual as correct.
 

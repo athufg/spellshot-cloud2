@@ -1,0 +1,14 @@
+{
+  "description": "The assumptions the duel simulation runs on.",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "model.json",
+    "url": "/_blob/ea65273513a15aff7b604658484f97ae"
+  },
+  "title": "Simulation model",
+  "updated": {
+    "at": "2026-10-17T00:37:58+04:00",
+    "by": "Claude"
+  }
+}

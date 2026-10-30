@@ -1,0 +1,14 @@
+{
+  "description": "SpellshotConfig.Movement and the movement abilities as read live, with speeds measured in Studio.",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "movement.json",
+    "url": "/_blob/69404a3f1791258df4337a20b760fda6"
+  },
+  "title": "Shared movement stats",
+  "updated": {
+    "at": "2026-10-17T00:37:58+04:00",
+    "by": "Claude"
+  }
+}

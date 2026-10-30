@@ -1,0 +1,14 @@
+{
+  "description": "What the analysis did not cover or had to assume.",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "questions.json",
+    "url": "/_blob/aa63771e04cb0a62b8c21d032e961a98"
+  },
+  "title": "Open questions",
+  "updated": {
+    "at": "2026-10-17T00:37:58+04:00",
+    "by": "Claude"
+  }
+}

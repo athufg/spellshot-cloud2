@@ -1,0 +1,6 @@
+{"SIM_HP_TABLE": "{\"Terra\": 450, \"Radiant\": 250, \"Cryo\": 250, \"Pyro\": 250, \"Toxin\": 250, \"Aqua\": 250, \"Zephyr\": 250, \"Umbra\": 225, \"Voltaic\": 250}",
+ "SIM_ULT_SCALE": "0.6", "SIM_BL_SHIELD": "60", "SIM_BL_CD": "8",
+ "SIM_BN_HEAL": "25", "SIM_BN_R": "35", "SIM_BN_ROOT": "0", "SIM_BN_MAX": "6", "SIM_BN_CD": "10",
+ "SIM_LANCE_HEAL": "30",
+ "SIM_BW_HP": "300", "SIM_BW_DRAIN": "12", "SIM_BW_SHADOW": "9", "SIM_BW_HOLD": "4", "SIM_BW_GAP": "1",
+ "SIM_FB_DIRECT": "15", "SIM_FB_RATE": "0.7", "SIM_CB_RANGE": "45", "SIM_OVERLOAD_CD": "2.5", "SIM_SKY": "42,55"}

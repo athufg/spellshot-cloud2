@@ -1,0 +1,14 @@
+{
+  "description": "The live game: the 17 October balance pass, 2x hitboxes and one M1 projectile speed (200 studs/s), on the same model with the corrected M1 timing (18 October) and the same 100 duels per pairing and per approach. Spawns 40 studs inside the edge, the 90 s round clock, dash threshold 16, and a chase speed of 45 studs/s, measured in Play on 18 October (44.8 settled).",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "pairings_full_live_m1fix.json",
+    "url": "/_blob/a7fd7ce8b6a46a63d486da9f0682c6b8"
+  },
+  "title": "Duel simulation, after",
+  "updated": {
+    "at": "2026-10-18T17:30:00+04:00",
+    "by": "Claude"
+  }
+}

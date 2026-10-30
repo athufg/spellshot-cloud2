@@ -1,0 +1,57 @@
+SPELLSHOT — Implementation Handoff (current, supersedes the earlier version)
+Compiled 2026-10-18, after the tank-role/Voltaic/Umbra simulation round. This is the full current build list. Organized by what's actually ready to build vs. what's blocked on a decision vs. what needs a Studio check alongside the build — don't build the blocked section without an explicit answer first.
+A. Ship now — no decision needed, no further testing needed
+1. Team-comp only (P30). Drop 1v1 Duel as a parallel mode. One mode, one ruleset.
+2. Techniques: intra-Element only, never cross-Element (P31). Structural change to the swap UI/logic, not a per-ability flag — once in, nothing can leave its home Element. Confirmed this round: every simulation already assumed this, so no rebalance is riding on it — it's a pure code change.
+3. Monetization model (P32) — direction locked, currency curve still open.
+
+* 9 base Elements: earn via in-game currency or buy currency with Robux. Dual-path, not free-roster.
+* New-player starter kit: fixed 5 Elements at signup (one per category: Offence, Mobility, Control, Terra, Radiant), no choice screen.
+* Skins/wraps: Robux-only, unaffected.
+* Event/collab Elements: separate track, heavy grind or Robux-only, may carry real power including in ranked (explicit call).
+* Exact currency amounts: open, doesn't block starting.
+
+4. Cursor-targeting conversions (P29, validated):
+
+* Flash Freeze → cursor-targeted, 20 or 25 studs.
+* Blizzard → cursor-targeted, 20 studs only. Confirmed twice now that 32/45 studs is worse (buffs Terra as a side effect) — don't use those doses.
+* Leave Deep Freeze, Aftershock, Benediction self-centered — tested, no effect from converting them.
+
+5. Six confirmed data bugs (P23 finding 6):
+
+* Boulder Shot's full-charge travel speed is slower than no-charge — backwards, fix the scaling.
+* Fireball's range field disagrees with its actual ~162-stud flight — reconcile.
+* Undertow's two conflicting range fields — reconcile.
+* A stale `AbilityHandler` constant — remove/update.
+* Chain Bolt's range was edited live without being logged at some point. The simulator's own current baseline uses 45 studs (not the original 30-stud audit figure), which tells you where it probably landed — confirm this directly in Studio and log it as the canon value.
+* A stray leftover `DashDistance` field on Zephyr — remove if unused.
+
+6. Do NOT build these — confirmed dead:
+
+* "Lock Bulwark Wall to Terra only" — moot. P31 already makes cross-Element swapping structurally impossible, confirmed twice now that nothing in any tested number ever relied on swapping being possible.
+* Any Aqua-as-second-tank mechanic — tested twice (standing Twin Tide, and again with Blizzard 32), Aqua comps lose to Terra comps by 25-35 points both times. Don't pursue this branch of P28's option (b) further.
+
+B. Validated by simulation, ready to build — know what comes with them
+7. Voltaic: Chain Bolt range 45 → 55, damage 8 → 10 per bolt. Tested clean: Voltaic 42.0% → 50.2%, death rate 73% → 65%, Terra unaffected (+0.3, noise). First Voltaic fix in three attempts that actually works.
+8. Umbra: two changes together.
+
+* Halve Shadow Step's cooldown for ~2s after Umbra lands a hit (reward-the-dive, from P27) — not yet built as far as this handoff's own tracking shows.
+* Add a separate escape blink, its own 6s cooldown, independent of Shadow Step's cooldown — the earlier "one shared cooldown does both dive and escape" version never actually let Umbra escape mid-dive; a separate charge does (blink-outs per round go from 0.16 to ~2.0 once it's genuinely independent).
+* Gain is small (+3.0 to +3.4 total) and Umbra stays below average. Build it, don't expect it to be the fix.
+
+Know this going in: fixing Voltaic and Umbra doesn't shrink the overall imbalance — it hands "worst Element" to Zephyr (~38.5-39%) instead. That's not a bug in the fix, it's confirmed three rounds running now. Zephyr, then Radiant, are already queued as the next targets — don't be surprised when they come up next.
+C. Decided this turn, and one still blocked
+9. No tank-role rule. Decided: stays open comp. Players stay free to pick whichever Element they want, same as today — don't build any "every team must have exactly one Terra" restriction. Nothing to build here, just don't build the restriction either.
+Worth knowing, not a build task: this was the one thing tested so far that actually moved the overall balance spread in the simulator. Turning it down means Terra's ~70% win rate is still an unsolved problem, and the next fix has to come from somewhere else — either finding a real second protector (Aqua failed twice), nerfing Terra's own wall directly instead of buffing everyone else to match it (nobody's tried this angle yet), or accepting Terra as the strongest pick for now. Flagging so it doesn't get lost, not asking you to act on it yet.
+10. Still blocked: movement model for team mode — does it keep jump, slide, and wall-run, or go running-only? This is the one that actually matters most right now. Every number in section B was simulated under "running only, no jump, no slide, no wall-run" — a model that's never been decided as what ships, and has never once been played in Studio. If the real build keeps any existing kit mobility (Shadow Step, Skyrider, Bulwark Charge, Cross-Slash, Overcharge), chase and escape dynamics change completely, and none of section B's numbers are guaranteed to hold. Decide this, build a movement switch, and playtest running-only before trusting #7-#8 as final — not after.
+D. Three different kinds of leftover task, kept separate so they're not confusing
+D1. Quick fact-checks — nothing to build, just go look and confirm. The simulator has been guessing at some real-game numbers because nobody's confirmed them yet. If a guess is wrong, every result that used it is wrong too. Example: the sim assumes Bulwark Wall starts at full HP every single time it's placed — nobody's actually gone into Studio, placed it twice in a row, and checked whether the second one remembers damage from the first. That's a two-minute check, not a build task. The full list:
+
+* Does Bulwark Wall reset to fresh HP on every deploy, or carry damage over from a prior deploy?
+* Do slows and roots actually stop Shadow Step's blink and Skyrider's flight? (Slow someone, then have them try to blink or fly — does it still go full speed, or does it get reduced too?)
+* Shadow Dart's real numbers (sim assumes 65 damage every 2.6s at 160 studs) — this one decides every Umbra result, worth getting right.
+* Does Scorching Lash's speed check reject hits on a boosting Skyrider, or does it still land?
+* The real chase/movement speed in Play. Time it with a stopwatch doing slide → slide-jump → double-jump — the number every rush-vs-kite result depends on (45 studs/s) is still a guess, never actually measured.
+
+D2. One actual build task hiding in this list. Live Twin Tide's walls are confirmed client-side only right now — they stop bodies, but not shots, and only on the client that placed them. If any shot-blocking wall mechanic (a reworked Bulwark Wall, a standing Twin Tide) is going to work for real rather than just in the simulator, server-side wall collision needs to actually get built. This isn't a check, it's new code.
+D3. One two-minute housekeeping task. Republish the Balance Sheet dashboard using the already-corrected simulation numbers — it's still showing the old, pre-bug-fix values. The fix exists, it just hasn't been re-published. Asked for three times now.

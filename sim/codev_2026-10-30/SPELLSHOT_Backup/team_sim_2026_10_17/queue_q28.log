@@ -1,0 +1,173 @@
+[12:39:32] start q28_base (37 left)
+[12:41:18] done q28_base rc=0 106s
+[12:41:18] start q28_base_b (36 left)
+[12:43:00] done q28_base_b rc=0 102s
+[12:43:00] start q28_ff20 (35 left)
+[12:44:47] done q28_ff20 rc=0 107s
+[12:44:47] start q28_tt_a200 (34 left)
+[12:47:03] done q28_tt_a200 rc=0 136s
+[12:47:03] start q28_tt_b100 (33 left)
+[12:49:27] done q28_tt_b100 rc=0 144s
+[12:49:27] start q28_tt_c200 (32 left)
+[12:51:30] done q28_tt_c200 rc=0 123s
+[12:51:30] start q28_bz32 (31 left)
+[12:53:14] done q28_bz32 rc=0 104s
+[12:53:14] start q28_df20 (30 left)
+[12:54:56] done q28_df20 rc=0 102s
+[12:54:56] start q28_as24 (29 left)
+[12:56:38] done q28_as24 rc=0 101s
+[12:56:38] start q28_bn35 (28 left)
+[12:58:19] done q28_bn35 rc=0 102s
+[12:58:19] start q28_tt_a200_h3 (27 left)
+[13:00:13] done q28_tt_a200_h3 rc=0 114s
+[13:00:13] start q28_df20 (27 left)
+[13:02:09] done q28_df20 rc=0 116s
+[13:02:09] start q28_ff15 (28 left)
+[13:04:04] done q28_ff15 rc=0 115s
+[13:04:04] start q28_ff25 (27 left)
+[13:06:00] done q28_ff25 rc=0 117s
+[13:06:00] start q28_tt_a150 (26 left)
+[13:08:03] done q28_tt_a150 rc=0 123s
+[13:08:03] start q28_tt_a250 (26 left)
+[13:09:59] done q28_tt_a250 rc=0 115s
+[13:09:59] start q28_tt_b125 (25 left)
+[13:11:53] done q28_tt_b125 rc=0 114s
+[13:11:53] start q28_tt_c150 (24 left)
+[13:13:41] done q28_tt_c150 rc=0 109s
+[13:13:41] start q28_tt_c250 (23 left)
+[13:15:25] done q28_tt_c250 rc=0 103s
+[13:15:25] start q28_bz20 (22 left)
+[13:17:08] done q28_bz20 rc=0 103s
+[13:17:08] start q28_bz45 (21 left)
+[13:19:05] done q28_bz45 rc=0 117s
+[13:19:05] start q28_df10 (20 left)
+[13:21:01] done q28_df10 rc=0 117s
+[13:21:01] start q28_df30 (19 left)
+[13:22:56] done q28_df30 rc=0 114s
+[13:22:56] start q28_as15 (18 left)
+[13:24:47] done q28_as15 rc=0 111s
+[13:24:47] start q28_as35 (17 left)
+[13:30:58] done q28_as35 rc=0 371s
+[13:30:58] start q28_bn20 (16 left)
+[13:37:12] done q28_bn20 rc=0 373s
+[13:37:12] start q28_bn50 (15 left)
+[13:39:28] done q28_bn50 rc=0 136s
+[13:39:28] start q28_tt_b100_h3 (14 left)
+[13:48:35] done q28_tt_b100_h3 rc=0 547s
+[13:48:35] start q28_tt_c200_h3 (13 left)
+[13:57:40] done q28_tt_c200_h3 rc=0 545s
+[13:57:41] start q28_tt_a200_h6 (12 left)
+[14:09:08] done q28_tt_a200_h6 rc=0 687s
+[14:09:08] start q28_cryo_all (11 left)
+[14:20:24] done q28_cryo_all rc=0 676s
+[14:20:24] start q28_ff20_r14 (10 left)
+[14:24:18] done q28_ff20_r14 rc=0 234s
+[14:24:18] start q28_ff20_wind (9 left)
+[14:26:09] done q28_ff20_wind rc=0 111s
+[14:26:09] start q28_ff20_frz25 (8 left)
+[14:28:02] done q28_ff20_frz25 rc=0 112s
+[14:28:02] start q28_bz32_r24 (7 left)
+[14:29:59] done q28_bz32_r24 rc=0 117s
+[14:29:59] start q28_bz32_dur4 (6 left)
+[14:31:59] done q28_bz32_dur4 rc=0 120s
+[14:31:59] start q28_combo (5 left)
+[14:34:07] done q28_combo rc=0 128s
+[14:34:07] start q28_swap_none (4 left)
+[14:38:10] done q28_swap_none rc=0 244s
+[14:38:10] start q28_swap_BW (3 left)
+[14:50:49] done q28_swap_BW rc=0 759s
+[14:50:49] start q28_swap_TT (2 left)
+[15:02:31] done q28_swap_TT rc=0 702s
+[15:02:31] start q28_swap_TTlive (1 left)
+Process SpawnPoolWorker-14:
+Traceback (most recent call last):
+Process SpawnPoolWorker-8:
+Process SpawnPoolWorker-17:
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\pool.py", line 131, in worker
+    put((job, i, result))
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\queues.py", line 374, in put
+    self._writer.send_bytes(obj)
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 289, in _send_bytes
+    ov, err = _winapi.WriteFile(self._handle, buf, overlapped=True)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [WinError 232] The pipe is being closed
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\process.py", line 314, in _bootstrap
+    self.run()
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\pool.py", line 136, in worker
+    put((job, i, (False, wrapped)))
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\queues.py", line 374, in put
+    self._writer.send_bytes(obj)
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 289, in _send_bytes
+    ov, err = _winapi.WriteFile(self._handle, buf, overlapped=True)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [WinError 232] The pipe is being closed
+Process SpawnPoolWorker-5:
+Traceback (most recent call last):
+Traceback (most recent call last):
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\pool.py", line 131, in worker
+    put((job, i, result))
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\queues.py", line 374, in put
+    self._writer.send_bytes(obj)
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 289, in _send_bytes
+    ov, err = _winapi.WriteFile(self._handle, buf, overlapped=True)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [WinError 232] The pipe is being closed
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\process.py", line 314, in _bootstrap
+    self.run()
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\pool.py", line 136, in worker
+    put((job, i, (False, wrapped)))
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\queues.py", line 374, in put
+    self._writer.send_bytes(obj)
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 289, in _send_bytes
+    ov, err = _winapi.WriteFile(self._handle, buf, overlapped=True)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [WinError 232] The pipe is being closed
+Traceback (most recent call last):
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\pool.py", line 131, in worker
+    put((job, i, result))
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\queues.py", line 374, in put
+    self._writer.send_bytes(obj)
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 289, in _send_bytes
+    ov, err = _winapi.WriteFile(self._handle, buf, overlapped=True)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [WinError 232] The pipe is being closed
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\process.py", line 314, in _bootstrap
+    self.run()
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\pool.py", line 136, in worker
+    put((job, i, (False, wrapped)))
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\queues.py", line 374, in put
+    self._writer.send_bytes(obj)
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "C:\Users\work\anaconda3\Lib\multiprocessing\connection.py", line 289, in _send_bytes
+    ov, err = _winapi.WriteFile(self._handle, buf, overlapped=True)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [WinError 232] The pipe is being closed

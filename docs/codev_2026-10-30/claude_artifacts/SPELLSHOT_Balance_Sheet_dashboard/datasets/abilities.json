@@ -1,0 +1,14 @@
+{
+  "description": "Every castable ability's numbers, printed from the running modules of the live place in Edit on 2026-10-16; the Flag column marks values read from source text (src), found only in IMPLEMENTED.md (doc), or awaiting sign-off (PROP).",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "abilities.json",
+    "url": "/_blob/ee62809b2c171d7e5de1579c7d5c5ca9"
+  },
+  "title": "Ability stats, live kits",
+  "updated": {
+    "at": "2026-10-17T00:37:58+04:00",
+    "by": "Claude"
+  }
+}

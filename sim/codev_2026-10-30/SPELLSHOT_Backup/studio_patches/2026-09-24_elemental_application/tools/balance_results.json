@@ -1,0 +1,77 @@
+{
+ "A": {
+  "cryo_60": {
+   "rooted": 0.22665375000301313,
+   "slowed": 0.31429666667159284,
+   "hard_slow": 0.1573054166681661
+  },
+  "cryo_90": {
+   "rooted": 0.2668937500038915,
+   "slowed": 0.24742583333679988,
+   "hard_slow": 0.1236450000007647
+  },
+  "immolate_extra": 13.423200000000355,
+  "lash_3_strikes": 70.39999999999998,
+  "poison_full": 20.0,
+  "charged_duel_dps": 0.0,
+  "voltaic_base_dps": 14.0,
+  "charged_team_dps": 6.222222222222222,
+  "mark_on_boulder48": 14.399999999999999,
+  "mark_on_shard8": 2.4,
+  "bless_seconds_vs_25dps": 1.4
+ },
+ "B": {
+  "cryo_60": {
+   "rooted": 0.16529083333500708,
+   "slowed": 0.0,
+   "hard_slow": 0.0
+  },
+  "cryo_90": {
+   "rooted": 0.18844250000217908,
+   "slowed": 0.0,
+   "hard_slow": 0.0
+  },
+  "immolate_extra": 14.644,
+  "lash_3_strikes": 64.0,
+  "poison_full": 12.0,
+  "charged_duel_dps": 5.185185185185185,
+  "voltaic_base_dps": 14.0,
+  "charged_team_dps": 7.259259259259259,
+  "mark_on_boulder48": 12.0,
+  "mark_on_shard8": 2.0,
+  "bless_seconds_vs_25dps": 1.2
+ },
+ "C": {
+  "cryo_60": {
+   "rooted": 0.11207500000051215,
+   "slowed": 0.24620458333677323,
+   "hard_slow": 0.0
+  },
+  "cryo_90": {
+   "rooted": 0.12657666666749537,
+   "slowed": 0.18631833333546605,
+   "hard_slow": 0.0
+  },
+  "immolate_extra": 10.110599999999792,
+  "lash_3_strikes": 52.80000000000001,
+  "poison_full": 25.0,
+  "charged_duel_dps": 4.148148148148148,
+  "voltaic_base_dps": 14.0,
+  "charged_team_dps": 6.222222222222221,
+  "mark_on_boulder48": 9.600000000000001,
+  "mark_on_shard8": 1.6,
+  "bless_seconds_vs_25dps": 1.0
+ },
+ "TODAY": {
+  "cryo_60": {
+   "rooted": 0.22590166666966338,
+   "slowed": 0.313738750004914,
+   "hard_slow": 0.15555666666812792
+  },
+  "cryo_90": {
+   "rooted": 0.26632583333721244,
+   "slowed": 0.24828750000348535,
+   "hard_slow": 0.12329500000075706
+  }
+ }
+}

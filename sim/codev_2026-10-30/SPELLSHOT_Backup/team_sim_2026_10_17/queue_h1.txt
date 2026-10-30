@@ -1,0 +1,16 @@
+h1_K rr84 6
+h1_T1_v3 rr84 20
+h1_T1 rr84 20
+h1_TA1_v3 rr84 20
+h1_TA1 rr84 20
+h1_T1_bz32 rr84 20
+h1_TA1_bz32 rr84 20
+h1_cb55 rr84 6
+h1_dmg10 rr84 6
+h1_cb55d10 rr84 6
+h1_dive rr84 6
+h1_exit10 rr84 6
+h1_cb65 rr84 6
+h1_dmg12 rr84 6
+h1_exit6 rr84 6
+# h1_K_b rr84 6   (dropped: on battery; P28's noise check applies)

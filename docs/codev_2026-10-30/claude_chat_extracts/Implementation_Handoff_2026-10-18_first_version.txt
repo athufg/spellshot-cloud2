@@ -1,0 +1,51 @@
+SPELLSHOT — Implementation Handoff (Studio session)
+Compiled 2026-10-18. Everything here is either (a) already decided and safe to build regardless of what further simulation finds, or (b) a Studio-only check/fix that doesn't need simulation at all. Nothing in this file should wait on more round-robin testing — that's the other handoff.
+A. Locked decisions — build these now
+1. Team-comp only (P30). Drop 1v1 Duel as a parallel mode. One mode, one ruleset. Reasoning on record: applying 3v3's HP/wall/healing numbers to a shared ruleset would silently rewrite Duel's separately-tuned balance, and Radiant's ally-targeted rework (heal/shield allies) doesn't function without teammates at all.
+2. Techniques: intra-Element only, never cross-Element (P31). The Technique-swap UI/logic must only ever offer swaps within a player's own chosen Element. This is a structural change, not a per-ability flag — once it's in, Bulwark Wall, a standing Twin Tide, or anything else simply cannot leave its home Element. Don't also build a per-ability lock on top of this (see section B — it's redundant).
+3. Monetization model (P32) — direction locked, currency curve still open.
+
+* The 9 base Elements: earn via in-game currency from play, or buy currency with Robux to skip the grind. Dual-path, not a fully-free roster.
+* New-player starter kit: a fixed 5 Elements at signup, no choice screen — one per category (Offence, Mobility, Control, Terra for Defence, Radiant for Support).
+* Skins/wraps: Robux-only, unaffected by any of this (already locked under P16).
+* Event/collab Elements: separate track — heavy story-mode grind or Robux-only, and may carry a real power advantage including in ranked (explicit owner call, not an oversight to guard against).
+* Exact currency amounts/earn rates: still open, doesn't block starting the build.
+
+4. Ship the validated self-centered → cursor-targeted conversions (P29). Tested, confirmed safe, specific doses:
+
+* Flash Freeze: cursor-targeted at 20 or 25 studs.
+* Blizzard: cursor-targeted at 20 studs specifically.
+* Do not use Blizzard at 32 or 45 studs — those doses buff Terra as a side effect.
+* Do not convert Deep Freeze, Aftershock, or Benediction — tested, no measurable effect, leave them self-centered.
+
+5. Fix the 6 confirmed data bugs (P23 finding 6 / recommendation #15). Flagged "high confidence, no judgment call needed" but never confirmed as actually applied (unlike recs #2/3/6/7/9/10, which were batch-applied 2026-10-17):
+
+* Boulder Shot's full-charge travel speed is slower than its no-charge version — backwards, fix the charge scaling.
+* Fireball's range field disagrees with its actual ~162-stud flight distance — reconcile.
+* Undertow has two conflicting range fields — reconcile.
+* A stale `AbilityHandler` constant — find and remove/update.
+* Chain Bolt's range was edited live at some point without being logged — confirm which value is actually canon and record it.
+* A stray leftover `DashDistance` field on Zephyr — remove if unused.
+
+B. Do NOT implement — superseded, would be wasted work
+
+* "Lock Bulwark Wall to Terra only (Origin-only)" — this was P28/P29's own top recommendation at the time, but P31 (above) already makes cross-Element Technique swapping structurally impossible roster-wide. A per-ability lock on top of that does nothing new.
+* Same for locking a standing Twin Tide to Aqua only — moot for the same reason.
+
+C. Studio-only checks — these block trusting the simulator's numbers
+None of these need a round-robin. They need someone to look at the live game and confirm a number or build a missing piece of server behavior.
+
+1. Twin Tide's actual live baseline — cast count, any existing wall HP, width, duration, cooldown. Flagged as unconfirmed in every round that touched it (P28 spec, P28 results, P29).
+2. Does Bulwark Wall's HP reset fresh on every deploy, or carry accumulated damage from a prior deploy? Flagged explicitly by P25 as unconfirmed and load-bearing for how strong the wall actually is.
+3. Does any wall currently block player movement/bodies server-side, or only visually/client-side? This is the one that matters most: P28's "standing Twin Tide" result (Aqua 43.7%→49.5%) is win-rate-only and explicitly can't be trusted on body-blocking, because "today only clients have it." If server-side wall collision doesn't exist, that's a real build task, not just a check, before the standing-wall fix means anything in actual play.
+4. Re-measure the shared movement-chain speed in Play mode. The 45 studs/s number feeding every rush-vs-kite conclusion since 2026-10-17 is an estimate from slide-jump caps, never actually remeasured after that patch.
+5. Republish the Balance Sheet dashboard artifact off the corrected simulation data. It still shows pre-fix numbers from before the 0.1s-step timing bug was found (the one that understated Wind Blade by 40%, Chain Bolt by 20%, Icicle Shard by 17%). Anyone looking at that dashboard right now is reading wrong Pyro/Aqua/Toxin/Cryo/Zephyr/Voltaic numbers.
+
+D. Decisions still needed — not implementation, but don't let these default silently
+
+* Role lock vs. open comp for team mode — leaning open comp (no forced 1-of-each), never formally locked as a decision.
+* Match format for team fights (best-of-N, objective/score, single round) — untouched, fully open.
+* Jump vs. no-jump movement variant — tested, barely matters except it costs one comp (S5) ~13-14 points. No shipped decision either way.
+* Does a Tank role get a bigger hitbox? — untouched, open.
+* Radiant's damage budget if it becomes a dedicated healer — untouched, open.
+* The actual fix for Terra's monopoly — this is the simulator's job first (see the other handoff). Don't build around any particular fix for this yet.

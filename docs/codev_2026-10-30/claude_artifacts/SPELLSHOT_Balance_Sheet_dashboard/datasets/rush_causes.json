@@ -1,0 +1,14 @@
+{
+  "description": "For each rusher, the kiters it beats in more than 55% of simulated duels and the mechanic behind it.",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "rush_causes.json",
+    "url": "/_blob/c746215bfc6027f6ba4debb70b49bd54"
+  },
+  "title": "Why rushers win",
+  "updated": {
+    "at": "2026-10-17T00:37:58+04:00",
+    "by": "Claude"
+  }
+}

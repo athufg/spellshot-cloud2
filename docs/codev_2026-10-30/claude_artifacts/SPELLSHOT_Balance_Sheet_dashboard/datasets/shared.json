@@ -1,0 +1,14 @@
+{
+  "description": "Values every Element shares: HP, mana, regen, gravity, Ultimate charge, and the sustained chase speed before the balance pass and after it, both measured in Play.",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "shared_v3.json",
+    "url": "/_blob/175310593874de3a28dfaf8e6e435f48"
+  },
+  "title": "Shared rules",
+  "updated": {
+    "at": "2026-10-18T17:30:00+04:00",
+    "by": "Claude"
+  }
+}

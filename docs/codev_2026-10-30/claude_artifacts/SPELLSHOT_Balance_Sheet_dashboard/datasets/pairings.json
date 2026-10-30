@@ -1,0 +1,14 @@
+{
+  "description": "The 16 October kit (before the balance pass), on the 17 October model with the corrected M1 timing (18 October): both duellists move while they shoot, targets jump, and every shot can miss; 100 duels per pairing and per approach (both chase, both keep distance, one of each), with the best-play win rate of the 2x2 game those four make. Hitboxes at their old size.",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "pairings_full_before_m1fix.json",
+    "url": "/_blob/1058f2cc1e47513008f4cd74fbf1aa94"
+  },
+  "title": "Duel simulation, before",
+  "updated": {
+    "at": "2026-10-18T16:20:00+04:00",
+    "by": "Claude"
+  }
+}

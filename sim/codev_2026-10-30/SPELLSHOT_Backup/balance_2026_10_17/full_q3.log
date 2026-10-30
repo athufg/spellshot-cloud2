@@ -1,0 +1,1 @@
+pass after tag full_q3 overrides {'HITBOX': 2.0, 'PROJ_SPEED': 200, 'FB_DIRECT': 15, 'FB_SPLASH': 6, 'FB_RATE': 0.7, 'DET_SCALE': 24, 'IMM_BURN': 1.6, 'RIP_DMG': 19, 'DART_DMG': 60, 'ICE_DMG': 9, 'LANCE_MAX': 26, 'BUB_DMG': 10, 'WB_DMG': 4, 'BOULDER_DMG': 40, 'CB_DMG': 9} done

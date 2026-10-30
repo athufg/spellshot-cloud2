@@ -1,0 +1,14 @@
+{
+  "description": "Damage or healing per cast, per mana and per second of cooldown for the abilities that deal it.",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "mana_abilities.json",
+    "url": "/_blob/689980ea6b4d143513552281cfaeeb78"
+  },
+  "title": "Ability value per mana",
+  "updated": {
+    "at": "2026-10-17T00:37:58+04:00",
+    "by": "Claude"
+  }
+}

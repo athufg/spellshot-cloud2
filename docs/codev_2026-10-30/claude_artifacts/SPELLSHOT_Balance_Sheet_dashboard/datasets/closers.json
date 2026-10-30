@@ -1,0 +1,14 @@
+{
+  "description": "Each gap closer's effective closing speed against the shared chain, and whether it still works under Chill or Blizzard.",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "closers.json",
+    "url": "/_blob/1da7d152728f10652f92a10d07a32f08"
+  },
+  "title": "Gap closers vs the chain",
+  "updated": {
+    "at": "2026-10-17T00:37:58+04:00",
+    "by": "Claude"
+  }
+}

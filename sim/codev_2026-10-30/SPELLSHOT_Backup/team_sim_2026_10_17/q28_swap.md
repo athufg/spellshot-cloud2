@@ -1,0 +1,6 @@
+each Element's Defense Technique was replaced by Twin Tide and played against the 83 other comps, against a control on the same seeds and wall settings without the swap.
+  - **On the live walls, a blocking Twin Tide swap is worth +5.0 for Cryo and +4.0 for Zephyr,** with the other non-Terra Elements within about ±2 (Terra, which loses its own Bulwark Wall, is below). That is smaller than the standing version or Bulwark Wall, but larger than any P29 change. The run includes the crush and cover-casting, and no swap without blocking was run, so the sim can't say how much comes from the walls.
+  - **With the standing walls it grows:** Cryo +10.9, Zephyr +7.6, Umbra +4.5, Toxin +2.8 and Voltaic +2.4. Pyro and Radiant don't change.
+  - Cryo probably gives up little by losing Deep Freeze. This is an inference: it deals 0.4 damage a round, moving it changed nothing in P29, and no run removes it. So Cryo's swap gain is probably close to Twin Tide's full value for Cryo.
+  - **For comparison, Bulwark Wall at v3's strength (400 HP) as a swap lifts 7 of the 8 other Elements by 11.5 to 26.5 points** (Cryo 48.6 → 75.2); only Umbra gains just 2.1. P25's exploit is far bigger at v3's wall strength than anything a standing Twin Tide adds.
+  - **Terra swapping its own Bulwark Wall out for Twin Tide drops 14.5 to 17 points.** Terra's edge is its wall.

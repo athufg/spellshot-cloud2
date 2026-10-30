@@ -1,0 +1,1152 @@
+{
+"ttk": {
+"Aqua>Aqua": [
+6.4,
+8
+],
+"Aqua>Cryo": [
+6.5,
+8
+],
+"Aqua>Pyro": [
+6.3,
+8
+],
+"Aqua>Radiant": [
+8.6,
+8
+],
+"Aqua>Terra": [
+9.6,
+8
+],
+"Aqua>Toxin": [
+6.5,
+8
+],
+"Aqua>Umbra": [
+6.9,
+8
+],
+"Aqua>Voltaic": [
+6.1,
+8
+],
+"Aqua>Zephyr": [
+6.2,
+8
+],
+"Cryo>Aqua": [
+6.3,
+8
+],
+"Cryo>Cryo": [
+6.3,
+8
+],
+"Cryo>Pyro": [
+6.3,
+8
+],
+"Cryo>Radiant": [
+8.0,
+8
+],
+"Cryo>Terra": [
+10.8,
+8
+],
+"Cryo>Toxin": [
+6.3,
+8
+],
+"Cryo>Umbra": [
+6.6,
+8
+],
+"Cryo>Voltaic": [
+6.2,
+8
+],
+"Cryo>Zephyr": [
+6.3,
+8
+],
+"Pyro>Aqua": [
+3.2,
+8
+],
+"Pyro>Cryo": [
+3.2,
+8
+],
+"Pyro>Pyro": [
+3.2,
+8
+],
+"Pyro>Radiant": [
+4.3,
+8
+],
+"Pyro>Terra": [
+5.4,
+8
+],
+"Pyro>Toxin": [
+3.2,
+8
+],
+"Pyro>Umbra": [
+3.8,
+8
+],
+"Pyro>Voltaic": [
+3.2,
+8
+],
+"Pyro>Zephyr": [
+3.1,
+8
+],
+"Radiant>Aqua": [
+5.5,
+8
+],
+"Radiant>Cryo": [
+5.4,
+20
+],
+"Radiant>Pyro": [
+5.5,
+20
+],
+"Radiant>Radiant": [
+6.6,
+8
+],
+"Radiant>Terra": [
+9.1,
+8
+],
+"Radiant>Toxin": [
+5.5,
+8
+],
+"Radiant>Umbra": [
+5.5,
+8
+],
+"Radiant>Voltaic": [
+5.4,
+8
+],
+"Radiant>Zephyr": [
+5.5,
+8
+],
+"Terra>Aqua": [
+3.7,
+20
+],
+"Terra>Cryo": [
+4.4,
+20
+],
+"Terra>Pyro": [
+4.2,
+20
+],
+"Terra>Radiant": [
+6.3,
+20
+],
+"Terra>Terra": [
+7.3,
+20
+],
+"Terra>Toxin": [
+4.1,
+20
+],
+"Terra>Umbra": [
+5.9,
+20
+],
+"Terra>Voltaic": [
+3.7,
+20
+],
+"Terra>Zephyr": [
+3.9,
+20
+],
+"Toxin>Aqua": [
+6.6,
+8
+],
+"Toxin>Cryo": [
+6.6,
+8
+],
+"Toxin>Pyro": [
+6.6,
+8
+],
+"Toxin>Radiant": [
+8.1,
+8
+],
+"Toxin>Terra": [
+9.4,
+8
+],
+"Toxin>Toxin": [
+7.0,
+8
+],
+"Toxin>Umbra": [
+6.9,
+8
+],
+"Toxin>Voltaic": [
+6.7,
+8
+],
+"Toxin>Zephyr": [
+6.5,
+8
+],
+"Umbra>Aqua": [
+5.7,
+8
+],
+"Umbra>Cryo": [
+6.2,
+8
+],
+"Umbra>Pyro": [
+5.5,
+8
+],
+"Umbra>Radiant": [
+6.3,
+8
+],
+"Umbra>Terra": [
+5.9,
+20
+],
+"Umbra>Toxin": [
+5.5,
+8
+],
+"Umbra>Umbra": [
+7.3,
+8
+],
+"Umbra>Voltaic": [
+5.6,
+8
+],
+"Umbra>Zephyr": [
+6.1,
+8
+],
+"Voltaic>Aqua": [
+3.2,
+20
+],
+"Voltaic>Cryo": [
+3.2,
+8
+],
+"Voltaic>Pyro": [
+3.3,
+8
+],
+"Voltaic>Radiant": [
+4.6,
+20
+],
+"Voltaic>Terra": [
+5.1,
+8
+],
+"Voltaic>Toxin": [
+3.3,
+8
+],
+"Voltaic>Umbra": [
+3.8,
+8
+],
+"Voltaic>Voltaic": [
+3.3,
+8
+],
+"Voltaic>Zephyr": [
+3.3,
+8
+],
+"Zephyr>Aqua": [
+4.7,
+20
+],
+"Zephyr>Cryo": [
+4.8,
+20
+],
+"Zephyr>Pyro": [
+4.8,
+20
+],
+"Zephyr>Radiant": [
+6.0,
+20
+],
+"Zephyr>Terra": [
+9.3,
+20
+],
+"Zephyr>Toxin": [
+4.7,
+20
+],
+"Zephyr>Umbra": [
+4.9,
+20
+],
+"Zephyr>Voltaic": [
+4.7,
+20
+],
+"Zephyr>Zephyr": [
+4.7,
+20
+]
+},
+"rush": {
+"Aqua>Aqua": 0.39,
+"Aqua>Cryo": 0.0,
+"Aqua>Pyro": 0.0,
+"Aqua>Radiant": 0.0,
+"Aqua>Terra": 0.0,
+"Aqua>Toxin": 0.0,
+"Aqua>Umbra": 0.0,
+"Aqua>Voltaic": 0.0,
+"Aqua>Zephyr": 0.0,
+"Cryo>Aqua": 0.98,
+"Cryo>Cryo": 0.34,
+"Cryo>Pyro": 0.0,
+"Cryo>Radiant": 0.0,
+"Cryo>Terra": 0.1,
+"Cryo>Toxin": 0.35,
+"Cryo>Umbra": 0.04,
+"Cryo>Voltaic": 0.08,
+"Cryo>Zephyr": 0.04,
+"Pyro>Aqua": 1.0,
+"Pyro>Cryo": 1.0,
+"Pyro>Pyro": 0.34,
+"Pyro>Radiant": 0.97,
+"Pyro>Terra": 0.75,
+"Pyro>Toxin": 1.0,
+"Pyro>Umbra": 0.8,
+"Pyro>Voltaic": 1.0,
+"Pyro>Zephyr": 1.0,
+"Radiant>Aqua": 0.99,
+"Radiant>Cryo": 0.07,
+"Radiant>Pyro": 0.0,
+"Radiant>Radiant": 0.5,
+"Radiant>Terra": 0.08,
+"Radiant>Toxin": 0.96,
+"Radiant>Umbra": 0.61,
+"Radiant>Voltaic": 0.66,
+"Radiant>Zephyr": 0.13,
+"Terra>Aqua": 1.0,
+"Terra>Cryo": 0.73,
+"Terra>Pyro": 0.33,
+"Terra>Radiant": 0.71,
+"Terra>Terra": 0.71,
+"Terra>Toxin": 0.96,
+"Terra>Umbra": 0.41,
+"Terra>Voltaic": 0.97,
+"Terra>Zephyr": 1.0,
+"Toxin>Aqua": 0.92,
+"Toxin>Cryo": 0.45,
+"Toxin>Pyro": 0.0,
+"Toxin>Radiant": 0.0,
+"Toxin>Terra": 0.1,
+"Toxin>Toxin": 0.45,
+"Toxin>Umbra": 0.14,
+"Toxin>Voltaic": 0.45,
+"Toxin>Zephyr": 0.12,
+"Umbra>Aqua": 0.96,
+"Umbra>Cryo": 0.74,
+"Umbra>Pyro": 0.38,
+"Umbra>Radiant": 0.25,
+"Umbra>Terra": 0.73,
+"Umbra>Toxin": 0.7,
+"Umbra>Umbra": 0.42,
+"Umbra>Voltaic": 0.98,
+"Umbra>Zephyr": 0.66,
+"Voltaic>Aqua": 0.9,
+"Voltaic>Cryo": 0.02,
+"Voltaic>Pyro": 0.0,
+"Voltaic>Radiant": 0.0,
+"Voltaic>Terra": 0.28,
+"Voltaic>Toxin": 0.63,
+"Voltaic>Umbra": 0.18,
+"Voltaic>Voltaic": 0.39,
+"Voltaic>Zephyr": 0.07,
+"Zephyr>Aqua": 1.0,
+"Zephyr>Cryo": 0.5,
+"Zephyr>Pyro": 0.03,
+"Zephyr>Radiant": 0.34,
+"Zephyr>Terra": 0.67,
+"Zephyr>Toxin": 1.0,
+"Zephyr>Umbra": 0.63,
+"Zephyr>Voltaic": 0.96,
+"Zephyr>Zephyr": 0.99
+},
+"contact": {
+"Aqua>Aqua": 4.7,
+"Aqua>Cryo": 17.4,
+"Aqua>Pyro": 4.2,
+"Aqua>Radiant": 4.1,
+"Aqua>Terra": 4.2,
+"Aqua>Toxin": 4.2,
+"Aqua>Umbra": 4.2,
+"Aqua>Voltaic": 4.1,
+"Aqua>Zephyr": 4.2,
+"Cryo>Aqua": 2.9,
+"Cryo>Cryo": 59.5,
+"Cryo>Pyro": 5.1,
+"Cryo>Radiant": 2.9,
+"Cryo>Terra": 4.5,
+"Cryo>Toxin": 4.3,
+"Cryo>Umbra": 4.6,
+"Cryo>Voltaic": 3.7,
+"Cryo>Zephyr": 4.6,
+"Pyro>Aqua": 15.7,
+"Pyro>Cryo": 60.0,
+"Pyro>Pyro": 12.7,
+"Pyro>Radiant": 4.3,
+"Pyro>Terra": 4.3,
+"Pyro>Toxin": 4.3,
+"Pyro>Umbra": 4.4,
+"Pyro>Voltaic": 4.3,
+"Pyro>Zephyr": 4.3,
+"Radiant>Aqua": 4.7,
+"Radiant>Cryo": 10.9,
+"Radiant>Pyro": 4.3,
+"Radiant>Radiant": 4.2,
+"Radiant>Terra": 4.2,
+"Radiant>Toxin": 4.2,
+"Radiant>Umbra": 4.2,
+"Radiant>Voltaic": 4.2,
+"Radiant>Zephyr": 4.2,
+"Terra>Aqua": 4.7,
+"Terra>Cryo": 45.7,
+"Terra>Pyro": 4.5,
+"Terra>Radiant": 4.3,
+"Terra>Terra": 4.3,
+"Terra>Toxin": 4.3,
+"Terra>Umbra": 4.4,
+"Terra>Voltaic": 4.3,
+"Terra>Zephyr": 4.3,
+"Toxin>Aqua": 4.8,
+"Toxin>Cryo": 53.4,
+"Toxin>Pyro": 5.1,
+"Toxin>Radiant": 4.4,
+"Toxin>Terra": 4.6,
+"Toxin>Toxin": 4.5,
+"Toxin>Umbra": 4.5,
+"Toxin>Voltaic": 4.4,
+"Toxin>Zephyr": 4.5,
+"Umbra>Aqua": 15.7,
+"Umbra>Cryo": 35.8,
+"Umbra>Pyro": 9.2,
+"Umbra>Radiant": 6.4,
+"Umbra>Terra": 10.9,
+"Umbra>Toxin": 6.4,
+"Umbra>Umbra": 3.6,
+"Umbra>Voltaic": 11.4,
+"Umbra>Zephyr": 13.8,
+"Voltaic>Aqua": 4.7,
+"Voltaic>Cryo": 49.9,
+"Voltaic>Pyro": 7.7,
+"Voltaic>Radiant": 4.3,
+"Voltaic>Terra": 4.4,
+"Voltaic>Toxin": 4.4,
+"Voltaic>Umbra": 4.4,
+"Voltaic>Voltaic": 4.3,
+"Voltaic>Zephyr": 4.4,
+"Zephyr>Aqua": 2.1,
+"Zephyr>Cryo": 55.1,
+"Zephyr>Pyro": 1.8,
+"Zephyr>Radiant": 1.7,
+"Zephyr>Terra": 1.8,
+"Zephyr>Toxin": 1.8,
+"Zephyr>Umbra": 1.8,
+"Zephyr>Voltaic": 1.8,
+"Zephyr>Zephyr": 1.7
+},
+"kiterfar": {
+"Aqua>Aqua": 53.8,
+"Aqua>Cryo": 118.6,
+"Aqua>Pyro": 94.0,
+"Aqua>Radiant": 57.1,
+"Aqua>Terra": 55.2,
+"Aqua>Toxin": 33.6,
+"Aqua>Umbra": 33.8,
+"Aqua>Voltaic": 31.1,
+"Aqua>Zephyr": 57.1,
+"Cryo>Aqua": 30.0,
+"Cryo>Cryo": 131.9,
+"Cryo>Pyro": 83.5,
+"Cryo>Radiant": 14.8,
+"Cryo>Terra": 38.4,
+"Cryo>Toxin": 31.0,
+"Cryo>Umbra": 32.5,
+"Cryo>Voltaic": 33.2,
+"Cryo>Zephyr": 52.0,
+"Pyro>Aqua": 54.7,
+"Pyro>Cryo": 81.0,
+"Pyro>Pyro": 93.9,
+"Pyro>Radiant": 58.1,
+"Pyro>Terra": 52.8,
+"Pyro>Toxin": 33.2,
+"Pyro>Umbra": 27.3,
+"Pyro>Voltaic": 34.7,
+"Pyro>Zephyr": 56.3,
+"Radiant>Aqua": 34.4,
+"Radiant>Cryo": 86.5,
+"Radiant>Pyro": 63.4,
+"Radiant>Radiant": 26.7,
+"Radiant>Terra": 43.0,
+"Radiant>Toxin": 19.3,
+"Radiant>Umbra": 31.1,
+"Radiant>Voltaic": 27.4,
+"Radiant>Zephyr": 27.2,
+"Terra>Aqua": 46.0,
+"Terra>Cryo": 71.7,
+"Terra>Pyro": 63.5,
+"Terra>Radiant": 50.7,
+"Terra>Terra": 47.8,
+"Terra>Toxin": 30.2,
+"Terra>Umbra": 26.0,
+"Terra>Voltaic": 26.8,
+"Terra>Zephyr": 49.7,
+"Toxin>Aqua": 59.4,
+"Toxin>Cryo": 119.9,
+"Toxin>Pyro": 91.3,
+"Toxin>Radiant": 56.4,
+"Toxin>Terra": 56.6,
+"Toxin>Toxin": 32.9,
+"Toxin>Umbra": 38.4,
+"Toxin>Voltaic": 37.2,
+"Toxin>Zephyr": 57.3,
+"Umbra>Aqua": 29.1,
+"Umbra>Cryo": 77.9,
+"Umbra>Pyro": 76.8,
+"Umbra>Radiant": 0.6,
+"Umbra>Terra": 19.7,
+"Umbra>Toxin": 23.8,
+"Umbra>Umbra": 26.6,
+"Umbra>Voltaic": 28.7,
+"Umbra>Zephyr": 41.4,
+"Voltaic>Aqua": 56.2,
+"Voltaic>Cryo": 118.0,
+"Voltaic>Pyro": 95.2,
+"Voltaic>Radiant": 56.6,
+"Voltaic>Terra": 57.1,
+"Voltaic>Toxin": 32.4,
+"Voltaic>Umbra": 37.0,
+"Voltaic>Voltaic": 34.0,
+"Voltaic>Zephyr": 55.6,
+"Zephyr>Aqua": 36.2,
+"Zephyr>Cryo": 97.2,
+"Zephyr>Pyro": 60.5,
+"Zephyr>Radiant": 27.4,
+"Zephyr>Terra": 29.8,
+"Zephyr>Toxin": 26.5,
+"Zephyr>Umbra": 22.1,
+"Zephyr>Voltaic": 36.0,
+"Zephyr>Zephyr": 34.5
+},
+"rr": {
+"Aqua>Aqua": 0.485,
+"Aqua>Cryo": 0.015,
+"Aqua>Pyro": 0.0,
+"Aqua>Radiant": 0.0,
+"Aqua>Terra": 0.0,
+"Aqua>Toxin": 0.0,
+"Aqua>Umbra": 0.01,
+"Aqua>Voltaic": 0.0,
+"Aqua>Zephyr": 0.0,
+"Cryo>Aqua": 0.99,
+"Cryo>Cryo": 0.555,
+"Cryo>Pyro": 0.0,
+"Cryo>Radiant": 0.0,
+"Cryo>Terra": 0.0,
+"Cryo>Toxin": 0.275,
+"Cryo>Umbra": 0.02,
+"Cryo>Voltaic": 0.0,
+"Cryo>Zephyr": 0.0,
+"Pyro>Aqua": 1.0,
+"Pyro>Cryo": 1.0,
+"Pyro>Pyro": 0.545,
+"Pyro>Radiant": 0.98,
+"Pyro>Terra": 0.02,
+"Pyro>Toxin": 1.0,
+"Pyro>Umbra": 0.5,
+"Pyro>Voltaic": 0.94,
+"Pyro>Zephyr": 1.0,
+"Radiant>Aqua": 1.0,
+"Radiant>Cryo": 1.0,
+"Radiant>Pyro": 0.015,
+"Radiant>Radiant": 0.445,
+"Radiant>Terra": 0.0,
+"Radiant>Toxin": 1.0,
+"Radiant>Umbra": 0.67,
+"Radiant>Voltaic": 0.415,
+"Radiant>Zephyr": 0.535,
+"Terra>Aqua": 1.0,
+"Terra>Cryo": 0.98,
+"Terra>Pyro": 0.96,
+"Terra>Radiant": 0.99,
+"Terra>Terra": 0.46,
+"Terra>Toxin": 1.0,
+"Terra>Umbra": 0.72,
+"Terra>Voltaic": 1.0,
+"Terra>Zephyr": 0.93,
+"Toxin>Aqua": 0.99,
+"Toxin>Cryo": 0.83,
+"Toxin>Pyro": 0.0,
+"Toxin>Radiant": 0.0,
+"Toxin>Terra": 0.0,
+"Toxin>Toxin": 0.535,
+"Toxin>Umbra": 0.375,
+"Toxin>Voltaic": 0.0,
+"Toxin>Zephyr": 0.0,
+"Umbra>Aqua": 1.0,
+"Umbra>Cryo": 0.97,
+"Umbra>Pyro": 0.37,
+"Umbra>Radiant": 0.32,
+"Umbra>Terra": 0.37,
+"Umbra>Toxin": 0.655,
+"Umbra>Umbra": 0.535,
+"Umbra>Voltaic": 0.615,
+"Umbra>Zephyr": 0.18,
+"Voltaic>Aqua": 1.0,
+"Voltaic>Cryo": 1.0,
+"Voltaic>Pyro": 0.055,
+"Voltaic>Radiant": 0.655,
+"Voltaic>Terra": 0.0,
+"Voltaic>Toxin": 0.99,
+"Voltaic>Umbra": 0.37,
+"Voltaic>Voltaic": 0.465,
+"Voltaic>Zephyr": 0.63,
+"Zephyr>Aqua": 1.0,
+"Zephyr>Cryo": 1.0,
+"Zephyr>Pyro": 0.01,
+"Zephyr>Radiant": 0.665,
+"Zephyr>Terra": 0.05,
+"Zephyr>Toxin": 1.0,
+"Zephyr>Umbra": 0.74,
+"Zephyr>Voltaic": 0.42,
+"Zephyr>Zephyr": 0.48
+},
+"kk": {
+"Aqua>Aqua": 0.555,
+"Aqua>Cryo": 0.0,
+"Aqua>Pyro": 0.0,
+"Aqua>Radiant": 0.86,
+"Aqua>Terra": 0.11,
+"Aqua>Toxin": 0.0,
+"Aqua>Umbra": 0.17,
+"Aqua>Voltaic": 1.0,
+"Aqua>Zephyr": 0.0,
+"Cryo>Aqua": 1.0,
+"Cryo>Cryo": 0.52,
+"Cryo>Pyro": 0.0,
+"Cryo>Radiant": 0.83,
+"Cryo>Terra": 0.455,
+"Cryo>Toxin": 0.085,
+"Cryo>Umbra": 0.53,
+"Cryo>Voltaic": 1.0,
+"Cryo>Zephyr": 0.89,
+"Pyro>Aqua": 1.0,
+"Pyro>Cryo": 1.0,
+"Pyro>Pyro": 0.41,
+"Pyro>Radiant": 1.0,
+"Pyro>Terra": 0.925,
+"Pyro>Toxin": 1.0,
+"Pyro>Umbra": 0.85,
+"Pyro>Voltaic": 1.0,
+"Pyro>Zephyr": 1.0,
+"Radiant>Aqua": 0.05,
+"Radiant>Cryo": 0.265,
+"Radiant>Pyro": 0.0,
+"Radiant>Radiant": 0.46,
+"Radiant>Terra": 0.0,
+"Radiant>Toxin": 0.0,
+"Radiant>Umbra": 0.835,
+"Radiant>Voltaic": 1.0,
+"Radiant>Zephyr": 0.0,
+"Terra>Aqua": 0.955,
+"Terra>Cryo": 0.63,
+"Terra>Pyro": 0.03,
+"Terra>Radiant": 1.0,
+"Terra>Terra": 0.435,
+"Terra>Toxin": 0.3,
+"Terra>Umbra": 0.44,
+"Terra>Voltaic": 1.0,
+"Terra>Zephyr": 0.68,
+"Toxin>Aqua": 0.99,
+"Toxin>Cryo": 0.87,
+"Toxin>Pyro": 0.0,
+"Toxin>Radiant": 1.0,
+"Toxin>Terra": 0.66,
+"Toxin>Toxin": 0.515,
+"Toxin>Umbra": 0.45,
+"Toxin>Voltaic": 1.0,
+"Toxin>Zephyr": 0.94,
+"Umbra>Aqua": 0.83,
+"Umbra>Cryo": 0.54,
+"Umbra>Pyro": 0.21,
+"Umbra>Radiant": 0.24,
+"Umbra>Terra": 0.68,
+"Umbra>Toxin": 0.47,
+"Umbra>Umbra": 0.46,
+"Umbra>Voltaic": 1.0,
+"Umbra>Zephyr": 0.64,
+"Voltaic>Aqua": 0.0,
+"Voltaic>Cryo": 0.0,
+"Voltaic>Pyro": 0.0,
+"Voltaic>Radiant": 0.0,
+"Voltaic>Terra": 0.0,
+"Voltaic>Toxin": 0.0,
+"Voltaic>Umbra": 0.0,
+"Voltaic>Voltaic": 0.5,
+"Voltaic>Zephyr": 0.0,
+"Zephyr>Aqua": 0.99,
+"Zephyr>Cryo": 0.06,
+"Zephyr>Pyro": 0.0,
+"Zephyr>Radiant": 1.0,
+"Zephyr>Terra": 0.275,
+"Zephyr>Toxin": 0.09,
+"Zephyr>Umbra": 0.4,
+"Zephyr>Voltaic": 1.0,
+"Zephyr>Zephyr": 0.59
+},
+"eq": {
+"Aqua>Aqua": 0.555,
+"Aqua>Cryo": 0.0,
+"Aqua>Pyro": 0.0,
+"Aqua>Radiant": 0.01,
+"Aqua>Terra": 0.0,
+"Aqua>Toxin": 0.0,
+"Aqua>Umbra": 0.04,
+"Aqua>Voltaic": 0.1,
+"Aqua>Zephyr": 0.0,
+"Cryo>Aqua": 1.0,
+"Cryo>Cryo": 0.52,
+"Cryo>Pyro": 0.0,
+"Cryo>Radiant": 0.83,
+"Cryo>Terra": 0.27,
+"Cryo>Toxin": 0.313,
+"Cryo>Umbra": 0.26,
+"Cryo>Voltaic": 0.98,
+"Cryo>Zephyr": 0.5,
+"Pyro>Aqua": 1.0,
+"Pyro>Cryo": 1.0,
+"Pyro>Pyro": 0.41,
+"Pyro>Radiant": 1.0,
+"Pyro>Terra": 0.67,
+"Pyro>Toxin": 1.0,
+"Pyro>Umbra": 0.62,
+"Pyro>Voltaic": 1.0,
+"Pyro>Zephyr": 1.0,
+"Radiant>Aqua": 0.99,
+"Radiant>Cryo": 0.265,
+"Radiant>Pyro": 0.0,
+"Radiant>Radiant": 0.477,
+"Radiant>Terra": 0.063,
+"Radiant>Toxin": 0.96,
+"Radiant>Umbra": 0.75,
+"Radiant>Voltaic": 1.0,
+"Radiant>Zephyr": 0.13,
+"Terra>Aqua": 1.0,
+"Terra>Cryo": 0.73,
+"Terra>Pyro": 0.33,
+"Terra>Radiant": 0.936,
+"Terra>Terra": 0.46,
+"Terra>Toxin": 0.96,
+"Terra>Umbra": 0.429,
+"Terra>Voltaic": 0.973,
+"Terra>Zephyr": 0.93,
+"Toxin>Aqua": 0.99,
+"Toxin>Cryo": 0.716,
+"Toxin>Pyro": 0.0,
+"Toxin>Radiant": 0.04,
+"Toxin>Terra": 0.04,
+"Toxin>Toxin": 0.515,
+"Toxin>Umbra": 0.329,
+"Toxin>Voltaic": 0.37,
+"Toxin>Zephyr": 0.0,
+"Umbra>Aqua": 0.96,
+"Umbra>Cryo": 0.74,
+"Umbra>Pyro": 0.37,
+"Umbra>Radiant": 0.25,
+"Umbra>Terra": 0.59,
+"Umbra>Toxin": 0.676,
+"Umbra>Umbra": 0.46,
+"Umbra>Voltaic": 0.82,
+"Umbra>Zephyr": 0.37,
+"Voltaic>Aqua": 0.9,
+"Voltaic>Cryo": 0.02,
+"Voltaic>Pyro": 0.0,
+"Voltaic>Radiant": 0.0,
+"Voltaic>Terra": 0.027,
+"Voltaic>Toxin": 0.63,
+"Voltaic>Umbra": 0.18,
+"Voltaic>Voltaic": 0.5,
+"Voltaic>Zephyr": 0.07,
+"Zephyr>Aqua": 1.0,
+"Zephyr>Cryo": 0.5,
+"Zephyr>Pyro": 0.01,
+"Zephyr>Radiant": 0.87,
+"Zephyr>Terra": 0.05,
+"Zephyr>Toxin": 1.0,
+"Zephyr>Umbra": 0.63,
+"Zephyr>Voltaic": 0.93,
+"Zephyr>Zephyr": 0.48
+},
+"mix": {
+"Aqua>Aqua": [
+0.0,
+0.0
+],
+"Aqua>Cryo": [
+1.0,
+0.0
+],
+"Aqua>Pyro": [
+1.0,
+1.0
+],
+"Aqua>Radiant": [
+0.0,
+1.0
+],
+"Aqua>Terra": [
+1.0,
+1.0
+],
+"Aqua>Toxin": [
+1.0,
+0.0
+],
+"Aqua>Umbra": [
+0.0,
+1.0
+],
+"Aqua>Voltaic": [
+0.0,
+1.0
+],
+"Aqua>Zephyr": [
+1.0,
+1.0
+],
+"Cryo>Aqua": [
+0.0,
+1.0
+],
+"Cryo>Cryo": [
+0.0,
+0.0
+],
+"Cryo>Pyro": [
+1.0,
+1.0
+],
+"Cryo>Radiant": [
+0.0,
+0.0
+],
+"Cryo>Terra": [
+0.0,
+1.0
+],
+"Cryo>Toxin": [
+0.86,
+0.49
+],
+"Cryo>Umbra": [
+0.0,
+1.0
+],
+"Cryo>Voltaic": [
+0.0,
+1.0
+],
+"Cryo>Zephyr": [
+0.0,
+1.0
+],
+"Pyro>Aqua": [
+1.0,
+1.0
+],
+"Pyro>Cryo": [
+1.0,
+1.0
+],
+"Pyro>Pyro": [
+0.0,
+0.0
+],
+"Pyro>Radiant": [
+0.0,
+1.0
+],
+"Pyro>Terra": [
+0.0,
+1.0
+],
+"Pyro>Toxin": [
+1.0,
+1.0
+],
+"Pyro>Umbra": [
+0.0,
+1.0
+],
+"Pyro>Voltaic": [
+0.0,
+1.0
+],
+"Pyro>Zephyr": [
+1.0,
+1.0
+],
+"Radiant>Aqua": [
+1.0,
+0.0
+],
+"Radiant>Cryo": [
+0.0,
+0.0
+],
+"Radiant>Pyro": [
+1.0,
+0.0
+],
+"Radiant>Radiant": [
+0.42,
+0.42
+],
+"Radiant>Terra": [
+0.78,
+0.22
+],
+"Radiant>Toxin": [
+1.0,
+0.0
+],
+"Radiant>Umbra": [
+0.0,
+1.0
+],
+"Radiant>Voltaic": [
+0.0,
+1.0
+],
+"Radiant>Zephyr": [
+1.0,
+0.0
+],
+"Terra>Aqua": [
+1.0,
+1.0
+],
+"Terra>Cryo": [
+1.0,
+0.0
+],
+"Terra>Pyro": [
+1.0,
+0.0
+],
+"Terra>Radiant": [
+0.22,
+0.81
+],
+"Terra>Terra": [
+1.0,
+1.0
+],
+"Terra>Toxin": [
+1.0,
+0.0
+],
+"Terra>Umbra": [
+0.35,
+0.06
+],
+"Terra>Voltaic": [
+0.9,
+0.1
+],
+"Terra>Zephyr": [
+1.0,
+1.0
+],
+"Toxin>Aqua": [
+0.0,
+0.0
+],
+"Toxin>Cryo": [
+0.37,
+0.7
+],
+"Toxin>Pyro": [
+1.0,
+1.0
+],
+"Toxin>Radiant": [
+0.0,
+1.0
+],
+"Toxin>Terra": [
+0.0,
+1.0
+],
+"Toxin>Toxin": [
+0.0,
+0.0
+],
+"Toxin>Umbra": [
+0.39,
+0.81
+],
+"Toxin>Voltaic": [
+0.0,
+1.0
+],
+"Toxin>Zephyr": [
+1.0,
+1.0
+],
+"Umbra>Aqua": [
+1.0,
+0.0
+],
+"Umbra>Cryo": [
+1.0,
+0.0
+],
+"Umbra>Pyro": [
+1.0,
+1.0
+],
+"Umbra>Radiant": [
+1.0,
+0.0
+],
+"Umbra>Terra": [
+0.0,
+1.0
+],
+"Umbra>Toxin": [
+0.9,
+0.53
+],
+"Umbra>Umbra": [
+0.0,
+0.0
+],
+"Umbra>Voltaic": [
+0.0,
+1.0
+],
+"Umbra>Zephyr": [
+0.0,
+1.0
+],
+"Voltaic>Aqua": [
+1.0,
+0.0
+],
+"Voltaic>Cryo": [
+1.0,
+0.0
+],
+"Voltaic>Pyro": [
+1.0,
+0.0
+],
+"Voltaic>Radiant": [
+1.0,
+0.0
+],
+"Voltaic>Terra": [
+0.1,
+0.9
+],
+"Voltaic>Toxin": [
+1.0,
+0.0
+],
+"Voltaic>Umbra": [
+1.0,
+0.0
+],
+"Voltaic>Voltaic": [
+0.0,
+0.0
+],
+"Voltaic>Zephyr": [
+1.0,
+0.0
+],
+"Zephyr>Aqua": [
+1.0,
+1.0
+],
+"Zephyr>Cryo": [
+1.0,
+0.0
+],
+"Zephyr>Pyro": [
+1.0,
+1.0
+],
+"Zephyr>Radiant": [
+0.0,
+1.0
+],
+"Zephyr>Terra": [
+1.0,
+1.0
+],
+"Zephyr>Toxin": [
+1.0,
+1.0
+],
+"Zephyr>Umbra": [
+1.0,
+0.0
+],
+"Zephyr>Voltaic": [
+0.0,
+1.0
+],
+"Zephyr>Zephyr": [
+1.0,
+1.0
+]
+}
+}

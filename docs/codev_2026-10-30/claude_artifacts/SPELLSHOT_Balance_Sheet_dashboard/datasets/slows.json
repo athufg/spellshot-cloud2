@@ -1,0 +1,14 @@
+{
+  "description": "Each slow, root and knock against the dash threshold, the wall-run catch speed and the sustained chain.",
+  "fixed": true,
+  "source": {
+    "kind": "file",
+    "name": "slows.json",
+    "url": "/_blob/4e29ef2245c40fad68e376a095f7bd56"
+  },
+  "title": "Slows and roots vs thresholds",
+  "updated": {
+    "at": "2026-10-17T00:37:58+04:00",
+    "by": "Claude"
+  }
+}
