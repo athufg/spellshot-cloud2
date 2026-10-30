@@ -22,7 +22,7 @@ it. The live game is the Studio place, not this repo.
 
 ## Read first
 
-- **For open questions:** the Problem Sheet. **It is not in this repo yet.**
+- **For open questions:** the Problem Sheet. **It is not in this repo yet** (not found in D:/Spellshot - Atharv, D:/Spellshot - Nehal, Downloads, Desktop, Documents or OneDrive, 2026-10-30).
 - **For what is ready to build:** the most recent Implementation Handoff. **It is not in this repo yet.**
 - Until they arrive, `docs/SPELLSHOT_Design_Manual.md` says what the game should be, and the latest entries of
   `docs/SPELLSHOT_Dev_Diary.md` say what was built last. If the code and the manual disagree, the code is what ships.

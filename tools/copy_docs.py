@@ -22,6 +22,10 @@ for p in sorted(glob.glob(os.path.join(game, "SPELLSHOT_*.md"))) + [os.path.join
 for folder in (game, os.path.join(src, "Claude outputs")):
     for p in sorted(glob.glob(os.path.join(folder, "Opus5*.md"))):
         plan.setdefault("build_prompts/" + os.path.basename(p), p)
+# (2026-10-30) the design manual / lore PDFs and the change logs beside the design manual
+for pat in ("spellshot*.pdf", "CHANGES_*.md", "IMPLEMENTED.md"):
+    for p in sorted(glob.glob(os.path.join(game, pat))):
+        plan.setdefault(os.path.basename(p), p)
 blocking = os.path.join(game, "vfx_blocking")
 for p in sorted(glob.glob(os.path.join(blocking, "**", "*HANDOFF*.md"), recursive=True)):
     plan["vfx_handoffs/" + os.path.relpath(p, blocking).replace(os.sep, "__")] = p
